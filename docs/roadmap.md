@@ -18,6 +18,7 @@ architecture documents. No code has been written.
 - [ ] **Phase 0 — Vertical spike.** No UI. A script that creates a worktree,
       launches a sandboxed harness, parses events and accumulated tokens, then
       commits and merges. If this works, the product is viable.
+      Activity breakdown: [`phase-0.md`](phase-0.md).
 - [ ] **Phase 1 — Single-node orchestrator.** FastAPI + SQLite + WebSocket, one
       session and one node streaming live in the browser, kill/retry,
       `agenthub replay <run_id>`. No graph yet.

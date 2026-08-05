@@ -1,0 +1,259 @@
+# Phase 0 — Vertical spike
+
+**Goal:** prove the riskiest path end to end. Create a git worktree, run a real
+harness inside a real sandbox, parse its structured output into `AgentEvent`,
+count all four token fields, commit, and merge into the integration branch.
+
+No UI, no FastAPI, no database. One driver script over real modules.
+
+**The question this phase answers:** does the harness + PTY + worktree layer
+behave the way `design.md` assumes? If it does, the product is viable. If it
+doesn't, we find out in week 1 which flags and behaviors diverge from the
+documentation — while changing course is still cheap.
+
+## What is throwaway and what is not
+
+The driver script (`backend/scripts/spike.py`) is throwaway; Phase 1 replaces it
+with the scheduler. Everything it calls is not — the event schema, the parser,
+the argv builder, and the worktree lifecycle land directly in the modules they
+will live in permanently (`design.md` §11). Writing them in a scratch file and
+"porting them later" means writing them twice and losing the fixtures.
+
+## Activities
+
+```mermaid
+flowchart TD
+    A1[A1 · Environment] --> A3[A3 · Capture fixtures]
+    A1 --> A6[A6 · ai-jail argv]
+    A2[A2 · Backend skeleton] --> A4[A4 · AgentEvent schema]
+    A2 --> A6
+    A2 --> A7[A7 · Worktree lifecycle]
+    A3 --> A4
+    A4 --> A5[A5 · Claude Code parser]
+    A5 --> A8[A8 · Token accounting]
+    A5 --> A9[A9 · Spike driver]
+    A6 --> A9
+    A7 --> A9
+    A8 --> A9
+    A9 --> A10[A10 · Run and record findings]
+```
+
+`A1` and `A2` are independent and can start in parallel. So can `A6` and `A7`
+once the skeleton exists.
+
+---
+
+### A1 — Environment prerequisites
+
+**Depends on:** nothing. **Blocks:** everything.
+
+Three of the required tools are missing on this machine:
+
+| Tool | State | Action |
+|---|---|---|
+| `claude` | 2.1.222 ✓ | none |
+| `git` | 2.39.5 ✓ | none |
+| `ripgrep` | 14.1.1 ✓ | none (needed in Phase 4) |
+| `uv` | missing | install |
+| Python | 3.9.6 (system) | `uv python install 3.12` |
+| `ai-jail` | missing | build/install from source, Rust toolchain |
+
+`ai-jail` is the one that carries risk. It must be verified on **macOS**
+specifically, where it uses `sandbox-exec` (seatbelt) rather than the Linux
+bubblewrap + Landlock path — a different and less-exercised code path.
+
+**Done when:**
+
+- `ai-jail --version` and `ai-jail --help` both respond.
+- `ai-jail claude --version` runs Claude Code *through* the sandbox successfully.
+- The flags `design.md` §2.1 assumes exist and are confirmed against `--help`:
+  `--worktree`, `--mask`, `--deny-path`, `--no-docker`, `--no-gpu`.
+
+**If it fails:** stop and report before writing any adapter code. A missing
+`--worktree` flag or a broken seatbelt profile on Darwin changes the isolation
+design, and that is a `design.md` §2 decision, not an implementation detail.
+
+---
+
+### A2 — Backend skeleton and tooling
+
+**Depends on:** A1 (uv). **Blocks:** A4, A6, A7.
+
+Create `backend/` per `design.md` §11 with the package directories in place, plus
+the toolchain from `docs/conventions.md` §1: ruff, mypy (strict), pytest,
+import-linter, structlog, Pydantic v2.
+
+The import-linter contracts from `docs/architecture.md` §1 go in now, while there
+is no code to violate them. Adding layer contracts after the fact means
+retrofitting them around existing mistakes.
+
+**Done when:** `uv sync`, `uv run ruff check`, `uv run mypy app`,
+`uv run pytest` (zero tests passes), and `uv run lint-imports` all succeed.
+
+---
+
+### A3 — Capture real Claude Code fixtures
+
+**Depends on:** A1. **Blocks:** A4.
+
+Follow `.claude/skills/add-harness/SKILL.md` step 2. Create a throwaway git repo,
+run Claude Code in structured mode, record the raw NDJSON into
+`backend/tests/fixtures/claude-code/`.
+
+```bash
+claude -p --output-format stream-json --input-format stream-json --verbose
+```
+
+Capture at minimum `simple_edit` and `tool_error`. `multi_turn` and `interrupted`
+are Phase 1 concerns but cost almost nothing to record while set up.
+
+Sanitize: strip home paths, tokens, keys.
+
+**This activity comes before the schema on purpose.** The rule from the skill is
+that a parser is never written from documentation. Version 2.1.222 is what we
+are integrating against, not whatever the docs describe.
+
+**Done when:** fixture files exist, are committed, and the raw shape of
+`system/init`, `assistant`, `user`, and `result` lines is written down.
+
+---
+
+### A4 — `AgentEvent` schema
+
+**Depends on:** A2, A3. **Blocks:** A5.
+
+`backend/app/harnesses/events.py` — the discriminated union from `design.md` §3,
+as Pydantic v2 models with a `type` literal.
+
+Phase 0 needs `RunStarted`, `AssistantText`, `ToolCall`, `ToolResult`, `Usage`,
+and `RunFinished`. `ThinkingDelta`, `Permission`, and `RawChunk` can be declared
+but stay unexercised until Phase 1.
+
+Reconcile against A3: anything Claude Code emits that has no home in the union is
+a decision — generalize it into the event, or drop it deliberately. It must never
+become a downstream conditional on the harness name (invariant 1).
+
+**Done when:** every fixture line maps to a variant or to an explicit,
+documented "ignored" list. Mypy strict passes.
+
+---
+
+### A5 — Claude Code parser and golden test
+
+**Depends on:** A4. **Blocks:** A8, A9.
+
+`backend/app/harnesses/claude_code.py`. Phase 0 only needs the read path —
+`start` and `events`. `send`, `interrupt`, and `kill` come in Phase 1.
+
+The translation table goes at the top of the file as a comment, per the skill.
+Document the CLI version tested (2.1.222).
+
+The golden test is the point of this activity: it is what will tell us when the
+next Claude Code release changes the format.
+
+**Done when:** `parse_stream(fixture)` produces a stable event list matching a
+committed `.expected.json`, for every fixture from A3.
+
+---
+
+### A6 — ai-jail argv construction
+
+**Depends on:** A1, A2. **Blocks:** A9.
+
+`backend/app/sandbox/aijail.py`. A pure function: sandbox policy + harness argv →
+`list[str]`. No subprocess call here, so it is trivially testable.
+
+Invariant 8 is the whole point of this module: `--mask` and `--deny-path` are
+mandatory. An empty policy must raise, not produce a permissive command line.
+Secrets never go in argv (`docs/conventions.md` §6).
+
+**Done when:** unit tests cover the default policy, and a test asserts that
+building a sandbox with no masks raises.
+
+---
+
+### A7 — Worktree lifecycle
+
+**Depends on:** A2. **Blocks:** A9.
+
+`backend/app/orchestrator/worktree.py`, implementing `design.md` §2.2:
+`create` (from a base ref), `commit`, `merge` into integration, `remove`.
+
+Every git call goes through `asyncio.create_subprocess_exec` — invariant 5. A
+synchronous `subprocess.run` here works fine in the spike and then stalls the PTY
+stream in Phase 1, which is exactly the kind of bug that is invisible until it
+isn't.
+
+Merge conflict is a **return value**, not an exception — it becomes the node's
+`blocked` state (`docs/architecture.md` §9).
+
+**Done when:** tests against a temp repo cover create → commit → merge, plus the
+conflict path returning `blocked`.
+
+---
+
+### A8 — Token accounting
+
+**Depends on:** A5. **Blocks:** A9.
+
+Accumulate the four fields from `Usage` events and compute `cost_usd` at ingest
+against `pricing.yaml` (`design.md` §4, invariant 3).
+
+The question only the fixtures can answer: **is `message.usage` cumulative or
+incremental per assistant message?** Getting this wrong doubles or halves every
+number the product will ever show. Verify by summing across the run and comparing
+to the total Claude Code itself reports in its final `result` event.
+
+**Done when:** a test asserts our computed totals equal the CLI's self-reported
+totals for the A3 fixtures, and `pricing.yaml` exists with the three model IDs
+from `design.md` §4.
+
+---
+
+### A9 — Spike driver
+
+**Depends on:** A5, A6, A7, A8.
+
+`backend/scripts/spike.py`. Takes a target repo path and a prompt, then:
+
+1. Creates a worktree off the integration branch (A7)
+2. Builds the sandboxed argv (A6) and launches the harness
+3. Streams events (A5), printing text, tool calls, and a running token total (A8)
+4. Commits the result and merges into integration (A7)
+
+Also writes `events.ndjson` as it goes — invariant 4 starts here, not in Phase 1.
+If the NDJSON written during the spike cannot be replayed into the same event
+list, the write path is already wrong.
+
+**Done when:** one command drives the full loop against a real repository and the
+diff on the integration branch is the agent's work.
+
+---
+
+### A10 — Run it and record what diverged
+
+**Depends on:** A9.
+
+The deliverable of Phase 0 is not the script — it is the answer to "does this
+work, and where was the design wrong?"
+
+Run it against a real repository. Then write down, in this file or as edits to
+`design.md`:
+
+- Which assumed flags did not exist or behaved differently
+- Whether usage is cumulative or incremental
+- ai-jail behavior on macOS, especially with `--worktree`
+- Whether anything forced a change to `AgentEvent`
+
+`design.md` is the source of truth for decisions already made. If Phase 0 proves
+one of them wrong, the fix is to change `design.md` — not to work around it in
+the code.
+
+**Done when:** the findings are committed and `docs/roadmap.md` marks Phase 0
+complete.
+
+## Explicitly out of scope
+
+FastAPI, WebSocket, SQLite, Alembic, the planner, the DAG, concurrency, the
+frontend, PTY / Channel B, Codex, and OpenCode. Phase 0 runs one node,
+synchronously, from a terminal.
