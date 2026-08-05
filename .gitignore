@@ -1,0 +1,69 @@
+# ---------------------------------------------------------------------------
+# AgentHub runtime data
+# ---------------------------------------------------------------------------
+# Normally lives in ~/.agenthub/, but ignored here in case it is ever pointed
+# inside the repo. Never commit run logs, worktrees, or the database: they
+# contain agent transcripts, file contents, and absolute paths.
+.agenthub/
+agenthub.db
+agenthub.db-wal
+agenthub.db-shm
+runs/
+workspaces/
+*.ndjson
+!backend/tests/fixtures/**/*.ndjson    # recorded harness fixtures ARE committed
+
+# ---------------------------------------------------------------------------
+# Secrets
+# ---------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.ai-jail.local
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---------------------------------------------------------------------------
+# Node / frontend
+# ---------------------------------------------------------------------------
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+.pnpm-store/
+
+# Note: frontend/src/api/*.d.ts is GENERATED but MUST be committed.
+# See docs/architecture.md §7 — the pre-commit check fails if it drifts.
+
+# ---------------------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# ---------------------------------------------------------------------------
+# Claude Code
+# ---------------------------------------------------------------------------
+# .claude/agents/ and .claude/skills/ are part of the project and committed.
+# Only per-machine settings are ignored.
+.claude/settings.local.json

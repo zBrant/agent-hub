@@ -1,0 +1,266 @@
+# Code architecture
+
+`design.md` decides **what** AgentHub does. This document decides **where each
+thing lives** and **who may call whom**. It is the contract that keeps the system
+changeable after Phase 2.
+
+---
+
+## 1. Dependency direction
+
+```
+                    ┌──────────────────────────────┐
+                    │  frontend/ (Vite + React)    │
+                    └──────────────┬───────────────┘
+                          REST + WebSocket
+                    ┌──────────────▼───────────────┐
+   entry            │  api/          ws/           │   ← transport only
+                    └──────────────┬───────────────┘
+                    ┌──────────────▼───────────────┐
+   decision         │  orchestrator/               │   ← scheduler, planner, worktree
+                    └──────┬───────────────┬───────┘
+                    ┌──────▼──────┐ ┌──────▼───────┐
+   execution        │ harnesses/  │ │  sandbox/    │
+                    └──────┬──────┘ └──────────────┘
+                    ┌──────▼───────────────────────┐
+   data             │  models/  storage/           │
+                    └──────────────────────────────┘
+
+   independent verticals:  search/     metrics/
+```
+
+Rules, in order of importance:
+
+1. **Arrows only point down.** `harnesses/` does not import `orchestrator/`.
+   `orchestrator/` does not import `api/`. `models/` imports nothing from the app.
+2. **`search/` and `metrics/` are isolated verticals.** They do not import
+   `orchestrator/` or `harnesses/`. Either could be extracted into a separate
+   process without touching the rest.
+3. **`api/` and `ws/` contain no logic.** They validate input, call an
+   `orchestrator/` use case, and serialize the output. A business-rule `if` inside
+   a route is in the wrong place.
+4. **All disk and git writes go through `orchestrator/worktree.py` or
+   `storage/`.** No other module shells out to `git` or opens a run file.
+
+How to enforce it: `import-linter` with a layers contract in `pyproject.toml`,
+running alongside the tests. It is cheap and catches architectural regressions
+that human review lets through.
+
+---
+
+## 2. The boundary that holds everything up: `AgentEvent`
+
+The whole system exists to turn *N different CLIs* into *one uniform stream*. That
+translation happens in exactly one place.
+
+```
+claude -p --output-format stream-json ─┐
+codex exec --json ─────────────────────┼──► harnesses/*.py ──► AgentEvent ──► everything else
+opencode serve (SSE) ──────────────────┘
+```
+
+**Rule:** outside `backend/app/harnesses/`, nobody knows which CLI is running.
+`harness` and `model` are *data* that appear in events and flow to the dashboard —
+they are not behavioral conditionals.
+
+Smell test: grep for `== "claude-code"`, `startswith("codex")`, `harness in (...)`.
+Outside `harnesses/` and the model catalog, every hit is a leak.
+
+Practical consequence: when one harness exposes something the others don't, you
+have two legitimate options — **generalize** the event (with an optional field) or
+**drop** the information. The illegitimate option is branching downstream.
+
+`AgentEvent` is a Pydantic discriminated union (`Field(discriminator="type")`)
+defined in `harnesses/events.py`. It is serialized to three destinations using
+**the same** serialization:
+
+- a line in `events.ndjson`
+- a WebSocket frame
+- a replay payload
+
+One serialization, three uses. Do not create a separate DTO for the WebSocket.
+
+---
+
+## 3. Pure core, imperative shell
+
+The scheduler is the part most likely to hide subtle bugs (concurrency +
+persisted state + retry). Separate decision from effect:
+
+```python
+# orchestrator/graph.py — pure, no I/O, not async
+def ready_nodes(graph: Graph, done: set[NodeId], running: set[NodeId]) -> list[Node]: ...
+def validate_dag(graph: Graph) -> list[DagError]: ...        # cycles, orphans, topo-sort
+def transition(node: Node, event: AgentEvent) -> NodeStatus: ...
+
+# orchestrator/scheduler.py — impure, async, calls the above
+async def run_graph(graph: Graph, *, max_concurrency: int = 3) -> None: ...
+```
+
+What this buys: the DAG logic — the part an LLM planner will stress with strange
+input — is testable with plain dictionaries, no subprocess, no git, no database.
+Tests run in milliseconds and you can write fifty of them.
+
+**State transitions live in one place.** There is no `node.status = "failed"`
+scattered around. There is `transition()`, and the scheduler applies its result.
+Node status has eight values (`design.md` §5); scattering transitions guarantees
+one of them becomes unreachable.
+
+---
+
+## 4. Persistence: NDJSON primary, SQLite derived
+
+```
+~/.agenthub/
+├── agenthub.db              # SQLite WAL — sessions, graphs, nodes, runs, usage_event
+├── runs/
+│   └── <run_id>/
+│       ├── events.ndjson    # append-only, source of truth
+│       ├── meta.json        # argv, cwd, sanitized env, harness version
+│       └── pty.log          # raw Channel B bytes (optional, rotated)
+└── workspaces/
+    └── <session_id>/{integration,node_a,node_b}/
+```
+
+Write path for an event, in this order:
+
+1. append to `events.ndjson` (batched `fsync`, not per line)
+2. update the SQLite projection (node status, token aggregate)
+3. broadcast on the WebSocket
+
+If the process dies between 1 and 2, replay reconstructs. Reverse the order and
+you have state in the database that does not exist in the log — and you lose the
+ability to audit.
+
+**Required command:** `agenthub replay <run_id>` rebuilds the projections from the
+NDJSON. If it does not exist, or does not match the database, invariant 4 in
+`CLAUDE.md` is fiction.
+
+`usage_event` is append-only and never `UPDATE`d. Dashboard aggregates are `SUM()`
+over an index, not a mutable counter.
+
+---
+
+## 5. The two channels per run
+
+| | Channel A — structural | Channel B — PTY |
+|---|---|---|
+| Source | `--output-format stream-json` | `os.openpty()` |
+| Becomes | typed `AgentEvent` | `RawChunk(bytes)` |
+| Persisted to | `events.ndjson` | `pty.log` (rotated, disposable) |
+| Feeds | state, tokens, graph, dashboards, history | `xterm.js` only |
+| Enabled | always | on demand ("Attach terminal") |
+
+**Never derive state from Channel B.** It is pixels, not data. Channel B may be
+off for an entire session with nothing in the system noticing — if that isn't
+true, someone is parsing ANSI somewhere.
+
+Backpressure matters: Channel B produces a lot of bytes. Use
+`asyncio.Queue(maxsize=N)` with a drop-from-the-middle policy, and never let a
+slow WebSocket client hold back the PTY reader.
+
+---
+
+## 6. Frontend: three state sources, never mixed
+
+| Source | Tool | Rule |
+|---|---|---|
+| Server state (sessions, graphs, history) | TanStack Query | Never copy into a local store |
+| Live state (events, metrics, PTY) | **one** WebSocket connection → Zustand store | Never poll for what already arrives over WS |
+| UI state (open drawer, graph zoom, filter) | `useState` / local store | Never persist to the server |
+
+**A single WebSocket connection** for the whole app, multiplexed by topic
+(`session:<id>`, `run:<id>`, `metrics`). One connection per panel overloads the
+backend and produces divergent event ordering between components.
+
+An event arriving over WS **invalidates a query** when it's a structural change
+(node completed, merge happened), and **updates the store** when it's stream data
+(text delta, PTY chunk). Confusing the two causes flicker or stale state.
+
+Route components (`routes/`) are the only ones that compose — they fetch data and
+pass it down. Components in `components/` receive props and know nothing about the
+API.
+
+---
+
+## 7. Shared types (no manual drift)
+
+```
+FastAPI  ──► /openapi.json ──► openapi-typescript ──► frontend/src/api/schema.d.ts
+AgentEvent ──► model_json_schema() ──► json-schema-to-typescript ──► frontend/src/api/events.d.ts
+```
+
+`AgentEvent` travels over the WebSocket, so it does not appear in the OpenAPI
+schema. Export its JSON Schema explicitly from a script
+(`backend/scripts/export_schemas.py`) that runs in pre-commit and fails if the
+generated file is out of date.
+
+**Hand-writing a TypeScript type that mirrors a Python model is forbidden.** The
+mirror always drifts, and the drift shows up in production as an `undefined` field
+in the middle of a stream.
+
+---
+
+## 8. Responsibility per module
+
+| Module | Does | Does not |
+|---|---|---|
+| `api/` | REST routes, validation, serialization | business logic, git access |
+| `ws/` | topic multiplexing, backpressure | parsing harness output |
+| `orchestrator/graph.py` | pure DAG: validation, readiness, transition | any I/O |
+| `orchestrator/scheduler.py` | concurrency, retry, budget, transition persistence | talk to a CLI directly |
+| `orchestrator/planner.py` | LLM → DAG via structured output + correction loop | execute nodes |
+| `orchestrator/worktree.py` | git lifecycle: create, merge, conflict, GC | decide *when* to create |
+| `harnesses/` | translate CLI ↔ `AgentEvent`, PTY, message injection | know about graphs or sessions |
+| `sandbox/aijail.py` | build ai-jail argv from a policy | run processes |
+| `storage/` | NDJSON, SQLite, replay | domain logic |
+| `search/` | ripgrep, ast-grep, tags, vectors, agentic loop | anything orchestration-related |
+| `metrics/` | psutil, ring buffer, aggregation | persist 1 s samples |
+
+---
+
+## 9. Errors: agent failure is data, an exception is a bug
+
+- The agent failed, the timeout fired, the merge conflicted → **an event**
+  (`RunFinished(status="failed")`, node moves to `blocked`). Normal flow.
+- Invalid argument, violated invariant, unhandled union case → **an exception**.
+  That is programmer error and should surface loudly.
+
+Never use exceptions as control flow between layers. The scheduler should not wrap
+`execute(node)` in `try/except` to decide a status — the adapter already reports
+the status in its final event.
+
+A bare `except Exception` is acceptable only at the edge of an `asyncio.Task`, and
+always with structured logging plus an explicit node transition.
+
+---
+
+## 10. Testing: where to invest
+
+| Layer | Type | Goal |
+|---|---|---|
+| `orchestrator/graph.py` | pure unit tests, many cases | high coverage; it's cheap |
+| `harnesses/*` | **golden file**: recorded real NDJSON → parser → expected events | catches CLI flag changes |
+| `harnesses/*` | **contract test** (`@pytest.mark.harness`) against the real CLI | skipped when the binary is absent |
+| `worktree.py` | integration against a temporary git repo | create, merge, conflict, cleanup |
+| `api/` | smoke tests via `TestClient` | do not test rules here |
+| frontend | Vitest on reducers/stores; Playwright on the three main flows only | do not chase UI coverage |
+
+Record real fixtures from Phase 0 onward: run Claude Code once, save the raw
+`stream-json` into `tests/fixtures/claude_code/*.ndjson`. When the flags change in
+the next release, the golden test tells you before a user does.
+
+---
+
+## 11. Where things will change
+
+Points we already know will be unstable — keep the boundary clean around them:
+
+- **Harness flags and output formats** → isolated in `harnesses/`, covered by
+  golden tests.
+- **Pricing table and model catalog** → `pricing.yaml`, loaded at runtime, never
+  hardcoded.
+- **Sandbox policy** → `sandbox/aijail.py` builds argv from a `SandboxPolicy`
+  object; replacing ai-jail means rewriting one file.
+- **Graph layout** → ELK.js is a component detail, not part of the data model. The
+  backend never sends coordinates.
