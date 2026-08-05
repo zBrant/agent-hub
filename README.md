@@ -5,10 +5,6 @@ graph of activities, assign a harness and model to each node, and run them in
 parallel — each agent sandboxed, each in its own git worktree, all of it streamed
 back with live output, tool calls, and token accounting.
 
-> **Status: pre-implementation.** This repository currently contains the
-> architecture and design documents. Phase 0 (the vertical spike) has not started.
-> See [Roadmap](#roadmap).
-
 ---
 
 ## The idea
@@ -76,44 +72,12 @@ isolation.
 No Docker in the MVP. No Postgres. No auth — it binds to `127.0.0.1` and is meant
 to run on your own machine.
 
-## Documentation
+## Installation
 
-| Document | Answers |
-|---|---|
-| [`design.md`](design.md) | **What** to build and why — the full design: isolation, harness channels, token accounting, data model, the three tabs, the scheduler |
-| [`docs/architecture.md`](docs/architecture.md) | **How** the code is organized — layers, the `AgentEvent` boundary, pure core / imperative shell, persistence, testing strategy |
-| [`docs/conventions.md`](docs/conventions.md) | Python and TypeScript standards, naming, commits, security |
-| [`docs/design-system.md`](docs/design-system.md) | Tokens, density, node states, terminal theme, accessibility |
-| [`CLAUDE.md`](CLAUDE.md) | The eight invariants, for humans and agents alike |
+> Not installable yet — the repository currently holds the design and
+> architecture documents. See [`docs/roadmap.md`](docs/roadmap.md).
 
-The repository ships its own agent configuration in
-[`.claude/`](.claude) — four subagents (`orchestrator`, `harness-integrator`,
-`ui`, `reviewer`) and two skills. AgentHub is built the way it expects you to
-build with it.
-
-## Roadmap
-
-The unknowns are in the harness, PTY, and worktree layers. If something kills this
-project, it's there — so that comes first and code search, the easiest part, comes
-last.
-
-- [ ] **Phase 0 — Vertical spike.** No UI. Create a worktree, launch a sandboxed
-      harness, parse events and tokens, commit and merge. If this works, the
-      product is viable.
-- [ ] **Phase 1 — Single-node orchestrator.** FastAPI + SQLite + WebSocket, live
-      streaming in the browser, kill/retry, event replay.
-- [ ] **Phase 2 — The graph.** Planner with structured output, DAG validation,
-      editable canvas, concurrent scheduler, per-worktree merge. *The heart of the
-      product.*
-- [ ] **Phase 3 — Dashboards.** Token/cost KPIs and system metrics, once there is
-      real data to show.
-- [ ] **Phase 4 — Code search.** ripgrep + ast-grep + tree-sitter tags + agentic
-      chat, then sqlite-vec.
-
-Post-MVP: visual testing with Playwright and a vision model, multi-repo, remote
-execution, permission approval through the UI.
-
-## Requirements
+### Requirements
 
 - macOS (Linux should work; the sandbox path is validated on Darwin)
 - Python 3.12+ and [uv](https://github.com/astral-sh/uv)
@@ -123,8 +87,6 @@ execution, permission approval through the UI.
 - At least one agent CLI installed and authenticated (Claude Code, Codex, or
   OpenCode)
 
-Install and run instructions land with Phase 1.
-
 ## A note on cost
 
 When a harness runs under a Claude Max/Pro subscription there is no per-token
@@ -132,6 +94,22 @@ billing. AgentHub still counts tokens — all four fields, including `cache_read
 which is 90%+ of a long agentic session — but labels the result **"estimated
 equivalent cost"** rather than spend. A number that alarms without meaning
 anything is worse than no number.
+
+## Documentation
+
+| Document | Answers |
+|---|---|
+| [`design.md`](design.md) | **What** to build and why — the full design: isolation, harness channels, token accounting, data model, the three tabs, the scheduler |
+| [`docs/architecture.md`](docs/architecture.md) | **How** the code is organized — layers, the `AgentEvent` boundary, pure core / imperative shell, persistence, testing strategy |
+| [`docs/conventions.md`](docs/conventions.md) | Python and TypeScript standards, naming, commits, security |
+| [`docs/design-system.md`](docs/design-system.md) | Tokens, density, node states, terminal theme, accessibility |
+| [`docs/roadmap.md`](docs/roadmap.md) | What is built, what isn't, and what comes next |
+| [`CLAUDE.md`](CLAUDE.md) | The eight invariants, for humans and agents alike |
+
+The repository ships its own agent configuration in
+[`.claude/`](.claude) — four subagents (`orchestrator`, `harness-integrator`,
+`ui`, `reviewer`) and two skills. AgentHub is built the way it expects you to
+build with it.
 
 ## License
 

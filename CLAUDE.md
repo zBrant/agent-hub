@@ -12,6 +12,7 @@ dashboards. Single-user, binds to `127.0.0.1`, targets macOS.
 | `docs/architecture.md` | **How** the code is organized — layers, boundaries, data flow |
 | `docs/conventions.md` | Python and TypeScript code standards |
 | `docs/design-system.md` | Visual tokens, components, UI rules |
+| `docs/roadmap.md` | **Where** the project is — phase status and what comes next |
 
 `design.md` is the source of truth for decisions already made. If you think one of
 them is wrong, say so — don't quietly work around it.
