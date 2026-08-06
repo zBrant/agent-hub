@@ -252,6 +252,56 @@ the code.
 **Done when:** the findings are committed and `docs/roadmap.md` marks Phase 0
 complete.
 
+## Findings log
+
+Filled in as activities complete. A10 consolidates this into edits to
+`design.md` where a decision turned out to be wrong.
+
+### A1 — done
+
+Installed: `uv` 0.12.1, Python 3.12.13 (via uv), `ai-jail` 1.16.0 (Homebrew tap
+`akitaonrails/tap`; the formula only fetches a checksummed release binary — no
+install-time code). Already present: `claude` 2.1.222, `git` 2.39.5,
+`ripgrep` 14.1.1.
+
+All five flags `design.md` §2.1 assumes exist, and the sandbox runs Claude Code
+on macOS. Confirmed against the generated SBPL profile: it opens with
+`(deny default)`, and `--mask` / `--deny-path` both land in it as real rules.
+
+Divergences from `design.md` §2.1:
+
+1. **`--exec` is required for Channel A, and §2.1 does not mention it.** By
+   default ai-jail interposes a PTY proxy and a status bar between the harness
+   and the caller. For structured `stream-json` output there must be nothing in
+   between, so Channel A runs with `--exec`. Channel B (Phase 1) will want the
+   default proxy mode instead — meaning the sandbox invocation is not a constant,
+   it varies by channel.
+2. **`--worktree` is already the default** (`--no-worktree` disables it), and
+   Docker passthrough is already off by default. Passing `--worktree` and
+   `--no-docker` explicitly is therefore redundant — but it stays, because §2.1's
+   policy is default-deny *and always explicit*.
+3. **`--no-gpu` is Linux-only.** On macOS it is a no-op.
+4. **On macOS, `--mask` behaves like `--deny-path`.** The documented behavior is
+   "replace with an empty file"; the seatbelt profile implements it as
+   `(deny file-read* ...)`. The agent gets a permission error rather than an
+   empty file. Protection is equivalent; observable behavior for the agent is
+   not.
+5. ai-jail warns on every macOS run that `sandbox-exec` is deprecated by Apple.
+   Worth tracking as a risk (`design.md` §12) — the macOS containment path
+   depends on an interface Apple has already marked legacy.
+
+The ai-jail banner goes to **stderr**; stdout stays clean in both modes. Channel
+A can read stdout without filtering, but must not merge stderr into it.
+
+### A2 — done
+
+Backend skeleton at `backend/`. `ruff` (including the `ASYNC` ruleset, which
+guards invariant 5), `mypy --strict` on the core, `pytest` with the `harness`
+marker, and three import-linter contracts — all green on an empty tree.
+
+`pricing.yaml` added at the repo root. A model absent from the table yields
+`cost_usd = null`, never zero.
+
 ## Explicitly out of scope
 
 FastAPI, WebSocket, SQLite, Alembic, the planner, the DAG, concurrency, the
