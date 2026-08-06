@@ -1,0 +1,36 @@
+# Token pricing, USD per 1M tokens.
+#
+# This file is the source of truth for cost computation (design.md §4).
+# `cost_usd` is computed at INGEST using the prices in effect at that moment and
+# stored on the row — never recomputed in a query. Editing this file therefore
+# affects future events only, which is the point: cost history must not shift
+# retroactively when a vendor changes prices.
+#
+# When a harness runs under a Max/Pro subscription there is no per-token billing.
+# The number derived from this table is an "estimated equivalent cost", never
+# "spend" (invariant 7).
+
+version: 1
+updated: "2026-08-05"
+
+defaults:
+  # Cache write price is a multiplier over the input price, because it depends on
+  # the TTL rather than on the model (design.md §4).
+  cache_write_multiplier_5m: 1.25
+  cache_write_multiplier_1h: 2.0
+  cache_read_multiplier: 0.1
+
+models:
+  claude-opus-5:
+    input: 5.00
+    output: 25.00
+  claude-sonnet-5:
+    input: 3.00
+    output: 15.00
+  claude-haiku-4-5:
+    input: 1.00
+    output: 5.00
+
+# A model absent from this table gets cost_usd = null. That is deliberate: a
+# missing price must read as "unknown", never as zero. Zero is a number someone
+# will trust.
