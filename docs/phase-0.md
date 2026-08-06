@@ -302,6 +302,43 @@ marker, and three import-linter contracts — all green on an empty tree.
 `pricing.yaml` added at the repo root. A model absent from the table yields
 `cost_usd = null`, never zero.
 
+### A6 — done
+
+`app/sandbox/aijail.py`. An empty policy cannot be *constructed*, not merely
+cannot be built into argv — validation is in `SandboxPolicy.__post_init__`.
+
+Three further corrections to `design.md` §2.1's invocation, all verified against
+real `--dry-run` output:
+
+6. **`--no-save-config` is mandatory and missing from §2.1.** ai-jail writes a
+   `.ai-jail` file into the cwd on every run — *even with `--clean`*. Inside a
+   per-node worktree that file lands in the agent's diff, which breaks the
+   premise of invariant 2 that the diff is the agent's work, and on the next run
+   it feeds a stale policy back in.
+7. **`--clean` is mandatory and missing from §2.1.** Without it, a `.ai-jail`
+   committed in the target repository is read — and it can *weaken* the policy
+   via `--mask-except` / `--deny-path-except`, from a directory the agent can
+   write to. That is invariant 8 defeated by a file in the repo.
+8. **`--mask '*.pem'` as written in §2.1 under-protects.** Globs are expanded at
+   launch against files that already exist, and a single `*` does not cross
+   directory boundaries: `*.pem` produced a rule for `top.pem` and left
+   `sub/deep.pem` readable. Only `**/*.pem` covers the tree.
+
+   The corollary §2.1 should state: **a secret file created *during* a run is
+   not masked.** The SBPL rules are `(literal ...)` entries computed at launch,
+   not a live pattern. Masking is a point-in-time snapshot.
+
+9. **`--worktree` grants write access to the entire parent `.git`**, not just
+   `.git/worktrees/<node>`. The profile contains
+   `(allow file-write* (subpath ".../repo/.git"))`. A node needs this to commit,
+   but it means an agent in `node_a` can write refs belonging to `node_b`. This
+   is a §2.2 question and cannot be fixed in the argv builder — recorded here
+   for A10.
+
+`--` is *not* needed: ai-jail stops option parsing at the first positional, so
+`ai-jail --mask .env claude --mask X` correctly passes the second `--mask` to
+claude. Adding `--` is accepted and byte-identical, so the builder omits it.
+
 ## Explicitly out of scope
 
 FastAPI, WebSocket, SQLite, Alembic, the planner, the DAG, concurrency, the
