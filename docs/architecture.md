@@ -19,11 +19,14 @@ changeable after Phase 2.
                     ┌──────────────▼───────────────┐
    decision         │  orchestrator/               │   ← scheduler, planner, worktree
                     └──────┬───────────────┬───────┘
+                    ┌──────────────▼───────────────┐
+   persistence      │  storage/                   │   ← event log, projections
+                    └──────────────┬───────────────┘
                     ┌──────▼──────┐ ┌──────▼───────┐
    execution        │ harnesses/  │ │  sandbox/    │
                     └──────┬──────┘ └──────────────┘
                     ┌──────▼───────────────────────┐
-   data             │  models/  storage/           │
+   data             │  models/                    │
                     └──────────────────────────────┘
 
    independent verticals:  search/     metrics/
@@ -33,6 +36,9 @@ Rules, in order of importance:
 
 1. **Arrows only point down.** `harnesses/` does not import `orchestrator/`.
    `orchestrator/` does not import `api/`. `models/` imports nothing from the app.
+   `storage/` sits above execution because an event log must import the canonical
+   `AgentEvent` union from `harnesses/events.py`; it never imports a concrete
+   harness adapter.
 2. **`search/` and `metrics/` are isolated verticals.** They do not import
    `orchestrator/` or `harnesses/`. Either could be extracted into a separate
    process without touching the rest.

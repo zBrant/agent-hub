@@ -86,8 +86,9 @@ type = "layers"
 layers = [
     "app.api | app.ws",
     "app.orchestrator",
+    "app.storage",
     "app.harnesses | app.sandbox",
-    "app.models | app.storage",
+    "app.models",
 ]
 exhaustive = false
 

@@ -74,8 +74,8 @@ to run on your own machine.
 
 ## Installation
 
-> Not installable yet — the repository currently holds the design and
-> architecture documents. See [`docs/roadmap.md`](docs/roadmap.md).
+> Not installable yet — the Phase 0 backend spike is under validation and there
+> is no application entry point or UI yet. See [`docs/roadmap.md`](docs/roadmap.md).
 
 ### Requirements
 

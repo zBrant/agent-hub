@@ -370,6 +370,59 @@ so every comparison must resolve `/var` → `/private/var`.
 Agent commits pin `user.name`/`user.email` explicitly. Without that, git falls
 back to a gecos-derived identity and attributes agent work to the human.
 
+### A3, A4 and A5 — done
+
+Seven sanitized captures from Claude Code 2.1.222 and 2.1.223 cover a successful
+edit, tool failure, permission refusal, partial messages, multiple turns,
+interruption, and budget exhaustion. Every line is either translated to the
+discriminated `AgentEvent` union or counted in a documented ignored category;
+unknown and malformed shapes are loud parser statistics, never silent drops.
+
+The captures corrected three assumptions that matter downstream:
+
+13. Assistant lines are not the accounting source. Their usage repeats within a
+    turn; the final `result.usage` is the per-turn source to aggregate.
+14. A permission-refused write may still end as `success` with exit code 0. The
+    only reliable signal is `result.permission_denials`, now carried by
+    `TurnFinished.blocked_by_permission`.
+15. Budget exhaustion can zero all four `result.usage` fields after consuming
+    real tokens. The undated `modelUsage` entry is session-cumulative and its
+    delta reproduces every non-zero `result.usage` fixture exactly. The parser
+    uses that delta only for an all-zero result, marks the event
+    `source="reconstructed"`, and emits no usage if the counter moves backwards.
+
+### A8 — done
+
+All four token fields are accumulated and priced at ingest from `pricing.yaml`.
+The dated and undated spellings of a Claude model normalize to one catalog key.
+Cache-write TTL tiers remain available for pricing; a reconstructed event has no
+tier split and therefore takes the conservative 1-hour price. Unknown models
+produce `cost_usd = null`, never zero.
+
+### A9 — implemented
+
+`backend/scripts/spike.py` now composes the real worktree, sandbox, Claude Code
+adapter, pricing, and NDJSON modules. It checkpoints the node branch but merges
+only when the process succeeded, usage reconciled, no permission was refused,
+and the parser saw no unknown lines. A real-git integration test exercises both
+the successful merge and the parser-drift no-merge path.
+
+The argv builders expose one seam for Phase 1: `aijail.build_argv` appends the
+harness preset while the adapter appends its CLI command. The driver currently
+removes the final preset and lets the adapter add the identical `claude` token.
+The two builders need an explicit composition contract before multiple harnesses
+share this path.
+
+### A10 — pending account capacity
+
+On 2026-08-05 the real command created both worktrees, launched Claude Code
+2.1.223 through ai-jail 1.16.0, parsed the structured rate-limit response, wrote
+six events, and reproduced all six from `events.ndjson`. Claude then exited 1
+with `You've hit your session limit`, so there was deliberately no commit or
+merge. This validates the failure path but not Phase 0's success criterion. Run
+the same command after capacity returns, then record the resulting integration
+diff before marking the phase complete.
+
 ## Explicitly out of scope
 
 FastAPI, WebSocket, SQLite, Alembic, the planner, the DAG, concurrency, the

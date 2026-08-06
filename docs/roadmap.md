@@ -10,8 +10,15 @@ lowest-risk piece, comes last.
 
 ## Status
 
-**Pre-implementation.** The repository currently contains only design and
-architecture documents. No code has been written.
+**Phase 0 validation.** Activities A1–A9 are implemented: the environment,
+Claude Code fixtures and adapter, ai-jail policy, worktree lifecycle, token
+pricing, append-only NDJSON log, and the one-node driver. The local suite has
+167 passing tests and all static architecture gates pass.
+
+A10 remains open. The real driver reached Claude Code through ai-jail and
+round-tripped its event log, but the account session limit rejected the request
+before the agent could edit, commit, and merge a file. Phase 0 stays incomplete
+until that last real run succeeds and its findings are recorded.
 
 ## Phases
 
