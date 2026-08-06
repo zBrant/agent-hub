@@ -1,0 +1,104 @@
+{
+  "stats": {
+    "lines": 8,
+    "events": 9,
+    "ignored": {
+      "thread.started/repeated": 1
+    },
+    "unknown": {},
+    "malformed": 0,
+    "zero_usage_turns": 0,
+    "usage_unreconciled_turns": 0
+  },
+  "events": [
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "run_started",
+      "harness": "codex",
+      "model": "gpt-5.6-sol",
+      "cwd": "/tmp/repo",
+      "pid": null,
+      "session_id": "019fd543-3e3a-7603-a3c0-26f1e5d02df7",
+      "harness_version": "0.146.0"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 1,
+      "model": "gpt-5.6-sol",
+      "session_id": "019fd543-3e3a-7603-a3c0-26f1e5d02df7"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "assistant_text",
+      "text": "first turn complete"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "gpt-5.6-sol",
+      "source": "reported",
+      "input_tokens": 7445,
+      "output_tokens": 7,
+      "cache_read_tokens": 6912,
+      "cache_write_tokens": 0,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 0
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 1,
+      "status": "success",
+      "summary": "first turn complete",
+      "permission_denials": [],
+      "errors": [],
+      "session_id": "019fd543-3e3a-7603-a3c0-26f1e5d02df7",
+      "duration_ms": null
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 2,
+      "model": "gpt-5.6-sol",
+      "session_id": "019fd543-3e3a-7603-a3c0-26f1e5d02df7"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "assistant_text",
+      "text": "second turn complete"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "gpt-5.6-sol",
+      "source": "reported",
+      "input_tokens": 10985,
+      "output_tokens": 14,
+      "cache_read_tokens": 17920,
+      "cache_write_tokens": 0,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 0
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 2,
+      "status": "success",
+      "summary": "second turn complete",
+      "permission_denials": [],
+      "errors": [],
+      "session_id": "019fd543-3e3a-7603-a3c0-26f1e5d02df7",
+      "duration_ms": null
+    }
+  ]
+}

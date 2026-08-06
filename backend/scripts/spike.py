@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """Phase 0 vertical spike — one node, end to end, no UI.
 
-Creates a git worktree, launches Claude Code inside an ai-jail sandbox, streams
+Creates a git worktree, launches one agent harness inside an ai-jail sandbox, streams
 the structured events, counts all four token fields, commits the result, merges
 into the integration branch, and finally replays the NDJSON log to prove it
 reproduces what was written.
@@ -26,9 +26,8 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from app.harnesses import claude_code
+from app.harnesses import ADAPTERS, create_adapter
 from app.harnesses.base import ParseStats, RunSpec
-from app.harnesses.claude_code import ClaudeCodeAdapter
 from app.harnesses.events import (
     AgentEvent,
     AssistantText,
@@ -69,21 +68,8 @@ def _rule(title: str) -> None:
 
 
 def sandbox_launcher(policy: aijail.SandboxPolicy) -> tuple[str, ...]:
-    """The ai-jail prefix that ``RunSpec.launcher`` expects.
-
-    The two argv builders do not compose directly: ``aijail.build_argv`` emits
-    the harness preset as a positional, and ``claude_code.build_argv`` appends
-    its own ``claude`` after the launcher. They only line up because ai-jail's
-    preset name and the CLI command happen to be the same string, so the preset
-    is dropped here and re-added by the adapter.
-
-    That seam is awkward and belongs in Phase 1's design, not in a builder —
-    recorded in docs/phase-0.md rather than papered over.
-    """
-    argv = aijail.build_argv(policy, claude_code.CLI_COMMAND)
-    if argv[-1] != claude_code.CLI_COMMAND:
-        raise AssertionError(f"expected preset last in {argv!r}")
-    return tuple(argv[:-1])
+    """The ai-jail prefix that ``RunSpec.launcher`` expects."""
+    return tuple(aijail.build_launcher(policy))
 
 
 def render(event: AgentEvent) -> None:
@@ -220,7 +206,8 @@ async def run_spike(
     *,
     repo: Path,
     prompt: str,
-    model: str,
+    harness: str,
+    model: str | None,
     workspaces_root: Path | None,
     runs_root: Path,
     prices: PriceTable,
@@ -236,6 +223,7 @@ async def run_spike(
     node = await workspace.create_node(NODE_ID)
     print(f"  {workspace.integration_branch}\n  {node.path}")
 
+    adapter = create_adapter(harness)
     policy = aijail.default_policy()
     spec = RunSpec(
         run_id=run_id,
@@ -247,9 +235,8 @@ async def run_spike(
     )
 
     _rule("sandbox")
-    print(_c("  " + " ".join(claude_code.build_argv(spec)), DIM))
+    print(_c("  " + " ".join(adapter.build_argv(spec)), DIM))
 
-    adapter = ClaudeCodeAdapter()
     collected: list[AgentEvent] = []
     log_path = events_path(runs_root, run_id)
 
@@ -310,7 +297,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("repo", type=Path, help="target git repository")
     parser.add_argument("prompt", help="what the agent should do")
-    parser.add_argument("--model", default="claude-haiku-4-5")
+    parser.add_argument("--harness", choices=sorted(ADAPTERS), default="codex")
+    parser.add_argument("--model", default=None)
     parser.add_argument("--budget-usd", type=float, default=None)
     parser.add_argument("--workspaces-root", type=Path, default=None)
     parser.add_argument(
@@ -325,6 +313,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             run_spike(
                 repo=args.repo.expanduser().resolve(),
                 prompt=args.prompt,
+                harness=args.harness,
                 model=args.model,
                 workspaces_root=args.workspaces_root,
                 runs_root=args.runs_root,

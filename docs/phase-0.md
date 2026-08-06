@@ -407,24 +407,31 @@ only when the process succeeded, usage reconciled, no permission was refused,
 and the parser saw no unknown lines. A real-git integration test exercises both
 the successful merge and the parser-drift no-merge path.
 
-The argv builders expose one seam for Phase 1: `aijail.build_argv` appends the
-harness preset while the adapter appends its CLI command. The driver currently
-removes the final preset and lets the adapter add the identical `claude` token.
-The two builders need an explicit composition contract before multiple harnesses
-share this path.
+The argv composition seam was closed before adding the second harness:
+`aijail.build_launcher` now returns only the sandbox prefix, and the adapter's
+CLI command is also ai-jail's positional preset. The exact composition is pinned
+for both `claude` and `codex`.
 
-### A10 — pending account capacity
+### A10 — done
 
-On 2026-08-05 the real command created both worktrees, launched Claude Code
-2.1.223 through ai-jail 1.16.0, parsed the structured rate-limit response, wrote
-six events, and reproduced all six from `events.ndjson`. Claude then exited 1
-with `You've hit your session limit`, so there was deliberately no commit or
-merge. This validates the failure path but not Phase 0's success criterion. Run
-the same command after capacity returns, then record the resulting integration
-diff before marking the phase complete.
+The first real attempt created both worktrees and launched Claude Code 2.1.223
+through ai-jail 1.16.0, but the account session limit rejected the request. The
+driver parsed and replayed the failure and correctly refused to merge it.
+
+The acceptance run then used Codex 0.146.0, following the user's decision to
+defer Claude usage. It created `spike-proof.txt` inside the node worktree,
+emitted 13 normalized events, accounted for 24,786 uncached input + 646 output +
+48,128 cache-read + 0 cache-write tokens, reproduced all 13 events from NDJSON,
+committed the one-file diff, and merged it into the session integration branch.
+The resulting file was verified byte-for-byte from the integration commit.
+
+That run also validates invariant 1 in practice: the driver selects the harness
+through the registry and contains no Claude/Codex behavioral branch. A successful
+Claude acceptance run remains useful compatibility evidence, but it no longer
+blocks the phase.
 
 ## Explicitly out of scope
 
 FastAPI, WebSocket, SQLite, Alembic, the planner, the DAG, concurrency, the
-frontend, PTY / Channel B, Codex, and OpenCode. Phase 0 runs one node,
+frontend, PTY / Channel B, and OpenCode. Phase 0 runs one node,
 synchronously, from a terminal.

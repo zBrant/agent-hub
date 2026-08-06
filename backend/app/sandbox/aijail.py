@@ -161,6 +161,19 @@ def build_argv(
             f"known presets: {sorted(AIJAIL_PRESETS)}"
         )
 
+    argv = build_launcher(policy)
+    argv.append(harness)
+    argv += harness_args
+    return argv
+
+
+def build_launcher(policy: SandboxPolicy) -> list[str]:
+    """Return the sandbox prefix before ai-jail's positional harness preset.
+
+    A harness adapter appends its own CLI command to this prefix, and that
+    command simultaneously becomes ai-jail's preset. Keeping this composition
+    explicit avoids duplicating ``claude``/``codex`` between two argv builders.
+    """
     argv = [
         AIJAIL_BIN,
         "--clean",
@@ -175,6 +188,4 @@ def build_argv(
     argv.append("--gpu" if policy.gpu else "--no-gpu")
     if not policy.pty:
         argv.append("--exec")
-    argv.append(harness)
-    argv += harness_args
     return argv

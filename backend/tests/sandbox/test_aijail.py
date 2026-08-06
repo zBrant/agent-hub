@@ -16,6 +16,7 @@ from app.sandbox.aijail import (
     SandboxPolicy,
     SandboxPolicyError,
     build_argv,
+    build_launcher,
     default_policy,
 )
 
@@ -71,6 +72,14 @@ CHANNEL_A_ARGS = [
 def test_default_policy_argv_is_exact() -> None:
     argv = build_argv(default_policy(FAKE_HOME), "claude", CHANNEL_A_ARGS)
     assert argv == EXPECTED_DEFAULT_ARGV
+
+
+def test_launcher_composes_with_an_adapter_command() -> None:
+    launcher = build_launcher(default_policy(FAKE_HOME))
+    assert launcher[-1] == "--exec"
+    assert [*launcher, "codex", "exec", "--json"] == build_argv(
+        default_policy(FAKE_HOME), "codex", ["exec", "--json"]
+    )
 
 
 def test_default_policy_covers_the_mandatory_secrets() -> None:

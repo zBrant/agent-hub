@@ -822,8 +822,11 @@ class ClaudeCodeAdapter:
         # information disappear at the adapter boundary.
         self.stats = ParseStats()
 
+    def build_argv(self, spec: RunSpec) -> list[str]:
+        return build_argv(spec)
+
     async def start(self, spec: RunSpec) -> RunHandle:
-        argv = build_argv(spec)
+        argv = self.build_argv(spec)
         process = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
@@ -841,6 +844,8 @@ class ClaudeCodeAdapter:
             argv=tuple(argv),
             process=process,
             started_ms=now_ms(),
+            model=spec.model,
+            cwd=spec.cwd,
         )
         log.info(
             "harness.started",

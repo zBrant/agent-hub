@@ -1,0 +1,48 @@
+{
+  "stats": {
+    "lines": 4,
+    "events": 4,
+    "ignored": {},
+    "unknown": {},
+    "malformed": 0,
+    "zero_usage_turns": 0,
+    "usage_unreconciled_turns": 0
+  },
+  "events": [
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "run_started",
+      "harness": "codex",
+      "model": "gpt-5.6-sol",
+      "cwd": "/tmp/repo",
+      "pid": null,
+      "session_id": "019fd570-995a-7882-981c-3394f575983f",
+      "harness_version": "0.146.0"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 1,
+      "model": "gpt-5.6-sol",
+      "session_id": "019fd570-995a-7882-981c-3394f575983f"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "assistant_text",
+      "text": "I’m starting the 120-second wait now and will confirm when it finishes."
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "tool_call",
+      "call_id": "item_1",
+      "tool": "shell",
+      "input": {
+        "command": "/bin/zsh -lc 'sleep 120'"
+      }
+    }
+  ]
+}

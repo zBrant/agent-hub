@@ -11,7 +11,8 @@ agenthub.db-shm
 runs/
 workspaces/
 *.ndjson
-!backend/tests/fixtures/**/*.ndjson    # recorded harness fixtures ARE committed
+# Recorded harness fixtures are committed.
+!backend/tests/fixtures/**/*.ndjson
 
 # ---------------------------------------------------------------------------
 # Secrets

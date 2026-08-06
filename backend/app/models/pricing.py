@@ -114,6 +114,11 @@ class ModelPrice:
 
     input: float
     output: float
+    # Provider-specific cache economics. Claude's TTL-aware events use the
+    # global 5m/1h multipliers below; models without a TTL split may override
+    # the conservative global fallback here (for example OpenAI at 1.25x).
+    cache_read_multiplier: float | None = None
+    cache_write_multiplier: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +145,16 @@ class PriceTable:
                 models[normalize_model_id(str(model_id))] = ModelPrice(
                     input=float(prices["input"]),
                     output=float(prices["output"]),
+                    cache_read_multiplier=(
+                        float(prices["cache_read_multiplier"])
+                        if "cache_read_multiplier" in prices
+                        else None
+                    ),
+                    cache_write_multiplier=(
+                        float(prices["cache_write_multiplier"])
+                        if "cache_write_multiplier" in prices
+                        else None
+                    ),
                 )
             except (KeyError, TypeError, ValueError) as exc:
                 raise PricingError(f"bad price entry for {model_id!r}: {exc}") from exc
@@ -177,16 +192,31 @@ class PriceTable:
         if tiered:
             write_5m = counts.cache_write_5m_tokens
             write_1h = counts.cache_write_1h_tokens
+            cache_write_cost = (
+                write_5m * per_token_in * self.cache_write_multiplier_5m
+                + write_1h * per_token_in * self.cache_write_multiplier_1h
+            )
         else:
-            write_5m = 0
-            write_1h = counts.cache_write_tokens
+            write_multiplier = (
+                price.cache_write_multiplier
+                if price.cache_write_multiplier is not None
+                else self.cache_write_multiplier_1h
+            )
+            cache_write_cost = (
+                counts.cache_write_tokens * per_token_in * write_multiplier
+            )
+
+        read_multiplier = (
+            price.cache_read_multiplier
+            if price.cache_read_multiplier is not None
+            else self.cache_read_multiplier
+        )
 
         return (
             counts.input_tokens * per_token_in
             + counts.output_tokens * per_token_out
-            + counts.cache_read_tokens * per_token_in * self.cache_read_multiplier
-            + write_5m * per_token_in * self.cache_write_multiplier_5m
-            + write_1h * per_token_in * self.cache_write_multiplier_1h
+            + counts.cache_read_tokens * per_token_in * read_multiplier
+            + cache_write_cost
         )
 
 

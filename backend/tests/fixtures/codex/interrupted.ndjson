@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"019fd570-995a-7882-981c-3394f575983f"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’m starting the 120-second wait now and will confirm when it finishes."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc 'sleep 120'","aggregated_output":"","exit_code":null,"status":"in_progress"}}

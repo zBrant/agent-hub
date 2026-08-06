@@ -74,8 +74,9 @@ to run on your own machine.
 
 ## Installation
 
-> Not installable yet — the Phase 0 backend spike is under validation and there
-> is no application entry point or UI yet. See [`docs/roadmap.md`](docs/roadmap.md).
+> Not installable yet — the Phase 0 backend spike is complete and the Phase 1
+> application entry point and UI are now being built. See
+> [`docs/roadmap.md`](docs/roadmap.md).
 
 ### Requirements
 

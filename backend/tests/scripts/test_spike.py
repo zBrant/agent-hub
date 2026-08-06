@@ -70,6 +70,9 @@ class FakeAdapter:
         )
         return object()
 
+    def build_argv(self, _spec: RunSpec) -> list[str]:
+        return ["fake", "exec", "-"]
+
     async def events(self, _handle: object) -> AsyncIterator[AgentEvent]:
         assert self.spec is not None
         yield Usage(
@@ -107,8 +110,8 @@ async def test_driver_merges_only_a_fully_trusted_run(
     monkeypatch.setattr(spike, "new_run_id", lambda: RUN_ID)
     monkeypatch.setattr(
         spike,
-        "ClaudeCodeAdapter",
-        lambda: FakeAdapter(parser_drift=parser_drift),
+        "create_adapter",
+        lambda _name: FakeAdapter(parser_drift=parser_drift),
     )
 
     workspaces = tmp_path / "workspaces"
@@ -116,6 +119,7 @@ async def test_driver_merges_only_a_fully_trusted_run(
     result = await spike.run_spike(
         repo=repo,
         prompt="write agent.txt",
+        harness="codex",
         model="claude-haiku-4-5",
         workspaces_root=workspaces,
         runs_root=runs,

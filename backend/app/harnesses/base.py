@@ -73,6 +73,9 @@ class RunHandle:
     argv: tuple[str, ...]
     process: asyncio.subprocess.Process
     started_ms: int
+    model: str | None = None
+    cwd: Path | None = None
+    interrupted: bool = False
     stderr_tail: deque[str] = field(
         default_factory=lambda: deque(maxlen=STDERR_TAIL_LINES)
     )
@@ -125,6 +128,8 @@ class BaseHarnessAdapter(Protocol):
     name: str
     supported_models: list[str]
     stats: ParseStats
+
+    def build_argv(self, spec: RunSpec) -> list[str]: ...
 
     async def start(self, spec: RunSpec) -> RunHandle: ...
 

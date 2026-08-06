@@ -81,11 +81,12 @@ Before calling anything done: `ruff check`, `mypy app`, `pytest`, and
 
 ## Project state
 
-Current phase: **Phase 0 — vertical spike** (see `design.md` §10). Activities
-A1–A9 are implemented and pass the local gates. A10 still needs one successful
-real Claude Code run; the latest attempt reached the sandboxed harness and was
-rejected by the account's session limit. Do not jump ahead to dashboards or code
-search before that end-to-end run is recorded.
+Current phase: **Phase 1 — single-node orchestrator** (see `design.md` §10 and
+`docs/phase-1.md`). Phase 0 passed end to end with Codex: sandbox, structured
+events, four-field usage, NDJSON replay, commit, and integration merge. Claude
+Code's successful acceptance run is deferred while that account is not in use;
+its failure path remains covered. Do not jump ahead to the graph, dashboards, or
+code search before the Phase 1 acceptance path stands up.
 
 ## Language
 

@@ -1,0 +1,7 @@
+{"type":"thread.started","thread_id":"019fd517-f618-7c12-879b-dc3aa6fef58c"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"I’ll run a read-only shell command against that exact filename and report its failure as-is."}}
+{"type":"item.started","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,120p' does-not-exist.txt\"","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"/bin/zsh -lc \"sed -n '1,120p' does-not-exist.txt\"","aggregated_output":"sed: does-not-exist.txt: No such file or directory\n","exit_code":1,"status":"failed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"agent_message","text":"Command failed with exit code 1:\n\n```text\nsed: does-not-exist.txt: No such file or directory\n```\n\nThe file was not created or recovered."}}
+{"type":"turn.completed","usage":{"input_tokens":27791,"cached_input_tokens":24064,"cache_write_input_tokens":0,"output_tokens":138,"reasoning_output_tokens":0}}

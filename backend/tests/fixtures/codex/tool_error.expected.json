@@ -1,0 +1,88 @@
+{
+  "stats": {
+    "lines": 7,
+    "events": 8,
+    "ignored": {},
+    "unknown": {},
+    "malformed": 0,
+    "zero_usage_turns": 0,
+    "usage_unreconciled_turns": 0
+  },
+  "events": [
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "run_started",
+      "harness": "codex",
+      "model": "gpt-5.6-sol",
+      "cwd": "/tmp/repo",
+      "pid": null,
+      "session_id": "019fd517-f618-7c12-879b-dc3aa6fef58c",
+      "harness_version": "0.146.0"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 1,
+      "model": "gpt-5.6-sol",
+      "session_id": "019fd517-f618-7c12-879b-dc3aa6fef58c"
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "assistant_text",
+      "text": "I’ll run a read-only shell command against that exact filename and report its failure as-is."
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "tool_call",
+      "call_id": "item_1",
+      "tool": "shell",
+      "input": {
+        "command": "/bin/zsh -lc \"sed -n '1,120p' does-not-exist.txt\""
+      }
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "tool_result",
+      "call_id": "item_1",
+      "ok": false,
+      "preview": "sed: does-not-exist.txt: No such file or directory\n",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "assistant_text",
+      "text": "Command failed with exit code 1:\n\n```text\nsed: does-not-exist.txt: No such file or directory\n```\n\nThe file was not created or recovered."
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "gpt-5.6-sol",
+      "source": "reported",
+      "input_tokens": 3727,
+      "output_tokens": 138,
+      "cache_read_tokens": 24064,
+      "cache_write_tokens": 0,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 0
+    },
+    {
+      "run_id": "run_01JCODEX00000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 1,
+      "status": "success",
+      "summary": "Command failed with exit code 1:\n\n```text\nsed: does-not-exist.txt: No such file or directory\n```\n\nThe file was not created or recovered.",
+      "permission_denials": [],
+      "errors": [],
+      "session_id": "019fd517-f618-7c12-879b-dc3aa6fef58c",
+      "duration_ms": null
+    }
+  ]
+}

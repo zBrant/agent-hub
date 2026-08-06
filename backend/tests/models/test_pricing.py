@@ -147,6 +147,14 @@ def test_tier_choice_changes_the_bill(table: PriceTable) -> None:
     assert dear == pytest.approx(cheap * (2.0 / 1.25))
 
 
+def test_model_specific_untiered_cache_write_multiplier(table: PriceTable) -> None:
+    """OpenAI cache writes have no TTL split and are billed at 1.25x input."""
+    write = table.cost_usd("gpt-5.6-sol", TokenCounts(cache_write_tokens=1_000_000))
+    plain = table.cost_usd("gpt-5.6-sol", TokenCounts(input_tokens=1_000_000))
+    assert write is not None and plain is not None
+    assert write == pytest.approx(plain * 1.25)
+
+
 def test_summing_only_input_tokens_would_be_wrong_by_orders_of_magnitude(
     table: PriceTable,
 ) -> None:
@@ -173,6 +181,7 @@ def test_summing_only_input_tokens_would_be_wrong_by_orders_of_magnitude(
 
 def test_shipped_pricing_yaml_loads(table: PriceTable) -> None:
     assert {"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"} <= set(table.models)
+    assert {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"} <= set(table.models)
 
 
 def test_malformed_table_raises() -> None:
