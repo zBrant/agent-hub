@@ -70,6 +70,11 @@ BinaryPayload = Annotated[
 # an agent failing is data, not an exception.
 type RunStatus = Literal["success", "failed", "interrupted", "budget_exceeded"]
 
+# Where a Usage's numbers came from. "reported" = the harness stated them for
+# this turn; "reconstructed" = the adapter derived them from another accounting
+# the harness publishes, because the direct one was missing or zeroed.
+type UsageSource = Literal["reported", "reconstructed"]
+
 
 class _Event(BaseModel):
     """Fields every event carries.
@@ -189,10 +194,18 @@ class Usage(_Event):
     ``system/init``, ``claude-haiku-4-5-20251001`` on ``assistant`` lines) and
     deciding which one prices correctly belongs to the pricing table, not to a
     parser that would have to throw one of them away.
+
+    ``source`` says whether the harness *reported* these numbers or the adapter
+    *reconstructed* them from a second, cumulative accounting the harness also
+    publishes. A reconstruction is exact where it has been validated and is
+    still a derivation — a dashboard should be able to say so, and a
+    reconciliation bug should be attributable. It stays deliberately generic:
+    which field it was rebuilt from is the adapter's business (invariant 1).
     """
 
     type: Literal["usage"] = "usage"
     model: str
+    source: UsageSource = "reported"
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cache_read_tokens: int = Field(default=0, ge=0)

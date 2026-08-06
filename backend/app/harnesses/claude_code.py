@@ -79,11 +79,30 @@ The three traps this parser exists to avoid
    One capture contradicts the convenience of trap 2's fix:
    ``budget_error.ndjson`` reports ``result.usage`` **all zeros** while
    ``modelUsage`` shows 10 in / 202 out / 5472 cache-read / 3975 cache-write and
-   ``total_cost_usd`` 0.0101612. A turn killed by ``--max-budget-usd`` therefore
-   contributes a zero ``Usage``. The parser emits it anyway (the harness said
-   zero; inventing a number is worse) but counts it in
-   ``ParseStats.zero_usage_turns`` and logs ``harness.zero_usage`` so it cannot
-   pass unnoticed.
+   ``total_cost_usd`` 0.0101612. A turn killed by ``--max-budget-usd`` would
+   otherwise contribute nothing at all to the dashboard.
+
+   ``modelUsage`` recovers it, and not as a heuristic: excluding the dated
+   side-channel key (:func:`cumulative_conversation_usage`) and taking the
+   **delta against the previous ``result`` line** is an independent derivation
+   of ``result.usage``. It reproduces all four fields **exactly** on all eight
+   turns across the seven fixtures, including the second turn of
+   ``multi_turn.ndjson`` where the cumulative counter has to be differenced.
+   ``test_model_usage_delta_reproduces_result_usage`` pins that, and is what
+   will catch a future release changing ``modelUsage`` semantics.
+
+   So: ``result.usage`` stays primary, and **only when all four of its fields
+   are zero** does the delta take over. Such a ``Usage`` is marked
+   ``source="reconstructed"`` — a derived number must never be
+   indistinguishable from a measured one — counted in
+   ``ParseStats.zero_usage_turns``, and logged as ``harness.zero_usage``. The
+   recovery is loud, not silent.
+
+   The delta's premise is that the counter only grows. If it does not (a
+   resumed session carrying prior usage, or reordered lines), the parser emits
+   **no** ``Usage`` for that turn and counts
+   ``ParseStats.usage_unreconciled_turns``: a missing number is recoverable
+   from the NDJSON later, a wrong one poisons an append-only aggregate.
 
 A permission-blocked run looks exactly like a successful one
 ------------------------------------------------------------
@@ -117,9 +136,10 @@ import asyncio
 import contextlib
 import json
 import os
+import re
 import signal
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -234,6 +254,50 @@ PREVIEW_CHARS = 400
 # line-delimited JSON, so one oversized line is one lost event.
 STREAM_LIMIT = 8 * 1024 * 1024
 
+# A dated model id ("claude-haiku-4-5-20251001") keying `result.modelUsage`
+# marks the side-channel entry, not the conversation. See
+# :func:`cumulative_conversation_usage`.
+SIDE_CHANNEL_MODEL_KEY = re.compile(r"-\d{8}$")
+
+
+@dataclass(frozen=True)
+class TokenTotals:
+    """The four billable fields, as a value you can subtract."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+
+    def __sub__(self, other: "TokenTotals") -> "TokenTotals":
+        return TokenTotals(
+            input_tokens=self.input_tokens - other.input_tokens,
+            output_tokens=self.output_tokens - other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens - other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens - other.cache_write_tokens,
+        )
+
+    @property
+    def total(self) -> int:
+        return (
+            self.input_tokens
+            + self.output_tokens
+            + self.cache_read_tokens
+            + self.cache_write_tokens
+        )
+
+    @property
+    def has_negative(self) -> bool:
+        return (
+            min(
+                self.input_tokens,
+                self.output_tokens,
+                self.cache_read_tokens,
+                self.cache_write_tokens,
+            )
+            < 0
+        )
+
 
 @dataclass
 class _StreamState:
@@ -249,6 +313,8 @@ class _StreamState:
     dated_model: str | None = None
     last_status: RunStatus | None = None
     last_summary: str | None = None
+    # Session-cumulative conversation tokens as of the previous `result` line.
+    cumulative_usage: TokenTotals = field(default_factory=TokenTotals)
 
 
 def cli_args(spec: RunSpec) -> list[str]:
@@ -492,7 +558,26 @@ def _on_result(
         cache_write_5m_tokens=_as_int(tiers.get("ephemeral_5m_input_tokens")),
         cache_write_1h_tokens=_as_int(tiers.get("ephemeral_1h_input_tokens")),
     )
-    if event.total_tokens == 0 and _model_usage_total(payload) > 0:
+    # Always advance the cumulative baseline, even on turns that need no
+    # recovery: the delta for turn N+1 is only meaningful if turn N updated it.
+    delta = _advance_model_usage(payload, state)
+
+    if event.total_tokens > 0:
+        yield event
+    elif delta is None:
+        # The cumulative counter went backwards. Emitting the raw zero would
+        # under-report and emitting the absolute cumulative figure would
+        # over-report by the whole session, so emit neither.
+        stats.zero_usage_turns += 1
+        stats.usage_unreconciled_turns += 1
+        log.warning(
+            "harness.usage_unreconciled",
+            harness=HARNESS_NAME,
+            run_id=state.run_id,
+            turn=state.turn,
+            subtype=payload.get("subtype"),
+        )
+    elif delta.total > 0:
         stats.zero_usage_turns += 1
         log.warning(
             "harness.zero_usage",
@@ -500,9 +585,25 @@ def _on_result(
             run_id=state.run_id,
             turn=state.turn,
             subtype=payload.get("subtype"),
-            model_usage_tokens=_model_usage_total(payload),
+            recovered_tokens=delta.total,
         )
-    yield event
+        yield Usage(
+            run_id=state.run_id,
+            ts=ts,
+            model=event.model,
+            source="reconstructed",
+            input_tokens=delta.input_tokens,
+            output_tokens=delta.output_tokens,
+            cache_read_tokens=delta.cache_read_tokens,
+            cache_write_tokens=delta.cache_write_tokens,
+            # modelUsage carries no TTL breakdown, so both tier fields stay 0.
+            # Not a recoverable loss: `app/models/pricing.py` prices an untiered
+            # cache write at the 1h rate, which is the conservative direction,
+            # and every capture so far is 100% 1h anyway.
+        )
+    else:
+        # Zero reported and zero derived: the turn really consumed nothing.
+        yield event
 
     status = _turn_status(payload)
     state.last_status = status
@@ -619,27 +720,60 @@ def _denials(payload: dict[str, Any]) -> tuple[PermissionDenial, ...]:
     return tuple(out)
 
 
-def _model_usage_total(payload: dict[str, Any]) -> int:
-    """Tokens in ``result.modelUsage``, used only as a sanity check.
+def cumulative_conversation_usage(payload: dict[str, Any]) -> TokenTotals:
+    """Session-cumulative tokens from ``result.modelUsage``, side channel excluded.
 
-    Cumulative across the session and includes a side-channel model that no
-    event ever reports, so it must never feed a ``Usage``. It is enough to tell
-    "this turn really did consume tokens" when ``result.usage`` says zero.
+    ``modelUsage`` always has two keys for one model, and only one of them is
+    the conversation::
+
+        "claude-haiku-4-5-20251001": {inputTokens: 532, outputTokens: 13, ...}
+        "claude-haiku-4-5":          {inputTokens: 21,  outputTokens: 254, ...}
+
+    The dated key is a side channel — no ``assistant`` line ever reports it,
+    roughly 530 input tokens per run — and the undated alias is the conversation
+    and matches ``result.usage`` exactly. :data:`SIDE_CHANNEL_MODEL_KEY` is how
+    they are told apart.
+
+    Note this is the opposite convention from :class:`Usage`'s ``model`` field,
+    which prefers the dated spelling because that is what the API billed. The
+    two spellings index different things here, which is exactly why nothing
+    normalizes them away in the parser.
     """
     model_usage = payload.get("modelUsage")
     if not isinstance(model_usage, dict):
-        return 0
-    total = 0
-    for entry in model_usage.values():
-        if not isinstance(entry, dict):
+        return TokenTotals()
+    total = TokenTotals()
+    for key, entry in model_usage.items():
+        if not isinstance(entry, dict) or SIDE_CHANNEL_MODEL_KEY.search(str(key)):
             continue
-        total += (
-            _as_int(entry.get("inputTokens"))
-            + _as_int(entry.get("outputTokens"))
-            + _as_int(entry.get("cacheReadInputTokens"))
-            + _as_int(entry.get("cacheCreationInputTokens"))
+        total = TokenTotals(
+            input_tokens=total.input_tokens + _as_int(entry.get("inputTokens")),
+            output_tokens=total.output_tokens + _as_int(entry.get("outputTokens")),
+            cache_read_tokens=(
+                total.cache_read_tokens + _as_int(entry.get("cacheReadInputTokens"))
+            ),
+            cache_write_tokens=(
+                total.cache_write_tokens
+                + _as_int(entry.get("cacheCreationInputTokens"))
+            ),
         )
     return total
+
+
+def _advance_model_usage(
+    payload: dict[str, Any], state: _StreamState
+) -> TokenTotals | None:
+    """This turn's tokens derived from the cumulative counter, or None.
+
+    ``None`` means the delta had a negative component. That can only happen if
+    the session resumed with prior usage already on the counter, or if a
+    ``result`` line arrived out of order — in either case the derivation's
+    premise is broken and the caller must not use the number.
+    """
+    current = cumulative_conversation_usage(payload)
+    delta = current - state.cumulative_usage
+    state.cumulative_usage = current
+    return None if delta.has_negative else delta
 
 
 def _preview(content: object) -> str:
@@ -682,6 +816,11 @@ class ClaudeCodeAdapter:
     def __init__(self) -> None:
         self.name = HARNESS_NAME
         self.supported_models = list(SUPPORTED_MODELS)
+        # Stats belong to the most recent stream consumed by this adapter.
+        # The orchestrator needs them after iteration to surface parser drift
+        # and accounting gaps; keeping them local to events() would make that
+        # information disappear at the adapter boundary.
+        self.stats = ParseStats()
 
     async def start(self, spec: RunSpec) -> RunHandle:
         argv = build_argv(spec)
@@ -761,7 +900,8 @@ class ClaudeCodeAdapter:
                 f"run {handle.run_id}: no stdout pipe; argv={list(handle.argv)}"
             )
         state = _StreamState(run_id=handle.run_id)
-        stats = ParseStats()
+        self.stats = ParseStats()
+        stats = self.stats
         try:
             async for raw in stdout:
                 for event in _translate_line(

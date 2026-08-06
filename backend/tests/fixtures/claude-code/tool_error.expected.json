@@ -8,7 +8,8 @@
     },
     "unknown": {},
     "malformed": 0,
-    "zero_usage_turns": 0
+    "zero_usage_turns": 0,
+    "usage_unreconciled_turns": 0
   },
   "events": [
     {
@@ -86,6 +87,7 @@
       "ts": 1800000000000,
       "type": "usage",
       "model": "claude-haiku-4-5-20251001",
+      "source": "reported",
       "input_tokens": 17,
       "output_tokens": 261,
       "cache_read_tokens": 12401,

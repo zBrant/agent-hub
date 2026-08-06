@@ -100,8 +100,12 @@ class ParseStats:
     ignored: dict[str, int] = field(default_factory=dict)
     unknown: dict[str, int] = field(default_factory=dict)
     malformed: int = 0
-    # result.usage reported all zeros while the harness reported real spend.
+    # The harness's direct per-turn usage was zero and had to be reconstructed
+    # from a second accounting it publishes.
     zero_usage_turns: int = 0
+    # ...and the reconstruction itself was not trustworthy, so no Usage was
+    # emitted for that turn. Non-zero means tokens are missing from the totals.
+    usage_unreconciled_turns: int = 0
 
     @property
     def unhandled(self) -> int:
@@ -120,6 +124,7 @@ class BaseHarnessAdapter(Protocol):
 
     name: str
     supported_models: list[str]
+    stats: ParseStats
 
     async def start(self, spec: RunSpec) -> RunHandle: ...
 

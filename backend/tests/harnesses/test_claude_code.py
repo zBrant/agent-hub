@@ -34,7 +34,9 @@ from app.harnesses.claude_code import (
     TESTED_CLI_VERSION,
     TESTED_CLI_VERSIONS,
     ClaudeCodeAdapter,
+    TokenTotals,
     build_argv,
+    cumulative_conversation_usage,
     parse_stream,
 )
 from app.harnesses.events import (
@@ -83,6 +85,7 @@ def _snapshot(events: list[AgentEvent], stats: ParseStats) -> dict[str, Any]:
             "unknown": dict(sorted(stats.unknown.items())),
             "malformed": stats.malformed,
             "zero_usage_turns": stats.zero_usage_turns,
+            "usage_unreconciled_turns": stats.usage_unreconciled_turns,
         },
         "events": [event.model_dump(mode="json") for event in events],
     }
@@ -137,6 +140,11 @@ def test_cache_write_tiers_reconcile(name: str) -> None:
     usages = [event for event in _load(name)[0] if isinstance(event, Usage)]
     assert usages
     for usage in usages:
+        if usage.source == "reconstructed":
+            # modelUsage publishes no TTL breakdown; pricing falls back to 1h.
+            assert usage.cache_write_5m_tokens == 0
+            assert usage.cache_write_1h_tokens == 0
+            continue
         split = usage.cache_write_5m_tokens + usage.cache_write_1h_tokens
         assert split == usage.cache_write_tokens
         # Every A3 capture is 100% on the expensive 1h tier — the note that
@@ -161,6 +169,7 @@ def test_simple_edit_usage_defeats_both_token_traps() -> None:
     assert usage.cache_write_tokens == 6513
     # The dated spelling, not init's alias: two ids for one model in one file.
     assert usage.model == "claude-haiku-4-5-20251001"
+    assert usage.source == "reported"
 
 
 def test_no_usage_is_derived_from_assistant_lines() -> None:
@@ -222,21 +231,152 @@ def test_budget_exhaustion_is_an_event_not_an_exception() -> None:
     assert turn.errors == ("Reached maximum budget ($0.001)",)
 
 
-def test_budget_exhaustion_zeroes_result_usage_and_says_so() -> None:
+def test_budget_exhaustion_zeroes_result_usage_and_is_reconstructed() -> None:
     """`result.usage` is all zeros here while modelUsage reports real tokens.
 
-    A contradiction of the "result.usage is always authoritative" rule. The
-    parser reports the zero rather than inventing a number, but counts the turn
-    so the discrepancy is visible instead of silently deflating the dashboard.
+    The only fixture where the primary source fails. The delta rule recovers
+    the exact figures, the event is marked as reconstructed, and the recovery
+    is counted so it cannot pass for a measurement.
     """
     events, stats = _load("budget_error")
     (usage,) = [e for e in events if isinstance(e, Usage)]
-    assert usage.total_tokens == 0
+    assert usage.source == "reconstructed"
+    assert usage.input_tokens == 10
+    assert usage.output_tokens == 202
+    assert usage.cache_read_tokens == 5472
+    assert usage.cache_write_tokens == 3975
+    # modelUsage has no TTL breakdown, so the tier split is unavailable.
+    assert usage.cache_write_5m_tokens == 0
+    assert usage.cache_write_1h_tokens == 0
     assert stats.zero_usage_turns == 1
-    # Every other fixture reconciles.
+    assert stats.usage_unreconciled_turns == 0
+
+    # Every other fixture reports its own usage and needs no recovery.
     for name in FIXTURE_NAMES:
-        if name != "budget_error":
-            assert _load(name)[1].zero_usage_turns == 0, name
+        if name == "budget_error":
+            continue
+        other_events, other_stats = _load(name)
+        assert other_stats.zero_usage_turns == 0, name
+        assert other_stats.usage_unreconciled_turns == 0, name
+        assert all(
+            e.source == "reported" for e in other_events if isinstance(e, Usage)
+        ), name
+
+
+@pytest.mark.parametrize("name", FIXTURE_NAMES)
+def test_model_usage_delta_reproduces_result_usage(name: str) -> None:
+    """The rule behind the recovery, checked against the primary source.
+
+    Undated `modelUsage` entries, cumulative, differenced turn over turn, equal
+    `result.usage` on all four fields — exactly, on every turn that reports one.
+    This is the test that fails if a future release changes `modelUsage`
+    semantics, at which point the recovery in `_on_result` is no longer sound.
+    """
+    previous = TokenTotals()
+    checked = 0
+    for line in (FIXTURES / f"{name}.ndjson").read_text().splitlines():
+        payload = json.loads(line)
+        if payload.get("type") != "result":
+            continue
+        current = cumulative_conversation_usage(payload)
+        delta = current - previous
+        previous = current
+        assert not delta.has_negative, f"{name}: cumulative counter went backwards"
+
+        reported = payload.get("usage") or {}
+        expected = TokenTotals(
+            input_tokens=reported.get("input_tokens", 0),
+            output_tokens=reported.get("output_tokens", 0),
+            cache_read_tokens=reported.get("cache_read_input_tokens", 0),
+            cache_write_tokens=reported.get("cache_creation_input_tokens", 0),
+        )
+        if expected.total == 0:
+            # budget_error: nothing to compare against; that is the whole point.
+            assert name == "budget_error"
+            assert delta.total > 0
+            continue
+        assert delta == expected, f"{name}: delta {delta} != result.usage {expected}"
+        checked += 1
+    assert checked or name == "budget_error"
+
+
+def test_the_side_channel_model_is_excluded_from_the_delta() -> None:
+    """Including the dated key would inflate every recovered turn by ~530 in."""
+    payload = json.loads(
+        next(
+            line
+            for line in (FIXTURES / "simple_edit.ndjson").read_text().splitlines()
+            if '"type":"result"' in line
+        )
+    )
+    assert set(payload["modelUsage"]) == {
+        "claude-haiku-4-5",
+        "claude-haiku-4-5-20251001",
+    }
+    totals = cumulative_conversation_usage(payload)
+    assert totals == TokenTotals(21, 254, 21737, 6513)
+    assert payload["modelUsage"]["claude-haiku-4-5-20251001"]["inputTokens"] == 532
+
+
+def test_a_backwards_cumulative_counter_emits_no_usage_at_all() -> None:
+    """A resumed session or reordered lines break the delta's premise.
+
+    Emitting the raw zero would under-report and emitting the absolute
+    cumulative figure would over-report by an entire session. `usage_event` is
+    append-only (`docs/architecture.md` §4), so a wrong row cannot be corrected
+    later — a missing one can be rebuilt from the NDJSON.
+    """
+
+    def result_line(cumulative: int) -> str:
+        return json.dumps(
+            {
+                "type": "result",
+                "subtype": "success",
+                "usage": {"input_tokens": 0},
+                "modelUsage": {
+                    "claude-haiku-4-5": {
+                        "inputTokens": cumulative,
+                        "outputTokens": 0,
+                        "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0,
+                    }
+                },
+            }
+        )
+
+    stats = ParseStats()
+    events = list(
+        parse_stream(
+            [result_line(500), result_line(100)],
+            run_id=RUN_ID,
+            clock=_clock,
+            stats=stats,
+        )
+    )
+    usages = [e for e in events if isinstance(e, Usage)]
+    assert len(usages) == 1  # the first turn recovered, the second did not
+    assert usages[0].source == "reconstructed"
+    assert usages[0].input_tokens == 500
+    assert stats.zero_usage_turns == 2
+    assert stats.usage_unreconciled_turns == 1
+    # And the turn itself is still reported: a missing Usage is not a lost turn.
+    assert len([e for e in events if isinstance(e, TurnFinished)]) == 2
+
+
+def test_a_turn_that_really_consumed_nothing_stays_reported() -> None:
+    stats = ParseStats()
+    events = list(
+        parse_stream(
+            ['{"type":"result","subtype":"success","usage":{},"modelUsage":{}}'],
+            run_id=RUN_ID,
+            clock=_clock,
+            stats=stats,
+        )
+    )
+    (usage,) = [e for e in events if isinstance(e, Usage)]
+    assert usage.source == "reported"
+    assert usage.total_tokens == 0
+    assert stats.zero_usage_turns == 0
 
 
 def test_interrupt_is_a_status_not_a_crash() -> None:
@@ -357,6 +497,7 @@ def test_supported_models_match_the_pricing_catalog() -> None:
     assert adapter.name == "claude-code"
     assert adapter.supported_models == list(SUPPORTED_MODELS)
     assert "claude-haiku-4-5" in adapter.supported_models
+    assert adapter.stats == ParseStats()
 
 
 async def _replay_process(path: Path, exit_code: int = 0) -> RunHandle:
@@ -384,12 +525,16 @@ async def _replay_process(path: Path, exit_code: int = 0) -> RunHandle:
 
 async def test_adapter_appends_run_finished_from_the_process_exit() -> None:
     handle = await _replay_process(FIXTURES / "simple_edit.ndjson")
-    events = [event async for event in ClaudeCodeAdapter().events(handle)]
+    adapter = ClaudeCodeAdapter()
+    events = [event async for event in adapter.events(handle)]
     assert isinstance(events[-1], RunFinished)
     assert events[-1].exit_code == 0
     assert events[-1].status == "success"
     assert events[-1].summary is not None and events[-1].summary.startswith("Done!")
     assert [e.type for e in events[:-1]] == [e.type for e in _load("simple_edit")[0]]
+    assert adapter.stats.lines == 14
+    assert adapter.stats.events == len(events) - 1
+    assert adapter.stats.unhandled == 0
 
 
 async def test_a_nonzero_exit_after_a_successful_turn_is_a_failure() -> None:
