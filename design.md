@@ -93,19 +93,36 @@ bug, not a configuration choice.
 ```
 ~/.agenthub/workspaces/
   sess_01H.../
-    integration/          → branch agenthub/sess_01H  (integration branch)
+    integration/          → branch agenthub/sess_01H/integration
     node_a/               → worktree, branch agenthub/sess_01H/node_a
     node_b/               → worktree, branch agenthub/sess_01H/node_b
 ```
 
+The integration branch is `agenthub/<sess>/integration`, not `agenthub/<sess>`.
+Git refs are files on disk, so a branch named `agenthub/sess_01H` makes the
+directory `refs/heads/agenthub/sess_01H/` unusable and every node branch under
+it fails to create. `integration` is therefore a reserved node id.
+
 Per-node lifecycle:
 
-1. `git worktree add <path> -b agenthub/<sess>/<node> <base_ref>`
-   where `base_ref` is the merge of the parent nodes' branches (or `integration`).
+1. `git worktree add -b agenthub/<sess>/<node> -- <path> <base_ref>`, where
+   `base_ref` is the first parent's branch, or the integration branch for a root
+   node. **A multi-parent node has no single base ref** — `git worktree add`
+   takes one commit-ish. The remaining parents are merged in inside the fresh
+   worktree, and folding stops at the first conflict, so a node whose parents
+   cannot be combined comes back `blocked` before any agent is launched.
 2. Run the agent inside the worktree, via ai-jail with `--worktree`.
 3. On completion: `git commit` → merge (or rebase) into the integration branch.
 4. A merge conflict becomes the node's `blocked` state, surfaced in the UI for
-   manual resolution or for a resolver agent.
+   manual resolution or for a resolver agent. The merge is **aborted** rather
+   than left in place: a shared integration worktree stuck in `MERGING` would
+   block every other node behind one human. The conflicting paths travel in the
+   result, and resolution is an explicit later operation.
+
+Two behaviors that exit codes do not express, and that any reimplementation will
+get wrong once: `git merge` exits 0 on "Already up to date", and `git commit`
+exits 1 when nothing is staged — indistinguishable from a real failure. Both
+must be decided *before* invoking the command, not parsed out of its output.
 
 This buys, for free: per-node diff, per-node rollback, clean retry, and human
 review before integration. **It is what turns the graph from a pretty picture into

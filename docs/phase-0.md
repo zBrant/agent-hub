@@ -339,6 +339,37 @@ real `--dry-run` output:
 `ai-jail --mask .env claude --mask X` correctly passes the second `--mask` to
 claude. Adding `--` is accepted and byte-identical, so the builder omits it.
 
+### A7 — done
+
+`app/orchestrator/worktree.py`, tested against real temp repos rather than
+mocks — the whole risk of this activity is git behaving differently than
+assumed, and a mock would have confirmed the assumption instead of testing it.
+
+**`design.md` §2.2 has been corrected** rather than worked around:
+
+10. **The documented branch scheme was impossible.** `agenthub/<sess>` as the
+    integration branch and `agenthub/<sess>/<node>` as node branches cannot
+    coexist — git refs are files, so `refs/heads/agenthub/sess1` blocks the
+    creation of the directory `refs/heads/agenthub/sess1/`. Verified:
+    `fatal: cannot lock ref 'refs/heads/agenthub/sess1/node_a'`. The integration
+    branch is now `agenthub/<sess>/integration`, and `integration` is a reserved
+    node id.
+11. **"`base_ref` is the merge of the parent nodes' branches" is not a ref.**
+    `git worktree add` takes one commit-ish. A multi-parent node is created off
+    the first parent and the rest are folded in inside the fresh worktree.
+12. **A conflicted merge is aborted, not left in place.** Leaving the shared
+    integration worktree in `MERGING` would block every other node behind one
+    human.
+
+Behaviors pinned by tests because exit codes hide them: `git merge` exits 0 on
+"Already up to date"; `git commit` exits 1 when nothing is staged, which is
+indistinguishable from a real failure. Both are decided before invoking the
+command. Also macOS-specific: `worktree list --porcelain` prints resolved paths,
+so every comparison must resolve `/var` → `/private/var`.
+
+Agent commits pin `user.name`/`user.email` explicitly. Without that, git falls
+back to a gecos-derived identity and attributes agent work to the human.
+
 ## Explicitly out of scope
 
 FastAPI, WebSocket, SQLite, Alembic, the planner, the DAG, concurrency, the
