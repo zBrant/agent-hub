@@ -1,0 +1,152 @@
+{
+  "stats": {
+    "lines": 20,
+    "events": 15,
+    "ignored": {
+      "control_response": 1,
+      "rate_limit_event": 1,
+      "system/thinking_tokens": 4,
+      "user/text": 1
+    },
+    "unknown": {},
+    "malformed": 0,
+    "zero_usage_turns": 0
+  },
+  "events": [
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "run_started",
+      "harness": "claude-code",
+      "model": "claude-haiku-4-5",
+      "cwd": "/tmp/repo",
+      "pid": null,
+      "session_id": "5f9768e2-edbe-4245-a6d5-67030233d0e1",
+      "harness_version": "2.1.223"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 1,
+      "model": "claude-haiku-4-5",
+      "session_id": "5f9768e2-edbe-4245-a6d5-67030233d0e1"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977994638,
+      "type": "thinking_delta",
+      "text": "The user wants me to run 8 bash commands in sequence, waiting for each to finish, and reporting the results as I go. Let me run them one at a time.\n\nI'll start with the first command: `sleep 2 && echo 1`"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977995005,
+      "type": "assistant_text",
+      "text": "I'll run these commands sequentially for you."
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977995239,
+      "type": "tool_call",
+      "call_id": "toolu_01MybhBURdRPTMc4RKRRp5mK",
+      "tool": "Bash",
+      "input": {
+        "command": "sleep 2 && echo 1",
+        "description": "Sleep 2 seconds then echo 1"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977997312,
+      "type": "tool_result",
+      "call_id": "toolu_01MybhBURdRPTMc4RKRRp5mK",
+      "ok": true,
+      "preview": "1",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977999319,
+      "type": "assistant_text",
+      "text": "**Command 1 complete:** `1`\n\nNow running command 2:"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977999521,
+      "type": "tool_call",
+      "call_id": "toolu_01FxvLJPut3r89WRQ4myfNck",
+      "tool": "Bash",
+      "input": {
+        "command": "sleep 2 && echo 2",
+        "description": "Sleep 2 seconds then echo 2"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785978001545,
+      "type": "tool_result",
+      "call_id": "toolu_01FxvLJPut3r89WRQ4myfNck",
+      "ok": true,
+      "preview": "2",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785978002789,
+      "type": "assistant_text",
+      "text": "**Command 2 complete:** `2`\n\nNow running command 3:"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785978003131,
+      "type": "tool_call",
+      "call_id": "toolu_01NQNCMVyNZfRRb3wEe5bGru",
+      "tool": "Bash",
+      "input": {
+        "command": "sleep 2 && echo 3",
+        "description": "Sleep 2 seconds then echo 3"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785978005149,
+      "type": "tool_result",
+      "call_id": "toolu_01NQNCMVyNZfRRb3wEe5bGru",
+      "ok": true,
+      "preview": "3",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785978006134,
+      "type": "assistant_text",
+      "text": "**Command 3"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 22,
+      "output_tokens": 363,
+      "cache_read_tokens": 21813,
+      "cache_write_tokens": 6631,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 6631
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 1,
+      "status": "interrupted",
+      "summary": null,
+      "permission_denials": [],
+      "errors": [
+        "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"
+      ],
+      "session_id": "5f9768e2-edbe-4245-a6d5-67030233d0e1",
+      "duration_ms": 13370
+    }
+  ]
+}

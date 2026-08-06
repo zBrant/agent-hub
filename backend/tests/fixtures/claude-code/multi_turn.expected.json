@@ -1,0 +1,156 @@
+{
+  "stats": {
+    "lines": 23,
+    "events": 15,
+    "ignored": {
+      "rate_limit_event": 1,
+      "system/thinking_tokens": 10
+    },
+    "unknown": {},
+    "malformed": 0,
+    "zero_usage_turns": 0
+  },
+  "events": [
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "run_started",
+      "harness": "claude-code",
+      "model": "claude-haiku-4-5",
+      "cwd": "/tmp/repo",
+      "pid": null,
+      "session_id": "f10abe4b-858c-478e-940e-7c0a33aa2234",
+      "harness_version": "2.1.222"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 1,
+      "model": "claude-haiku-4-5",
+      "session_id": "f10abe4b-858c-478e-940e-7c0a33aa2234"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977717974,
+      "type": "thinking_delta",
+      "text": "The user wants me to create a file `c.txt` containing exactly the word \"one\". This is straightforward - I should use the Write tool to create this file in the current working directory.\n\nThe current working directory is `/tmp/repo` based on the environment information provided.\n\nI'll write the file with the content \"one\"."
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977718218,
+      "type": "tool_call",
+      "call_id": "toolu_01SP8nqzgpYnTBPdKCYToy3T",
+      "tool": "Write",
+      "input": {
+        "file_path": "/tmp/repo/c.txt",
+        "content": "one"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977718223,
+      "type": "tool_result",
+      "call_id": "toolu_01SP8nqzgpYnTBPdKCYToy3T",
+      "ok": true,
+      "preview": "File created successfully at: /tmp/repo/c.txt (file state is current in your context — no need to Read it back)",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977719303,
+      "type": "assistant_text",
+      "text": "Done! I've created the file `c.txt` containing exactly the word \"one\"."
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 15,
+      "output_tokens": 196,
+      "cache_read_tokens": 12380,
+      "cache_write_tokens": 6385,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 6385
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 1,
+      "status": "success",
+      "summary": "Done! I've created the file `c.txt` containing exactly the word \"one\".",
+      "permission_denials": [],
+      "errors": [],
+      "session_id": "f10abe4b-858c-478e-940e-7c0a33aa2234",
+      "duration_ms": 3926
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 2,
+      "model": "claude-haiku-4-5",
+      "session_id": "f10abe4b-858c-478e-940e-7c0a33aa2234"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977721609,
+      "type": "thinking_delta",
+      "text": "The user wants me to append a second line containing the word \"two\" to the c.txt file. Since I just created the file with \"one\", I need to add a newline and then \"two\".\n\nI should use the Edit tool to append to the file. The file currently contains \"one\", and I need to change it to \"one\\ntwo\"."
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977721998,
+      "type": "tool_call",
+      "call_id": "toolu_01Ae6FgePyGPpZLvG3mMDcip",
+      "tool": "Edit",
+      "input": {
+        "replace_all": false,
+        "file_path": "/tmp/repo/c.txt",
+        "old_string": "one",
+        "new_string": "one\ntwo"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977722002,
+      "type": "tool_result",
+      "call_id": "toolu_01Ae6FgePyGPpZLvG3mMDcip",
+      "ok": true,
+      "preview": "The file /tmp/repo/c.txt has been updated successfully. (file state is current in your context — no need to Read it back)",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977723151,
+      "type": "assistant_text",
+      "text": "Done! I've appended a second line containing the word \"two\" to c.txt. The file now contains:\n```\none\ntwo\n```"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 15,
+      "output_tokens": 230,
+      "cache_read_tokens": 18765,
+      "cache_write_tokens": 396,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 396
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 2,
+      "status": "success",
+      "summary": "Done! I've appended a second line containing the word \"two\" to c.txt. The file now contains:\n```\none\ntwo\n```",
+      "permission_denials": [],
+      "errors": [],
+      "session_id": "f10abe4b-858c-478e-940e-7c0a33aa2234",
+      "duration_ms": 3837
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "stats": {
+    "lines": 14,
+    "events": 11,
+    "ignored": {
+      "rate_limit_event": 1,
+      "system/thinking_tokens": 4
+    },
+    "unknown": {},
+    "malformed": 0,
+    "zero_usage_turns": 0
+  },
+  "events": [
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "run_started",
+      "harness": "claude-code",
+      "model": "claude-haiku-4-5",
+      "cwd": "/tmp/repo",
+      "pid": null,
+      "session_id": "b0f9cbf4-51ca-4968-9092-f9d617cace2e",
+      "harness_version": "2.1.222"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 1,
+      "model": "claude-haiku-4-5",
+      "session_id": "b0f9cbf4-51ca-4968-9092-f9d617cace2e"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977461913,
+      "type": "thinking_delta",
+      "text": "The user wants me to:\n1. Read a.txt\n2. Create b.txt with the word \"world\"\n\nLet me first read a.txt to see what's in it, then I'll create b.txt."
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977462273,
+      "type": "tool_call",
+      "call_id": "toolu_01JemKCPScgoYQWwMGWYiqHB",
+      "tool": "Read",
+      "input": {
+        "file_path": "/tmp/repo/a.txt"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977462288,
+      "type": "tool_result",
+      "call_id": "toolu_01JemKCPScgoYQWwMGWYiqHB",
+      "ok": true,
+      "preview": "1\thello\n2\t",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977464108,
+      "type": "assistant_text",
+      "text": "Now I'll create b.txt with the word \"world\":"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977464140,
+      "type": "tool_call",
+      "call_id": "toolu_01BdF3Ujiaxy9kh7EMRk42Z4",
+      "tool": "Write",
+      "input": {
+        "file_path": "/tmp/repo/b.txt",
+        "content": "world"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977464149,
+      "type": "tool_result",
+      "call_id": "toolu_01BdF3Ujiaxy9kh7EMRk42Z4",
+      "ok": true,
+      "preview": "File created successfully at: /tmp/repo/b.txt (file state is current in your context — no need to Read it back)",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977465181,
+      "type": "assistant_text",
+      "text": "Done! I read a.txt (which contains \"hello\") and created b.txt with the single word \"world\"."
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 21,
+      "output_tokens": 254,
+      "cache_read_tokens": 21737,
+      "cache_write_tokens": 6513,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 6513
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 1,
+      "status": "success",
+      "summary": "Done! I read a.txt (which contains \"hello\") and created b.txt with the single word \"world\".",
+      "permission_denials": [],
+      "errors": [],
+      "session_id": "b0f9cbf4-51ca-4968-9092-f9d617cace2e",
+      "duration_ms": 5165
+    }
+  ]
+}

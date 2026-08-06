@@ -1,0 +1,124 @@
+{
+  "stats": {
+    "lines": 14,
+    "events": 11,
+    "ignored": {
+      "rate_limit_event": 1,
+      "system/thinking_tokens": 4
+    },
+    "unknown": {},
+    "malformed": 0,
+    "zero_usage_turns": 0
+  },
+  "events": [
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "run_started",
+      "harness": "claude-code",
+      "model": "claude-haiku-4-5",
+      "cwd": "/tmp/repo",
+      "pid": null,
+      "session_id": "a7ef5b72-bee4-4b52-bf08-d16c2854ad99",
+      "harness_version": "2.1.222"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_started",
+      "turn": 1,
+      "model": "claude-haiku-4-5",
+      "session_id": "a7ef5b72-bee4-4b52-bf08-d16c2854ad99"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977396629,
+      "type": "thinking_delta",
+      "text": "The user wants me to:\n1. Read a.txt\n2. Create b.txt containing the word \"world\"\n\nLet me start by reading a.txt to see what's in it, then create b.txt."
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977396863,
+      "type": "tool_call",
+      "call_id": "toolu_013E2Sqt5qb5GhjYaQxQABsv",
+      "tool": "Read",
+      "input": {
+        "file_path": "/tmp/repo/a.txt"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977396868,
+      "type": "tool_result",
+      "call_id": "toolu_013E2Sqt5qb5GhjYaQxQABsv",
+      "ok": true,
+      "preview": "1\thello\n2\t",
+      "denied": false
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977398455,
+      "type": "assistant_text",
+      "text": "Now I'll create b.txt with the word \"world\":"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977398831,
+      "type": "tool_call",
+      "call_id": "toolu_01QMPgrSLhrY9eemkUdGSzYy",
+      "tool": "Write",
+      "input": {
+        "file_path": "/tmp/repo/b.txt",
+        "content": "world"
+      }
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977398833,
+      "type": "tool_result",
+      "call_id": "toolu_01QMPgrSLhrY9eemkUdGSzYy",
+      "ok": false,
+      "preview": "Claude requested permissions to write to /tmp/repo/b.txt, but you haven't granted it yet.",
+      "denied": true
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1785977400323,
+      "type": "assistant_text",
+      "text": "I need permission to write the file. Could you allow the write operation to `/tmp/repo/b.txt`?"
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "usage",
+      "model": "claude-haiku-4-5-20251001",
+      "input_tokens": 23,
+      "output_tokens": 262,
+      "cache_read_tokens": 21630,
+      "cache_write_tokens": 6417,
+      "cache_write_5m_tokens": 0,
+      "cache_write_1h_tokens": 6417
+    },
+    {
+      "run_id": "run_01JGOLDEN0000000000000000",
+      "ts": 1800000000000,
+      "type": "turn_finished",
+      "turn": 1,
+      "status": "success",
+      "summary": "I need permission to write the file. Could you allow the write operation to `/tmp/repo/b.txt`?",
+      "permission_denials": [
+        {
+          "tool": "Write",
+          "call_id": "toolu_01QMPgrSLhrY9eemkUdGSzYy",
+          "input": {
+            "file_path": "/tmp/repo/b.txt",
+            "content": "world"
+          }
+        }
+      ],
+      "errors": [],
+      "session_id": "a7ef5b72-bee4-4b52-bf08-d16c2854ad99",
+      "duration_ms": 5469
+    }
+  ]
+}
