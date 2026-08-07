@@ -14,6 +14,12 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn[standard]>=0.52.1",
     "sqlmodel>=0.0.39",
+    # Not a new package: greenlet is already in uv.lock as a SQLAlchemy
+    # dependency, but SQLAlchemy's own marker lists `aarch64` and not `arm64`,
+    # so it is skipped on Apple Silicon — the platform this project targets.
+    # Without it every `await session.commit()` raises "the greenlet library is
+    # required". The `asyncio` extra requires it unconditionally.
+    "sqlalchemy[asyncio]>=2.0.51",
     "aiosqlite>=0.22.1",
     "alembic>=1.19.0",
     "pydantic-settings>=2.14.2",
@@ -60,6 +66,10 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["B011"]
+# Alembic renders one CHECK constraint per line; a closed status vocabulary does
+# not fit in 88 columns and reflowing generated DDL by hand invites transcription
+# errors. The revision is reviewed, not rewritten.
+"migrations/versions/*" = ["E501"]
 
 # ---------------------------------------------------------------------------
 # mypy — strict on the core, looser at the edges (docs/conventions.md §1)

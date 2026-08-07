@@ -1,0 +1,162 @@
+"""Alembic builds the database, and only Alembic does.
+
+`docs/phase-1.md` B2 asks for proof that the migration builds an empty database.
+``metadata.create_all`` is not that proof: a migration that has never run is not
+a migration, and the first person to run it would be a user.
+"""
+
+from pathlib import Path
+
+import pytest
+import sqlalchemy as sa
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
+from alembic.runtime.environment import EnvironmentContext
+from sqlmodel import SQLModel
+
+from app.config import DEFAULT_ROOT, Settings
+from app.storage.db import (
+    MIGRATIONS_DIR,
+    StorageError,
+    alembic_config,
+    database_path,
+    downgrade_database_sync,
+    sync_url,
+    upgrade_database_sync,
+)
+
+EXPECTED_TABLES = {"session", "node", "run", "usage_event"}
+
+
+def table_names(url: str) -> set[str]:
+    engine = sa.create_engine(sync_url(url))
+    try:
+        return set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+
+def test_migration_builds_the_database_from_nothing(settings: Settings) -> None:
+    assert not settings.db_path.exists()
+
+    upgrade_database_sync(settings.database_url)
+
+    assert settings.db_path.exists()
+    assert EXPECTED_TABLES <= table_names(settings.database_url)
+
+
+def test_migration_creates_the_parent_directory(settings: Settings) -> None:
+    # ~/.agenthub does not exist on a clean machine (docs/architecture.md §4).
+    assert not settings.root.exists()
+    upgrade_database_sync(settings.database_url)
+    assert settings.db_path.parent.is_dir()
+
+
+def test_upgrade_is_idempotent(migrated_url: str) -> None:
+    upgrade_database_sync(migrated_url)
+    assert EXPECTED_TABLES <= table_names(migrated_url)
+
+
+def test_downgrade_removes_everything_it_created(migrated_url: str) -> None:
+    """A revision you cannot reverse is a revision you cannot test twice."""
+    downgrade_database_sync(migrated_url)
+    assert not (EXPECTED_TABLES & table_names(migrated_url))
+
+
+def test_schema_matches_the_models(migrated_url: str) -> None:
+    """The drift check: no pending autogenerate operations after upgrading.
+
+    This is what catches a column added to ``app/models/tables.py`` without a
+    migration — the change works locally, where SQLModel built the table in
+    memory, and fails on the next machine.
+    """
+    engine = sa.create_engine(sync_url(migrated_url))
+    try:
+        with engine.connect() as connection:
+            context = MigrationContext.configure(
+                connection,
+                opts={"compare_type": True, "compare_server_default": True},
+            )
+            diff = compare_metadata(context, SQLModel.metadata)
+    finally:
+        engine.dispose()
+
+    assert diff == [], f"models and migrations disagree: {diff}"
+
+
+def test_batch_mode_is_configured(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """SQLite cannot ALTER, so every migration must run in batch mode.
+
+    Asserted by watching the real ``context.configure`` call rather than by
+    reading the source: the flag matters at the moment ``env.py`` runs, and this
+    fails if a future edit drops it from only one of the two code paths.
+    """
+    recorded: dict[str, object] = {}
+    original = EnvironmentContext.configure
+
+    def spy(self: EnvironmentContext, **kwargs: object) -> None:
+        recorded.update(kwargs)
+        return original(self, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(EnvironmentContext, "configure", spy)
+    upgrade_database_sync(settings.database_url)
+
+    assert recorded["render_as_batch"] is True
+
+
+def test_usage_event_append_only_trigger_exists(migrated_url: str) -> None:
+    engine = sa.create_engine(sync_url(migrated_url))
+    try:
+        with engine.connect() as connection:
+            triggers = set(
+                connection.execute(
+                    sa.text("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+                ).scalars()
+            )
+    finally:
+        engine.dispose()
+    assert "usage_event_is_append_only" in triggers
+
+
+def test_alembic_config_points_at_the_repository_migrations() -> None:
+    config = alembic_config("sqlite+aiosqlite:////tmp/does-not-matter.db")
+    assert config.get_main_option("script_location") == str(MIGRATIONS_DIR)
+    # The async driver is stripped: Alembic runs off the loop, synchronously.
+    assert (
+        config.get_main_option("sqlalchemy.url") == "sqlite:////tmp/does-not-matter.db"
+    )
+
+
+def test_alembic_config_fails_loudly_when_migrations_are_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("app.storage.db.MIGRATIONS_DIR", tmp_path / "nope")
+    with pytest.raises(StorageError, match="migrations directory"):
+        alembic_config("sqlite+aiosqlite:////tmp/x.db")
+
+
+def test_url_helpers() -> None:
+    assert sync_url("sqlite+aiosqlite:////var/db/agenthub.db") == (
+        "sqlite:////var/db/agenthub.db"
+    )
+    assert database_path("sqlite+aiosqlite:////var/db/agenthub.db") == Path(
+        "/var/db/agenthub.db"
+    )
+    assert database_path("sqlite+aiosqlite://") is None
+
+
+def test_a_test_never_migrates_the_real_database(settings: Settings) -> None:
+    """The fixture must not point at ``~/.agenthub`` (docs/architecture.md §4).
+
+    The default root is the user's real session history. A fixture that forgot
+    to override it would migrate — and, in another test, truncate — the machine
+    the suite is running on.
+    """
+    assert settings.db_path != DEFAULT_ROOT / "agenthub.db"
+    assert Path.home() not in settings.db_path.parents
+
+    upgrade_database_sync(settings.database_url)
+    assert settings.db_path.exists()
+    assert EXPECTED_TABLES <= table_names(settings.database_url)
