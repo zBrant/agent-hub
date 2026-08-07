@@ -1,0 +1,9 @@
+# Frontend-local ignores. The repo-root .gitignore already covers node_modules,
+# frontend/dist and *.tsbuildinfo; this file keeps Biome's `useIgnoreFile` and
+# any tooling run from inside frontend/ in agreement with it.
+node_modules
+dist
+.vite
+*.local
+
+# src/api/*.d.ts is GENERATED but MUST be committed — docs/architecture.md §7.

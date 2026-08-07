@@ -1,0 +1,99 @@
+@import "tailwindcss";
+@import "./tokens.css";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+
+/* Dark-only (design-system §1.2). The `dark` class is set statically on <html>;
+ * there is no toggle and no light palette. The variant exists only so the
+ * `dark:` utilities inside shadcn components resolve. */
+@custom-variant dark (&:is(.dark *));
+
+/* shadcn's variable surface mapped onto the §2 tokens — a mapping, not a second
+ * palette (design-system §12). Anything shadcn defines that has no counterpart
+ * in §2 (chart-*, sidebar-*) is deliberately absent: it would be a second
+ * palette. Add the mapping when the token exists, not before. */
+@theme inline {
+  --color-background: var(--color-bg);
+  --color-foreground: var(--color-fg);
+
+  --color-card: var(--color-surface);
+  --color-card-foreground: var(--color-fg);
+  --color-popover: var(--color-elevated);
+  --color-popover-foreground: var(--color-fg);
+
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-accent-fg);
+  --color-secondary: var(--color-elevated);
+  --color-secondary-foreground: var(--color-fg);
+  --color-muted: var(--color-elevated);
+  --color-muted-foreground: var(--color-fg-muted);
+  --color-accent-foreground: var(--color-accent-fg);
+  --color-destructive: var(--color-failed);
+
+  --color-input: var(--color-border-strong);
+  --color-ring: var(--color-focus);
+
+  /* Tailwind's default type ramp collapsed onto the §3 table, so a shadcn
+   * component pasted in with `text-sm` lands on 13px instead of 14px.
+   * design-system §3: "There are no sizes outside this table." */
+  --text-xs: var(--text-meta);
+  --text-xs--line-height: 1.45;
+  --text-sm: var(--text-ui);
+  --text-sm--line-height: 1.45;
+  --text-base: var(--text-ui);
+  --text-base--line-height: 1.45;
+}
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    font-family: var(--font-sans);
+    /* Root stays at the browser default so Tailwind's rem spacing scale still
+     * lands on the §4 pixel scale (4/6/8/12/16/24/32). Density comes from the
+     * body font-size below, not from shrinking the root. */
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  body {
+    @apply bg-bg text-fg;
+    font-size: var(--text-ui);
+    line-height: 1.45;
+  }
+
+  code,
+  kbd,
+  pre,
+  samp {
+    font-family: var(--font-mono);
+  }
+
+  /* design-system §11: focus is always visible. shadcn components replace this
+   * with their own ring; everything else falls back to the token outline. */
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+/* design-system §10. `data-motion="essential"` is the opt-out for state-carrying
+ * motion (the `running` progress ring), which stays even when motion is reduced. */
+@media (prefers-reduced-motion: reduce) {
+  *:not([data-motion="essential"]),
+  *:not([data-motion="essential"])::before,
+  *:not([data-motion="essential"])::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+    scroll-behavior: auto !important;
+  }
+}
