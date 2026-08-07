@@ -1,0 +1,652 @@
+{
+  "$defs": {
+    "AssistantText": {
+      "additionalProperties": false,
+      "description": "Assistant-visible text.\n\n`design.md` \u00a73 calls this ``AssistantText(delta)``. It is **not** a delta in\nClaude Code 2.1.222 without ``--include-partial-messages``: text arrives as\na complete content block on an ``assistant`` line. The field is therefore\n``text``, and the contract for consumers is *append* \u2014 which is correct for\nboth whole blocks and the true deltas Phase 1 will emit from\n``stream_event/content_block_delta``. No consumer needs to know which it got.",
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "assistant_text",
+          "default": "assistant_text",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "text"
+      ],
+      "title": "AssistantText",
+      "type": "object"
+    },
+    "Permission": {
+      "additionalProperties": false,
+      "description": "A human gate: the agent is asking to do something and is blocked on it.\n\n**Channel A never produces this in ``-p`` mode.** Verified against Claude\nCode 2.1.222: with no ``--permission-mode`` the CLI does not emit a request\nat all \u2014 it refuses silently, the refusal surfaces as an ordinary\n``is_error`` tool result, and the run still reports success with exit 0. The\nonly trace is ``result.permission_denials[]``, which lands on\n:class:`TurnFinished` *after the fact*. There is no ``request_id`` to answer.\n\nThe variant stays declared because `design.md` \u00a73 specifies it and other\nharnesses (or an MCP permission-prompt tool) may yet produce it. Nothing in\nPhase 0 emits it; do not build a UI that waits for one.",
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "request_id": {
+          "title": "Request Id",
+          "type": "string"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "permission",
+          "default": "permission",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "request_id",
+        "description"
+      ],
+      "title": "Permission",
+      "type": "object"
+    },
+    "PermissionDenial": {
+      "additionalProperties": false,
+      "description": "One tool call the permission layer refused. See :class:`TurnFinished`.",
+      "properties": {
+        "call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Call Id"
+        },
+        "input": {
+          "additionalProperties": true,
+          "title": "Input",
+          "type": "object"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tool"
+      ],
+      "title": "PermissionDenial",
+      "type": "object"
+    },
+    "RawChunk": {
+      "additionalProperties": false,
+      "description": "Channel B only: raw PTY bytes for xterm.js.\n\nNever derive state from this (`docs/architecture.md` \u00a75) \u2014 it is pixels,\nincluding ANSI cursor addressing and alternate-screen switches. Base64 on\nthe wire because PTY output is not valid UTF-8 in general.",
+      "properties": {
+        "data": {
+          "format": "binary",
+          "title": "Data",
+          "type": "string"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "raw_chunk",
+          "default": "raw_chunk",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "data"
+      ],
+      "title": "RawChunk",
+      "type": "object"
+    },
+    "RunFinished": {
+      "additionalProperties": false,
+      "description": "The process exited. Exactly one per run, and it is the last event.\n\n``exit_code`` has **no source in any harness's JSON** \u2014 Claude Code's\n``result`` line carries a status but not the code. The adapter synthesizes\nthis event from ``Process.wait()``, so a parser working on a recorded stream\n(replay, fixtures) legitimately produces none.",
+      "properties": {
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "run_finished",
+          "default": "run_finished",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "status"
+      ],
+      "title": "RunFinished",
+      "type": "object"
+    },
+    "RunId": {
+      "type": "string"
+    },
+    "RunStarted": {
+      "additionalProperties": false,
+      "description": "The process is up. Exactly one per run, whatever the harness repeats.\n\n``session_id`` is the *harness's* own identifier and ``run_id`` is ours \u2014\nboth are kept because the harness id is what you need to resume or to\ncorrelate with the CLI's own logs, and ours is what the database keys on.",
+      "properties": {
+        "cwd": {
+          "format": "path",
+          "title": "Cwd",
+          "type": "string"
+        },
+        "harness": {
+          "title": "Harness",
+          "type": "string"
+        },
+        "harness_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harness Version"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "pid": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pid"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "run_started",
+          "default": "run_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "harness",
+        "model",
+        "cwd"
+      ],
+      "title": "RunStarted",
+      "type": "object"
+    },
+    "RunStatus": {
+      "enum": [
+        "success",
+        "failed",
+        "interrupted",
+        "budget_exceeded"
+      ],
+      "type": "string"
+    },
+    "ThinkingDelta": {
+      "additionalProperties": false,
+      "description": "Extended-thinking text. Same whole-block caveat as :class:`AssistantText`.\n\nThe class name is `design.md` \u00a73's; the payload field is ``text`` for the\nreason above. The provider's ``signature`` blob on a thinking block is\ndropped \u2014 it is an opaque re-submission token for the API, has no meaning to\na dashboard, and is large.",
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "thinking_delta",
+          "default": "thinking_delta",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "text"
+      ],
+      "title": "ThinkingDelta",
+      "type": "object"
+    },
+    "ToolCall": {
+      "additionalProperties": false,
+      "description": "The agent invoked a tool. ``call_id`` correlates with :class:`ToolResult`.",
+      "properties": {
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "input": {
+          "additionalProperties": true,
+          "title": "Input",
+          "type": "object"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "tool_call",
+          "default": "tool_call",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "call_id",
+        "tool"
+      ],
+      "title": "ToolCall",
+      "type": "object"
+    },
+    "ToolResult": {
+      "additionalProperties": false,
+      "description": "The outcome of a :class:`ToolCall`.\n\n``denied`` separates *the sandbox or the permission layer refused this* from\n*the tool ran and failed*. Both arrive with ``ok=False`` and they mean very\ndifferent things to the operator: a denial is a policy problem, an error is\nthe agent's problem. Claude Code marks the first with\n``tool_result_meta[].non_execution_kind == \"user-rejected\"``.",
+      "properties": {
+        "call_id": {
+          "title": "Call Id",
+          "type": "string"
+        },
+        "denied": {
+          "default": false,
+          "title": "Denied",
+          "type": "boolean"
+        },
+        "ok": {
+          "title": "Ok",
+          "type": "boolean"
+        },
+        "preview": {
+          "default": "",
+          "title": "Preview",
+          "type": "string"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "tool_result",
+          "default": "tool_result",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "call_id",
+        "ok"
+      ],
+      "title": "ToolResult",
+      "type": "object"
+    },
+    "TurnFinished": {
+      "additionalProperties": false,
+      "description": "One request/response cycle ended.\n\n**Read ``permission_denials`` before you mark anything done.** A run whose\nevery write was refused is reported by Claude Code 2.1.222 as\n``subtype: \"success\"``, ``is_error: false``, exit code 0 \u2014 indistinguishable\nfrom a run that did the work. ``status`` will say ``\"success\"`` because that\nis what the harness said; the non-empty ``permission_denials`` tuple is the\nonly signal in the data, and :attr:`blocked_by_permission` is how the\nscheduler must consume it. A node that transitions to *done* while\n``blocked_by_permission`` is true has reported a lie to the user and merged\nan empty diff.\n\n``errors`` carries the harness's own failure strings. They are generalized\nrather than dropped because a failed turn with no explanation is\nunactionable for the operator.\n\nThe harness's self-reported cost is deliberately **not** here: Claude Code's\n``total_cost_usd`` accumulates across turns (summing it double-counts) and\nincludes side-channel model calls no event can see. Cost is computed at\ningest from :class:`Usage` against the pricing table (invariant 3), and is\nlabelled *estimated equivalent* under a subscription (invariant 7).",
+      "properties": {
+        "duration_ms": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duration Ms"
+        },
+        "errors": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Errors",
+          "type": "array"
+        },
+        "permission_denials": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PermissionDenial"
+          },
+          "title": "Permission Denials",
+          "type": "array"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "turn": {
+          "minimum": 1,
+          "title": "Turn",
+          "type": "integer"
+        },
+        "type": {
+          "const": "turn_finished",
+          "default": "turn_finished",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "turn",
+        "status"
+      ],
+      "title": "TurnFinished",
+      "type": "object"
+    },
+    "TurnStarted": {
+      "additionalProperties": false,
+      "description": "One request/response cycle begins. ``turn`` is 1-based and per run.",
+      "properties": {
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Session Id"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "turn": {
+          "minimum": 1,
+          "title": "Turn",
+          "type": "integer"
+        },
+        "type": {
+          "const": "turn_started",
+          "default": "turn_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "turn",
+        "model"
+      ],
+      "title": "TurnStarted",
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "Token consumption. The four fields of invariant 3, plus the tier split.\n\n``input_tokens + output_tokens + cache_read_tokens + cache_write_tokens`` is\nthe contract; summing only ``input_tokens`` makes a long session look ~100x\ncheaper than it was.\n\n``cache_write_5m_tokens`` / ``cache_write_1h_tokens`` are a **breakdown of**\n``cache_write_tokens``, not additions to it, and the validator below enforces\nthat. They exist because `design.md` \u00a74 prices the two TTLs differently\n(~1.25x vs ~2.0x input), so collapsing them is up to a 1.6x cost error \u2014 and\nevery A3 capture is 100% ``ephemeral_1h``, i.e. the expensive tier is the\ndefault in Claude Code 2.1.222, not the exception. Only pricing reads them;\nthe four-field contract is unchanged. Both default to 0 for harnesses that\ndo not report a split.\n\n``model`` is the raw string the harness reported, never normalized here \u2014\nClaude Code spells the same model two ways (``claude-haiku-4-5`` on\n``system/init``, ``claude-haiku-4-5-20251001`` on ``assistant`` lines) and\ndeciding which one prices correctly belongs to the pricing table, not to a\nparser that would have to throw one of them away.\n\n``source`` says whether the harness *reported* these numbers or the adapter\n*reconstructed* them from a second, cumulative accounting the harness also\npublishes. A reconstruction is exact where it has been validated and is\nstill a derivation \u2014 a dashboard should be able to say so, and a\nreconciliation bug should be attributable. It stays deliberately generic:\nwhich field it was rebuilt from is the adapter's business (invariant 1).",
+      "properties": {
+        "cache_read_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cache Read Tokens",
+          "type": "integer"
+        },
+        "cache_write_1h_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cache Write 1H Tokens",
+          "type": "integer"
+        },
+        "cache_write_5m_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cache Write 5M Tokens",
+          "type": "integer"
+        },
+        "cache_write_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Cache Write Tokens",
+          "type": "integer"
+        },
+        "input_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "output_tokens": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        },
+        "run_id": {
+          "$ref": "#/$defs/RunId"
+        },
+        "source": {
+          "$ref": "#/$defs/UsageSource",
+          "default": "reported"
+        },
+        "ts": {
+          "title": "Ts",
+          "type": "integer"
+        },
+        "type": {
+          "const": "usage",
+          "default": "usage",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "ts",
+        "model"
+      ],
+      "title": "Usage",
+      "type": "object"
+    },
+    "UsageSource": {
+      "enum": [
+        "reported",
+        "reconstructed"
+      ],
+      "type": "string"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "assistant_text": "#/$defs/AssistantText",
+      "permission": "#/$defs/Permission",
+      "raw_chunk": "#/$defs/RawChunk",
+      "run_finished": "#/$defs/RunFinished",
+      "run_started": "#/$defs/RunStarted",
+      "thinking_delta": "#/$defs/ThinkingDelta",
+      "tool_call": "#/$defs/ToolCall",
+      "tool_result": "#/$defs/ToolResult",
+      "turn_finished": "#/$defs/TurnFinished",
+      "turn_started": "#/$defs/TurnStarted",
+      "usage": "#/$defs/Usage"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/RunStarted"
+    },
+    {
+      "$ref": "#/$defs/TurnStarted"
+    },
+    {
+      "$ref": "#/$defs/AssistantText"
+    },
+    {
+      "$ref": "#/$defs/ThinkingDelta"
+    },
+    {
+      "$ref": "#/$defs/ToolCall"
+    },
+    {
+      "$ref": "#/$defs/ToolResult"
+    },
+    {
+      "$ref": "#/$defs/Usage"
+    },
+    {
+      "$ref": "#/$defs/Permission"
+    },
+    {
+      "$ref": "#/$defs/TurnFinished"
+    },
+    {
+      "$ref": "#/$defs/RunFinished"
+    },
+    {
+      "$ref": "#/$defs/RawChunk"
+    }
+  ]
+}

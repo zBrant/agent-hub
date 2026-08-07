@@ -10,7 +10,7 @@ pnpm typecheck
 pnpm lint        # Biome: lint + format, one binary
 pnpm format      # Biome with --write
 pnpm build
-pnpm gen:api     # regenerate src/api/*.d.ts (needs the backend, see src/api/README.md)
+pnpm gen:api     # regenerate src/api/*.d.ts from exported backend schemas
 ```
 
 ## Layout

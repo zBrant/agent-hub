@@ -114,7 +114,7 @@ fake harness name and real temporary git repositories, including unsafe runs,
 manual approval, and concurrent-start refusal. The FastAPI lifespan now owns
 database migration, engine disposal, pricing, and this service.
 
-### B5 — REST API
+### B5 — REST API ✅
 
 Expose the minimum resource API: create/get/list sessions, get the fixed node,
 start a run, inspect run history, and retrieve the final diff. Routes validate
@@ -122,6 +122,16 @@ and delegate; all decisions stay in B4.
 
 **Done when:** API tests cover success, invalid transitions, missing resources,
 and a reconnect reading persisted state.
+
+**Result:** completed on 2026-08-06. `/api/sessions` now creates, lists, and
+reads sessions; nested endpoints expose the fixed node, start and list runs,
+apply approval, and return the node's final patch. Routes only validate, map
+domain errors to HTTP, and delegate to `SingleRunService`. End-to-end tests use
+TestClient, a fake adapter, migrated SQLite, and real git worktrees, then reopen
+a fresh application against the same root to prove persisted reconnect. Invalid
+state returns 409, missing resources return 404, and invalid bodies return 422.
+The node base checkpoint is now an immutable commit, so its diff remains
+available after integration merge and restart.
 
 ### B6 — WebSocket event broker
 
@@ -145,7 +155,7 @@ another process for the same logical run without losing event order.
 **Done when:** tests cover kill during a tool, retry after failure, and refusal to
 merge any interrupted or parser-untrusted run.
 
-### B8 — Frontend shell and generated types
+### B8 — Frontend shell and generated types ✅
 
 Create Vite + React + TypeScript strict, Tailwind v4, shadcn/Base UI foundations,
 TanStack Query, Zustand, and one WebSocket client. Generate REST types from
@@ -154,17 +164,16 @@ both outputs.
 
 **Done when:** `pnpm typecheck`, Biome, and the generated-type drift check pass.
 
-**Partial result:** the scaffold landed on 2026-08-06 — Vite + React 19 + TS
-strict, Tailwind v4 on the §2 tokens, Biome, TanStack Query, Zustand, router,
-and one WebSocket client with topic multiplexing and jittered reconnect.
+**Result:** completed on 2026-08-06. The scaffold landed first — Vite + React
+19 + TS strict, Tailwind v4 on the §2 tokens, Biome, TanStack Query, Zustand,
+router, and one WebSocket client with topic multiplexing and jittered reconnect.
 `typecheck`, `lint` and `build` pass and the shell renders.
 
-**Still open:** type generation. `pnpm gen:api` is wired and fails with an
-actionable message, but it needs the OpenAPI document from B5 and an exported
-`AgentEvent` JSON Schema from the backend. `src/api/` therefore holds no types
-at all — `docs/architecture.md` §7 forbids a hand-written mirror, and a
-placeholder that drifts is worse than an absent file. The drift check in this
-activity's done-when cannot run until B5 exists.
+With B5's contract in place, `backend/scripts/export_schemas.py` now exports
+deterministic OpenAPI and `AgentEvent` JSON Schema documents, and `pnpm gen:api`
+commits their TypeScript mirrors. Both generators have offline `--check` modes.
+TypeScript is pinned to the generator's declared `^5.x` peer range; the earlier
+7.0 scaffold crashed inside `openapi-typescript` before reading the document.
 
 Corrections to `docs/design-system.md` §12 came out of this and are recorded
 there; the one with teeth is that `tailwind-merge` silently drops a §3 text size

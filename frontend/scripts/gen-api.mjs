@@ -11,7 +11,7 @@
  *   pnpm gen:api --check    fail if the committed files are out of date
  *
  * Sources, overridable by environment:
- *   AGENTHUB_OPENAPI_URL     default http://127.0.0.1:8000/openapi.json
+ *   AGENTHUB_OPENAPI_SOURCE  default ../backend/schemas/openapi.json
  *   AGENTHUB_EVENT_SCHEMA    default ../backend/schemas/agent-event.schema.json
  */
 import { readFile, writeFile } from "node:fs/promises";
@@ -25,8 +25,8 @@ const here = dirname(fileURLToPath(import.meta.url));
 const frontendRoot = resolve(here, "..");
 const repoRoot = resolve(frontendRoot, "..");
 
-const OPENAPI_URL =
-  process.env.AGENTHUB_OPENAPI_URL ?? "http://127.0.0.1:8000/openapi.json";
+const OPENAPI_SOURCE =
+  process.env.AGENTHUB_OPENAPI_SOURCE ?? "backend/schemas/openapi.json";
 const EVENT_SCHEMA_PATH = resolve(
   repoRoot,
   process.env.AGENTHUB_EVENT_SCHEMA ??
@@ -52,10 +52,11 @@ function fail(message) {
 
 async function generateSchema() {
   let document;
-  try {
-    document = new URL(OPENAPI_URL);
-  } catch {
-    document = resolve(repoRoot, OPENAPI_URL);
+  if (/^https?:\/\//u.test(OPENAPI_SOURCE)) {
+    document = new URL(OPENAPI_SOURCE);
+  } else {
+    const source = resolve(repoRoot, OPENAPI_SOURCE);
+    document = JSON.parse(await readFile(source, "utf8"));
   }
   const ast = await openapiTS(document, { immutable: true });
   return `${BANNER}${astToString(ast)}`;
@@ -99,7 +100,7 @@ async function emit(target, produce, hint) {
 await emit(
   SCHEMA_OUT,
   generateSchema,
-  `Is the backend serving ${OPENAPI_URL}? (Phase 1, B5)`,
+  `Expected exported OpenAPI at ${OPENAPI_SOURCE}. Run backend/scripts/export_schemas.py.`,
 );
 await emit(
   EVENTS_OUT,

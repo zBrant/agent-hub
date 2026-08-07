@@ -7,7 +7,7 @@ repository (see the note in the repo `.gitignore` and `docs/architecture.md` §7
 
 | File | Source | Generator |
 |---|---|---|
-| `schema.d.ts` | FastAPI `/openapi.json` | `openapi-typescript` |
+| `schema.d.ts` | exported FastAPI `/openapi.json` | `openapi-typescript` |
 | `events.d.ts` | `AgentEvent.model_json_schema()` | `json-schema-to-typescript` |
 
 ```
@@ -23,13 +23,16 @@ mirror always drifts, and the drift shows up as an `undefined` field in the
 middle of a stream. If you need a backend type that is not here, the fix is to
 make the backend emit it, then regenerate.
 
-## Why the files are not here yet
+## Regeneration
 
-`pnpm gen:api` needs a running backend that serves `/openapi.json` (Phase 1, B5)
-and the schema-export script (B8's backend half). The tooling and the script are
-already wired — `frontend/scripts/gen-api.mjs` — so generation is a single
-command once those exist. A placeholder that drifts would be worse than an
-absent file, so nothing is checked in until the generator can run.
+Export the canonical backend documents, then generate the TypeScript mirrors:
+
+```bash
+cd backend && uv run python scripts/export_schemas.py
+cd ../frontend && pnpm gen:api
+```
+
+CI runs both commands with `--check`; neither needs a running server.
 
 ## Not generated
 

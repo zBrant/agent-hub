@@ -10,13 +10,13 @@ lowest-risk piece, comes last.
 
 ## Status
 
-**Phase 1 implementation.** Phase 0 is complete. Phase 1 activities B1–B4 are
+**Phase 1 implementation.** Phase 0 is complete. Phase 1 activities B1–B5 are
 complete: local-only FastAPI, migrated SQLite projections, ordered
 NDJSON→SQLite→broadcast ingest with deterministic replay, and the persistent
-single-node run service. The B8 frontend shell is also in place; generated types
-remain gated on B5. The local suite has 360 passing tests (1 harness skip), and
-all static architecture and frontend type gates pass. REST (B5), WebSocket (B6),
-and kill/retry (B7) are next and can now proceed from the service boundary. See
+single-node run service with its persistent REST resource API. B8 is also
+complete, including generated OpenAPI and `AgentEvent` TypeScript contracts with
+offline drift checks. WebSocket (B6) and kill/retry (B7) are next and can now
+proceed from the service boundary. See
 [`phase-1.md`](phase-1.md) for the activity details.
 
 ## Phases
