@@ -50,7 +50,7 @@ flowchart TD
 
 ---
 
-### C1 — Graph schema and migration
+### C1 — Graph schema and migration ✅
 
 A `Session` today owns exactly one `Node`. It must own many, with edges.
 
@@ -94,7 +94,7 @@ timestamp and the graph's shape has no mtime at all.
 
 ---
 
-### C2 — Pure DAG core
+### C2 — Pure DAG core ✅
 
 `orchestrator/graph.py`, extending what is there rather than replacing it.
 
@@ -161,7 +161,7 @@ failure leaves its dependents `blocked` rather than `pending` forever.
 
 ---
 
-### C4 — Multi-node worktree materialization
+### C4 — Multi-node worktree materialization ✅
 
 `design.md` §2.2 and the Phase 0 A7 findings: `git worktree add` takes **one**
 commit-ish, so a multi-parent node is created off the first parent with the
@@ -177,7 +177,7 @@ launching an agent.
 
 ---
 
-### C5 — Merge serialization
+### C5 — Merge serialization ✅
 
 Three nodes finishing at once contend for one integration worktree. Git will not
 protect you: a second `git merge` during an unfinished one fails in a way that
@@ -193,6 +193,34 @@ exactly the failure this activity exists to prevent.
 
 **Done when:** a test races N nodes into integration and every one of them lands
 or blocks, with no interleaved merge state and no lost commit.
+
+**Result:** C4 and C5 completed together on 2026-08-07, 18 tests. Two mutexes,
+both keyed by resolved path rather than held on `SessionWorkspace` — that is a
+frozen value callers rebuild from database columns on every call, so a
+per-instance lock would be new and uncontended each time and would serialize
+nothing.
+
+The merge race is worse than predicted. Git's locking is per file and released
+*between the commands of a merge sequence*, so a second merge started during an
+unfinished one exits 128 three different ways, or exits **1** with "Unable to
+write index" — the same code a real conflict uses. And whichever loser reaches
+`git merge --abort` first aborts the *winner's* merge. Measured with five nodes:
+one commit landed and four raised; in one run nothing landed and the shared
+worktree was left dirty.
+
+**Concurrent `git worktree add` is also unsafe**, which C4 did not anticipate.
+It writes `.git/worktrees/<id>/commondir` in two steps and a concurrent add
+enumerates the same directory, dying on a short read. Clean at 2–8 way, 3/60 at
+16-way. Rare at `max_concurrency` 2–3 and a hard exception at exactly the wrong
+moment, so `add`/`remove`/`prune` are serialized per *repository* — not per
+session, because `.git/worktrees/` is shared by every session on it.
+`worktree list` tolerates a half-written entry and stays unlocked, which also
+keeps `remove_node` off a non-reentrant lock.
+
+Cross-process guarding is out of scope, argued rather than ignored: git would
+not provide it either, and the SQLite projection and event log already assume a
+single writer, so a git lock alone would advertise a guarantee the rest of the
+process does not keep.
 
 ---
 
