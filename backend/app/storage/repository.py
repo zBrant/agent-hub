@@ -1,11 +1,18 @@
-"""Persistence operations over the Phase 1 tables.
+"""Persistence operations over the core tables.
 
-The whole surface for reading and writing ``session``, ``node``, ``run`` and
-``usage_event``. Nothing above this layer writes SQL, and nothing here decides
-*when* something should happen — that is the orchestrator's job
-(`docs/architecture.md` §8).
+The whole surface for reading and writing ``session``, ``node``,
+``node_dependency``, ``run`` and ``usage_event``. Nothing above this layer
+writes SQL, and nothing here decides *when* something should happen — that is
+the orchestrator's job (`docs/architecture.md` §8).
 
-Four rules shape the API.
+Five rules shape the API.
+
+**The graph is loaded and stored here, and reasoned about elsewhere.** There is
+no cycle detection, no topological sort and no ready set in this module. Those
+are total functions over ids with no I/O in them, they belong in
+``orchestrator/graph.py`` (`docs/architecture.md` §3), and a second copy living
+next to the SQL is how the two start disagreeing. :class:`SessionGraph` is a
+read model: rows, and the two adjacency views of the same edge set.
 
 **A retry is a new run.** :meth:`Repository.create_run` allocates the next
 ``attempt`` for the node and inserts a row; there is no "reset this run and try
@@ -28,7 +35,7 @@ own ``ts``, which is what lets a rebuilt row equal the original one.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,7 +50,7 @@ from app.models.clock import now_ms
 from app.models.ids import NodeId, RunId, SessionId
 from app.models.pricing import PriceTable, TokenCounts
 from app.models.status import NodeStatus, RunState, SessionStatus, UsageSource
-from app.models.tables import Node, Run, Session, UsageEvent
+from app.models.tables import Node, NodeDependency, Run, Session, UsageEvent
 from app.storage.db import Database
 
 
@@ -77,6 +84,59 @@ class UsageTotals:
         return self.unpriced_events == 0
 
 
+@dataclass(frozen=True, slots=True)
+class SessionGraph:
+    """One session's whole graph, read in a bounded number of queries.
+
+    The scheduler asks for this on **every** transition, so
+    :meth:`Repository.load_graph` costs three statements — the session, its
+    nodes, its edges — no matter how many nodes there are. One query per node to
+    fetch its dependencies would make the cost of a single transition grow with
+    the size of the graph, and the scheduler does a transition per node event.
+
+    Deliberately inert. It holds rows and rearranges them; it decides nothing.
+    :meth:`depends_on` and :meth:`dependents` are the same edge set seen from
+    both ends, because readiness reads one direction ("is everything I wait for
+    done?") and completion reads the other ("who was waiting for me?").
+
+    It is a *storage* type and stays one: ``orchestrator/graph.py`` is pure and
+    takes plain ids and sets (`docs/architecture.md` §3), so the scheduler — the
+    shell — is what converts. Passing SQLModel rows into the pure core would
+    drag a database session into the one module that must never need one.
+    """
+
+    session: Session
+    nodes: tuple[Node, ...]
+    edges: tuple[NodeDependency, ...]
+
+    @property
+    def node_ids(self) -> tuple[NodeId, ...]:
+        """Creation order: ids are ULIDs (`docs/conventions.md` §2)."""
+        return tuple(node.id for node in self.nodes)
+
+    def by_id(self) -> dict[NodeId, Node]:
+        return {node.id: node for node in self.nodes}
+
+    def depends_on(self) -> dict[NodeId, frozenset[NodeId]]:
+        """``node -> what it waits for``. Total: every node has an entry."""
+        return self._adjacency(lambda edge: (edge.node_id, edge.depends_on_id))
+
+    def dependents(self) -> dict[NodeId, frozenset[NodeId]]:
+        """``node -> who waits for it``. The transpose of :meth:`depends_on`."""
+        return self._adjacency(lambda edge: (edge.depends_on_id, edge.node_id))
+
+    def _adjacency(
+        self, orient: Callable[[NodeDependency], tuple[NodeId, NodeId]]
+    ) -> dict[NodeId, frozenset[NodeId]]:
+        # Seeded with every node so a caller never has to distinguish "no
+        # dependencies" from "unknown node" with a .get() and a default.
+        collected: dict[NodeId, set[NodeId]] = {node.id: set() for node in self.nodes}
+        for edge in self.edges:
+            key, value = orient(edge)
+            collected[key].add(value)
+        return {key: frozenset(value) for key, value in collected.items()}
+
+
 class Repository:
     """Operations on one :class:`~sqlmodel.ext.asyncio.session.AsyncSession`.
 
@@ -92,8 +152,10 @@ class Repository:
     def session(self) -> AsyncSession:
         return self._session
 
-    async def _persist(self, row: Session | Node | Run | UsageEvent) -> None:
-        self._session.add(row)
+    async def _persist(
+        self, *rows: Session | Node | NodeDependency | Run | UsageEvent
+    ) -> None:
+        self._session.add_all(rows)
         await self._session.commit()
 
     async def create_session(
@@ -152,9 +214,18 @@ class Repository:
         harness: str,
         model: str | None = None,
         acceptance_criteria: str | None = None,
+        touches: Sequence[str] = (),
+        estimated_effort: str | None = None,
         status: NodeStatus = NodeStatus.PENDING,
         at_ms: int | None = None,
     ) -> Node:
+        """Add one activity to a session's graph.
+
+        Edges are not a parameter: a node exists before the graph around it is
+        settled — the planner emits ``depends_on`` by its own slugs and only
+        this call turns them into ids — and :meth:`add_dependencies` is the one
+        that can be given a whole list at once.
+        """
         stamp = now_ms() if at_ms is None else at_ms
         row = Node(
             id=node_id,
@@ -164,6 +235,8 @@ class Repository:
             harness=harness,
             model=model,
             acceptance_criteria=acceptance_criteria,
+            touches=tuple(touches),
+            estimated_effort=estimated_effort,
             status=status,
             created_ms=stamp,
             updated_ms=stamp,
@@ -181,6 +254,47 @@ class Repository:
             .order_by(col(Node.id))
         )
         return (await self._session.exec(statement)).all()
+
+    async def list_nodes_by_status(
+        self,
+        statuses: Collection[NodeStatus],
+        *,
+        session_id: SessionId | None = None,
+    ) -> Sequence[Node]:
+        """Nodes in any of ``statuses``, oldest first.
+
+        Without ``session_id`` this spans every session, which is what restart
+        recovery wants: a node left ``running`` by a dead orchestrator is an
+        orphan regardless of whose graph it is in.
+        """
+        statement = (
+            select(Node)
+            .where(col(Node.status).in_(list(statuses)))
+            .order_by(col(Node.id))
+        )
+        if session_id is not None:
+            statement = statement.where(col(Node.session_id) == session_id)
+        return (await self._session.exec(statement)).all()
+
+    async def delete_node(self, node_id: NodeId) -> bool:
+        """Remove a node, its edges in **both** directions, and its runs.
+
+        A human editing a proposal, never replay: replay discards ``run`` and
+        ``usage_event`` and rebuilds them from the log, but a node carries
+        authored input no log can reproduce (see
+        :mod:`app.models.tables`). Deleting one that has already executed throws
+        away its attempt history, and refusing that is the orchestrator's call
+        — this method stores, it does not decide.
+
+        The edges go with it through ``ON DELETE CASCADE`` on both composite
+        foreign keys, so a graph can never keep an edge to a node that is gone.
+        """
+        row = await self._session.get(Node, node_id)
+        if row is None:
+            return False
+        await self._session.delete(row)
+        await self._session.commit()
+        return True
 
     async def set_node_status(
         self, node_id: NodeId, status: NodeStatus, *, at_ms: int | None = None
@@ -214,6 +328,98 @@ class Repository:
         row.updated_ms = now_ms() if at_ms is None else at_ms
         await self._persist(row)
         return row
+
+    async def add_dependencies(
+        self,
+        node_id: NodeId,
+        depends_on: Sequence[NodeId],
+        *,
+        at_ms: int | None = None,
+    ) -> Sequence[NodeDependency]:
+        """Make ``node_id`` wait for every node in ``depends_on``.
+
+        One commit for the whole list, because that is the shape the planner
+        emits (`design.md` §8: ``depends_on`` is an array per node) and half of
+        a node's edge set is a graph the scheduler would happily start running.
+
+        The edge's ``session_id`` is taken from the node rather than from the
+        caller, so there is one answer to which session an edge is in — and the
+        composite foreign keys then reject any ``depends_on`` node that does not
+        agree with it. Everything illegal here is rejected by SQLite: a self
+        edge, a duplicate, an unknown endpoint, or an endpoint in another
+        session. A **cycle is not**, deliberately — that is a property of the
+        whole graph, the planner needs it as a typed error it can hand back to
+        the model (`design.md` §8), and it lives in ``orchestrator/graph.py``.
+        """
+        node = await self._require_node(node_id)
+        if not depends_on:
+            return []
+        stamp = now_ms() if at_ms is None else at_ms
+        rows = [
+            NodeDependency(
+                node_id=node_id,
+                depends_on_id=other,
+                session_id=node.session_id,
+                created_ms=stamp,
+            )
+            for other in depends_on
+        ]
+        # The shape of the graph changed, so the node's mtime moved. Without
+        # this a *removed* edge would leave no trace of when it went: the row
+        # that carried the timestamp is the thing that was deleted.
+        node.updated_ms = stamp
+        await self._persist(node, *rows)
+        return rows
+
+    async def add_dependency(
+        self, node_id: NodeId, depends_on_id: NodeId, *, at_ms: int | None = None
+    ) -> NodeDependency:
+        """One edge. See :meth:`add_dependencies`."""
+        return (await self.add_dependencies(node_id, [depends_on_id], at_ms=at_ms))[0]
+
+    async def remove_dependency(
+        self, node_id: NodeId, depends_on_id: NodeId, *, at_ms: int | None = None
+    ) -> bool:
+        """Drop one edge. ``False`` if it was not there."""
+        statement = select(NodeDependency).where(
+            col(NodeDependency.node_id) == node_id,
+            col(NodeDependency.depends_on_id) == depends_on_id,
+        )
+        row = (await self._session.exec(statement)).one_or_none()
+        if row is None:
+            return False
+        node = await self._require_node(node_id)
+        node.updated_ms = now_ms() if at_ms is None else at_ms
+        await self._session.delete(row)
+        await self._persist(node)
+        return True
+
+    async def list_dependencies(
+        self, session_id: SessionId
+    ) -> Sequence[NodeDependency]:
+        """Every edge of one graph, in one query. See :attr:`NodeDependency`."""
+        statement = (
+            select(NodeDependency)
+            .where(col(NodeDependency.session_id) == session_id)
+            .order_by(col(NodeDependency.node_id), col(NodeDependency.depends_on_id))
+        )
+        return (await self._session.exec(statement)).all()
+
+    async def load_graph(self, session_id: SessionId) -> SessionGraph | None:
+        """The session, its nodes and its edges — three statements, always.
+
+        ``None`` when there is no such session, like :meth:`get_session`. An
+        empty graph is a real state (a session in ``planning`` whose proposal
+        has not arrived yet) and reads as a :class:`SessionGraph` with no nodes.
+        """
+        session = await self._session.get(Session, session_id)
+        if session is None:
+            return None
+        return SessionGraph(
+            session=session,
+            nodes=tuple(await self.list_nodes(session_id)),
+            edges=tuple(await self.list_dependencies(session_id)),
+        )
 
     async def next_attempt(self, node_id: NodeId) -> int:
         """1 for a node's first run, ``n+1`` after that. Never reuses a number."""
@@ -525,6 +731,7 @@ async def repository(database: Database) -> AsyncIterator[Repository]:
 __all__ = [
     "Repository",
     "RepositoryError",
+    "SessionGraph",
     "UsageTotals",
     "count_permission_denials",
     "repository",

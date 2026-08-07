@@ -10,7 +10,15 @@ from pathlib import Path
 
 import sqlalchemy as sa
 
-from app.models.tables import Node, PathType, Run, Session, UsageEvent
+from app.models.tables import (
+    Node,
+    NodeDependency,
+    PathType,
+    Run,
+    Session,
+    StringTupleType,
+    UsageEvent,
+)
 
 
 def test_usage_event_has_all_four_token_fields_plus_the_tier_split() -> None:
@@ -58,9 +66,119 @@ def test_a_node_cannot_have_two_runs_with_the_same_attempt() -> None:
 
 
 def test_deleting_a_session_cascades_to_everything_below_it() -> None:
-    for table in (Node.__table__, Run.__table__, UsageEvent.__table__):
+    for table in (
+        Node.__table__,
+        NodeDependency.__table__,
+        Run.__table__,
+        UsageEvent.__table__,
+    ):
         for foreign_key in table.foreign_keys:
             assert foreign_key.ondelete == "CASCADE", f"{table.name}.{foreign_key}"
+
+
+def test_an_edge_is_a_row_and_not_a_column_on_node() -> None:
+    """`docs/phase-2.md` C1: the scheduler queries edges on every transition.
+
+    A JSON blob on ``node`` makes "which nodes are ready" a full scan plus a
+    parse, and nothing in it can be constrained.
+    """
+    assert "depends_on" not in Node.__table__.columns
+    assert {"node_id", "depends_on_id"} <= set(NodeDependency.__table__.columns.keys())
+
+
+def test_a_duplicate_edge_is_impossible_by_the_primary_key() -> None:
+    assert [column.name for column in NodeDependency.__table__.primary_key] == [
+        "node_id",
+        "depends_on_id",
+    ]
+
+
+def test_a_self_edge_is_refused_by_a_named_check() -> None:
+    """Named so Alembic's batch mode can re-create it (see ``_status_check``)."""
+    checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in NodeDependency.__table__.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    assert checks["ck_node_dependency_no_self_dependency"] == "node_id <> depends_on_id"
+
+
+def test_both_ends_of_an_edge_are_pinned_to_one_session() -> None:
+    """Two composite foreign keys sharing this row's single ``session_id``.
+
+    That shared column is the whole mechanism: neither endpoint can be in a
+    session other than the one the edge claims, so neither can differ from the
+    other. It needs a unique index on the parent side to be a legal foreign key
+    at all, which is what ``ix_node_id_session_id`` is for.
+    """
+    referenced = {
+        (tuple(column.name for column in constraint.columns), constraint.ondelete)
+        for constraint in NodeDependency.__table__.constraints
+        if isinstance(constraint, sa.ForeignKeyConstraint)
+    }
+    assert referenced == {
+        (("node_id", "session_id"), "CASCADE"),
+        (("depends_on_id", "session_id"), "CASCADE"),
+    }
+
+    parent_key = {
+        tuple(column.name for column in index.columns): index.unique
+        for index in Node.__table__.indexes
+    }
+    assert parent_key[("id", "session_id")] is True
+
+
+def test_the_reverse_edge_lookup_is_indexed() -> None:
+    """ "Who was waiting on the node that just finished" runs on every completion.
+
+    The primary key already covers the forward direction.
+    """
+    names = {index.name for index in NodeDependency.__table__.indexes}
+    assert "ix_node_dependency_depends_on_id" in names
+    assert "ix_node_dependency_session_id" in names
+
+
+def test_the_planners_authored_fields_are_on_the_node() -> None:
+    """`design.md` §8's per-node schema, minus what is not persisted here.
+
+    ``touches`` is the only input `design.md` §12's parallel-conflict risk has a
+    mitigation from, so its absence would be silent.
+    """
+    columns = Node.__table__.columns
+    for name in ("name", "prompt", "acceptance_criteria", "harness", "model"):
+        assert name in columns, name
+    assert isinstance(columns["touches"].type, StringTupleType)
+    assert columns["touches"].nullable is False
+    assert columns["estimated_effort"].nullable is True
+
+
+def test_effort_is_advisory_and_not_a_closed_vocabulary() -> None:
+    """`design.md` §8 shows "medium" and never closes the set.
+
+    A CHECK here would turn an advisory badge into a planner response the
+    correction loop has to spend a round trip on. Nothing may schedule on it.
+    """
+    checks = {
+        constraint.name
+        for constraint in Node.__table__.constraints
+        if isinstance(constraint, sa.CheckConstraint)
+    }
+    assert checks == {"ck_node_node_status"}
+
+
+def test_a_list_of_strings_round_trips_as_an_immutable_tuple() -> None:
+    string_tuple = StringTupleType()
+    dialect = sa.create_engine("sqlite://").dialect
+    stored = string_tuple.process_bind_param(
+        ["backend/auth/**", "docs/api.md"], dialect
+    )
+    assert stored == '["backend/auth/**", "docs/api.md"]'
+    assert string_tuple.process_result_value(stored, dialect) == (
+        "backend/auth/**",
+        "docs/api.md",
+    )
+    assert string_tuple.process_bind_param(None, dialect) is None
+    assert string_tuple.process_result_value(None, dialect) is None
 
 
 def test_no_run_level_token_or_cost_totals() -> None:
@@ -106,6 +224,7 @@ def test_timestamps_have_no_database_side_default() -> None:
     for table in (
         Session.__table__,
         Node.__table__,
+        NodeDependency.__table__,
         Run.__table__,
         UsageEvent.__table__,
     ):

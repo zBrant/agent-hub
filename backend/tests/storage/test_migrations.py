@@ -25,13 +25,26 @@ from app.storage.db import (
     upgrade_database_sync,
 )
 
-EXPECTED_TABLES = {"session", "node", "run", "usage_event"}
+EXPECTED_TABLES = {"session", "node", "node_dependency", "run", "usage_event"}
+
+# The last revision of Phase 1. Databases at this revision exist on real
+# machines with accepted runs in them (`docs/acceptance-phase-1.md`).
+PHASE_1_REVISION = "a83db6150739"
 
 
 def table_names(url: str) -> set[str]:
     engine = sa.create_engine(sync_url(url))
     try:
         return set(sa.inspect(engine).get_table_names())
+    finally:
+        engine.dispose()
+
+
+def rows(url: str, statement: str) -> list[tuple[object, ...]]:
+    engine = sa.create_engine(sync_url(url))
+    try:
+        with engine.connect() as connection:
+            return [tuple(row) for row in connection.execute(sa.text(statement))]
     finally:
         engine.dispose()
 
@@ -104,6 +117,140 @@ def test_batch_mode_is_configured(
     upgrade_database_sync(settings.database_url)
 
     assert recorded["render_as_batch"] is True
+
+
+def seed_a_phase_1_database(url: str) -> None:
+    """One session, one node, one run and two usage rows — written as SQL.
+
+    Raw SQL and not the repository on purpose: the models in
+    ``app/models/tables.py`` describe *today's* schema, and this database is
+    deliberately at yesterday's. Inserting through them would either fail or
+    quietly prove nothing.
+    """
+    engine = sa.create_engine(sync_url(url))
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                sa.text(
+                    "INSERT INTO session VALUES ('sess_1', 'add a docstring',"
+                    " '/repo', '/ws/sess_1', 'agenthub/sess_1/integration', 0,"
+                    " 'running', 1700000000000, 1700000000001)"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO node (id, session_id, name, prompt,"
+                    " acceptance_criteria, harness, model, worktree_path, branch,"
+                    " base_ref, status, created_ms, updated_ms) VALUES"
+                    " ('node_1', 'sess_1', 'main', 'add a docstring to foo()',"
+                    " 'pytest passes', 'codex', 'gpt-5.6-terra', '/ws/sess_1/node_1',"
+                    " 'agenthub/sess_1/node_1', 'abc123', 'done',"
+                    " 1700000000000, 1700000000002)"
+                )
+            )
+            connection.execute(
+                sa.text(
+                    "INSERT INTO run (id, node_id, session_id, attempt, status,"
+                    " harness, model, cwd, pid, harness_session_id,"
+                    " harness_version, events_path, started_ms, finished_ms,"
+                    " exit_code, summary, event_count, permission_denial_count,"
+                    " created_ms) VALUES ('run_1', 'node_1', 'sess_1', 1,"
+                    " 'success', 'codex', 'gpt-5.6-terra', '/ws/sess_1/node_1',"
+                    " 4242, 'thread-abc', '0.101.0',"
+                    " '/root/runs/run_1/events.ndjson', 1700000000010,"
+                    " 1700000000090, 0, 'done', 11, 0, 1700000000000)"
+                )
+            )
+            for seq, tokens in ((0, 21), (1, 13)):
+                connection.execute(
+                    sa.text(
+                        "INSERT INTO usage_event (run_id, node_id, session_id, seq,"
+                        " ts, harness, model, source, input_tokens, output_tokens,"
+                        " cache_read_tokens, cache_write_tokens,"
+                        " cache_write_5m_tokens, cache_write_1h_tokens,"
+                        " price_table_version, cost_usd) VALUES ('run_1', 'node_1',"
+                        f" 'sess_1', {seq}, 1700000000050, 'codex', 'gpt-5.6-terra',"
+                        f" 'reported', {tokens}, 254, 21737, 6513, 0, 6513, 1, 0.42)"
+                    )
+                )
+    finally:
+        engine.dispose()
+
+
+def test_a_populated_phase_1_database_migrates_forward(settings: Settings) -> None:
+    """C1's real risk: there is history in these files.
+
+    A migration that drops and recreates ``node`` to add a column would take an
+    accepted run's node with it. So this builds a database at the Phase 1
+    revision, fills it, upgrades, and checks that every authored value survived
+    unchanged — and that the new columns arrived with usable defaults rather
+    than as NULLs the application would have to special-case forever.
+    """
+    upgrade_database_sync(settings.database_url, revision=PHASE_1_REVISION)
+    seed_a_phase_1_database(settings.database_url)
+
+    upgrade_database_sync(settings.database_url)
+
+    assert rows(
+        settings.database_url,
+        "SELECT id, session_id, name, prompt, acceptance_criteria, harness, model,"
+        " worktree_path, branch, base_ref, status, created_ms, updated_ms FROM node",
+    ) == [
+        (
+            "node_1",
+            "sess_1",
+            "main",
+            "add a docstring to foo()",
+            "pytest passes",
+            "codex",
+            "gpt-5.6-terra",
+            "/ws/sess_1/node_1",
+            "agenthub/sess_1/node_1",
+            "abc123",
+            "done",
+            1700000000000,
+            1700000000002,
+        )
+    ]
+    # The new authored columns: "we were never told" reads as an empty list, not
+    # as NULL. Nothing downstream has to write `node.touches or ()`.
+    assert rows(
+        settings.database_url, "SELECT touches, estimated_effort FROM node"
+    ) == [("[]", None)]
+    # And nothing above or below the node moved.
+    assert rows(settings.database_url, "SELECT id, title, status FROM session") == [
+        ("sess_1", "add a docstring", "running")
+    ]
+    assert rows(
+        settings.database_url, "SELECT id, attempt, status, event_count FROM run"
+    ) == [("run_1", 1, "success", 11)]
+    assert rows(
+        settings.database_url,
+        "SELECT count(*), sum(input_tokens), sum(cost_usd) FROM usage_event",
+    ) == [(2, 34, 0.84)]
+
+
+def test_migrating_a_populated_database_keeps_the_append_only_trigger(
+    settings: Settings,
+) -> None:
+    """B2's trap, checked after the migration that could have sprung it.
+
+    A ``batch_alter_table`` rebuilds a table and SQLite drops its triggers with
+    it. ``test_usage_event_append_only_trigger_exists`` proves the trigger is
+    there on a fresh database; this proves the *upgrade path* did not quietly
+    remove it from an existing one.
+    """
+    upgrade_database_sync(settings.database_url, revision=PHASE_1_REVISION)
+    seed_a_phase_1_database(settings.database_url)
+    upgrade_database_sync(settings.database_url)
+
+    engine = sa.create_engine(sync_url(settings.database_url))
+    try:
+        with engine.begin() as connection:
+            with pytest.raises(sa.exc.DatabaseError, match="append-only"):
+                connection.execute(sa.text("UPDATE usage_event SET input_tokens = 0"))
+    finally:
+        engine.dispose()
 
 
 def test_usage_event_append_only_trigger_exists(migrated_url: str) -> None:

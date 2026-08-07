@@ -30,7 +30,7 @@ from sqlalchemy import engine_from_config, pool
 from sqlmodel import SQLModel
 
 from app.config import get_settings
-from app.models.tables import PathType
+from app.models.tables import PathType, StringTupleType
 from app.storage.db import install_pragmas, sync_url
 
 # Importing the tables is what populates SQLModel.metadata; autogenerate
@@ -70,6 +70,9 @@ def render_item(
         if isinstance(obj, PathType):
             autogen_context.imports.add("from app.models.tables import PathType")
             return "PathType()"
+        if isinstance(obj, StringTupleType):
+            autogen_context.imports.add("from app.models.tables import StringTupleType")
+            return "StringTupleType()"
         if obj.__class__.__module__.startswith("sqlmodel."):
             autogen_context.imports.add("import sqlmodel")
     return False
