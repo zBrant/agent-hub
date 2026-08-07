@@ -289,12 +289,18 @@ is no per-token billing. The dashboard must say "estimated equivalent cost", not
 ## 5. Core data model
 
 ```
-Session ──1:1── Graph ──1:N── Node ──1:N── Run ──1:N── Event
-   │                            │
+Session ──1:N── Node ──1:N── Run ──1:N── Event
+   │              │  └─1:N── NodeDependency (the edges)
+   │              │
    └─ status: planning | running | paused | done | failed
-                                └─ status: pending | ready | running |
-                                           awaiting_review | blocked | done | failed | skipped
+                  └─ status: pending | ready | running |
+                             awaiting_review | blocked | done | failed | skipped
 ```
+
+**There is no `Graph` entity.** It would sit 1:1 with `Session`, carry no column
+of its own, and add a join to the query the scheduler runs most often. The
+session row *is* the graph; the edges are their own table because the scheduler
+queries them on every transition and a JSON column cannot be constrained.
 
 - **Session** — one planning conversation plus one graph. This is what appears in
   the Dashboard tab (active only) and the Sessions tab (all).
@@ -430,6 +436,22 @@ completed); the Dashboard shows only active ones.
   "touches": ["backend/auth/**"]
 }
 ```
+
+Four things about that schema that only became clear once the tables existed:
+
+- **`id` here is a planner-local slug, and `depends_on` refers to slugs** — not
+  to our `node_<ULID>` ids. Mapping slug to id is the planner's job and happens
+  **entirely before persistence**, which is also why "orphan `depends_on`" is a
+  pre-persistence concept: once rows exist, foreign keys make it unreachable.
+- **`suggested_harness` / `suggested_model` are stored as `harness` / `model`.**
+  The suggestion is not retained once a human overrides it — a proposal the
+  operator has already answered is not worth a column.
+- **`estimated_effort` has no closed vocabulary and nothing may schedule on
+  it.** It is an advisory badge. An LLM's guess at effort is not a priority.
+- **`acceptance_criteria` is an array, and the current column is a single
+  string.** That mismatch has to be closed before the planner writes to it, or
+  the criteria get joined with newlines and the per-criterion results the
+  `awaiting_review` panel promises become unrecoverable. See below.
 
 3. **Validate the DAG before rendering it**: no cycles, no orphan `depends_on`,
    topological sort possible. LLMs get this wrong regularly — on a cycle, hand the

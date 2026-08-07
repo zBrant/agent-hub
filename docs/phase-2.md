@@ -70,6 +70,28 @@ losing its single node, and repository tests cover a multi-node session with
 edges, including a self-edge and a duplicate edge being rejected at the
 database level.
 
+**Result:** completed on 2026-08-07, 29 tests. `node_dependency` with a
+composite primary key; three of the four graph constraints are enforced by
+SQLite rather than Python, and orphan `depends_on` falls out of the foreign
+keys — which means it only ever exists in the planner's JSON. `load_graph` is
+three statements regardless of node count.
+
+Only `touches` and `estimated_effort` were genuinely new; `acceptance_criteria`,
+`harness`, `model` and `auto_merge` already existed. Corrections to `design.md`
+§5 and §8 are recorded there.
+
+**Left open, and it must be closed before C8:** `acceptance_criteria` is an
+array in §8's schema and a single `TEXT` column in the table. Changing it
+touches `api/schemas.py` and the generated frontend types, so C1 correctly did
+not do it as a drive-by — but a planner writing to a string column joins the
+criteria with newlines, and the per-criterion results §8's `awaiting_review`
+panel promises are then unrecoverable.
+
+Also worth writing down because C9/C10 will rely on it: adding or removing an
+edge stamps the **dependent** node's `updated_ms`; the dependency's is
+untouched. Without that rule a removed edge deletes the only row carrying a
+timestamp and the graph's shape has no mtime at all.
+
 ---
 
 ### C2 — Pure DAG core
@@ -195,7 +217,17 @@ it orphaned; do not leave the row lying.
 
 ---
 
-### C7 — Human gate
+### C7 — Acceptance checks and the human gate
+
+**A gap in this plan, found while building C1:** `design.md` §9's scheduler
+sketch calls `check_acceptance(node)` and §8's `awaiting_review` panel shows
+"acceptance-criteria **results**", per criterion — but no activity below owned
+running those checks. It belongs here, ahead of the gate, because the gate is
+what consumes the results.
+
+So C7 first closes the `acceptance_criteria` column (array, not a joined
+string — see C1's result), then runs each criterion and records a per-criterion
+outcome, then gates on it.
 
 `auto_merge` off means a finished node stops at `awaiting_review` (invariant 6:
 the planner's graph is a proposal, and nothing runs — or merges — before
@@ -205,9 +237,9 @@ Approve merges; reject retries **with feedback**, which means the rejection text
 reaches the next run's prompt. B7's immutable-attempt rule holds: a retry is a
 new `Run`, never a mutated one.
 
-**Done when:** with `auto_merge` off, a completed node blocks its dependents
-until approved; and a rejection's feedback text is present in the retry's
-`meta.json` argv or prompt.
+**Done when:** each acceptance criterion produces its own pass/fail; with
+`auto_merge` off, a completed node blocks its dependents until approved; and a
+rejection's feedback text is present in the retry's `meta.json` argv or prompt.
 
 ---
 
