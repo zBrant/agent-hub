@@ -5,15 +5,12 @@
         "additionalProperties": false,
         "properties": {
           "acceptance_criteria": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Acceptance Criteria"
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Acceptance Criteria",
+            "type": "array"
           },
           "auto_merge": {
             "default": false,
@@ -162,15 +159,11 @@
       "NodeResponse": {
         "properties": {
           "acceptance_criteria": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Acceptance Criteria"
+            "items": {
+              "type": "string"
+            },
+            "title": "Acceptance Criteria",
+            "type": "array"
           },
           "base_ref": {
             "anyOf": [

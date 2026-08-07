@@ -76,7 +76,7 @@ function node(status: "ready" | "running" | "done" | "failed" | "blocked") {
     session_id: session.id,
     name: "main",
     prompt: "Build it",
-    acceptance_criteria: null,
+    acceptance_criteria: [],
     harness: "codex",
     model: "gpt-5.6-terra",
     worktree_path: "/workspace/node_one",

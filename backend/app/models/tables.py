@@ -220,13 +220,15 @@ class Node(SQLModel, table=True):
     # user's brief.
     name: str
     prompt: str
-    # authored — `design.md` §8 emits this as an *array* of criteria; the column
-    # is one string and the API and frontend already read it as one. Joining
-    # them costs the per-criterion pass/fail that §8's awaiting_review panel
-    # promises ("acceptance-criteria results"), so this is a known gap, not a
-    # settled shape. Widening it is a change to api/schemas.py and the generated
-    # frontend types, which is why C1 leaves it alone.
-    acceptance_criteria: str | None = Field(default=None)
+    # authored — one entry per criterion, as `design.md` §8 emits it. It is an
+    # array and not a joined string because §8's awaiting_review panel shows
+    # acceptance-criteria *results*, plural: a per-criterion pass/fail cannot be
+    # recovered from text that was joined on newlines, and the planner would be
+    # the one doing the joining. Empty means the node has no stated criteria,
+    # which is a different claim from "the criteria are unknown".
+    acceptance_criteria: tuple[str, ...] = Field(
+        default=(), sa_type=StringTupleType, sa_column_kwargs={"server_default": "[]"}
+    )
     # authored — data, never a conditional (invariant 1). No code outside
     # app/harnesses/ may branch on this value. `design.md` §8 calls this
     # `suggested_harness` because the planner only proposes it; once a human has

@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -155,7 +155,7 @@ class SingleRunService:
         harness: str,
         model: str | None = None,
         title: str | None = None,
-        acceptance_criteria: str | None = None,
+        acceptance_criteria: Sequence[str] = (),
         auto_merge: bool = False,
         base_ref: str = "HEAD",
     ) -> CreatedSession:

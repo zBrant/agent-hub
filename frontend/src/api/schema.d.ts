@@ -198,8 +198,11 @@ export interface components {
     schemas: {
         /** CreateSessionRequest */
         readonly CreateSessionRequest: {
-            /** Acceptance Criteria */
-            readonly acceptance_criteria?: string | null;
+            /**
+             * Acceptance Criteria
+             * @default []
+             */
+            readonly acceptance_criteria: readonly string[];
             /**
              * Auto Merge
              * @default false
@@ -260,7 +263,7 @@ export interface components {
         /** NodeResponse */
         readonly NodeResponse: {
             /** Acceptance Criteria */
-            readonly acceptance_criteria: string | null;
+            readonly acceptance_criteria: readonly string[];
             /** Base Ref */
             readonly base_ref: string | null;
             /** Branch */

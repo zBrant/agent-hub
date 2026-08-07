@@ -37,7 +37,7 @@ class CreateSessionRequest(BaseModel):
     harness: str = Field(min_length=1)
     model: str | None = None
     title: str | None = None
-    acceptance_criteria: str | None = None
+    acceptance_criteria: tuple[str, ...] = ()
     auto_merge: bool = False
     base_ref: str = "HEAD"
 
@@ -63,7 +63,7 @@ class NodeResponse(BaseModel):
     session_id: str
     name: str
     prompt: str
-    acceptance_criteria: str | None
+    acceptance_criteria: tuple[str, ...]
     harness: str
     model: str | None
     worktree_path: Path | None

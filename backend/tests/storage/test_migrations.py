@@ -5,6 +5,9 @@
 a migration, and the first person to run it would be a user.
 """
 
+import json
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -201,7 +204,10 @@ def test_a_populated_phase_1_database_migrates_forward(settings: Settings) -> No
             "sess_1",
             "main",
             "add a docstring to foo()",
-            "pytest passes",
+            # Rewritten from prose into a one-element array, losslessly. A
+            # Phase 1 value was free text; splitting it on newlines would be a
+            # guess about what the operator meant.
+            '["pytest passes"]',
             "codex",
             "gpt-5.6-terra",
             "/ws/sess_1/node_1",
@@ -307,3 +313,57 @@ def test_a_test_never_migrates_the_real_database(settings: Settings) -> None:
     upgrade_database_sync(settings.database_url)
     assert settings.db_path.exists()
     assert EXPECTED_TABLES <= table_names(settings.database_url)
+
+
+def test_prose_acceptance_criteria_survive_as_one_criterion(
+    settings: Settings,
+) -> None:
+    """Revision dab2c49d6ccb rewrites the column; it must not lose the text.
+
+    The read path is the point: after the upgrade the column holds JSON, and
+    ``json.loads`` on the old bare prose would raise. A row that migrated but
+    can no longer be loaded is not a migrated row.
+    """
+    upgrade_database_sync(settings.database_url, revision=PHASE_1_REVISION)
+    seed_a_phase_1_database(settings.database_url)
+    upgrade_database_sync(settings.database_url)
+
+    (value,) = rows(
+        settings.database_url,
+        "SELECT acceptance_criteria FROM node WHERE id = 'node_1'",
+    )[0]
+    assert json.loads(value) == ["pytest passes"]
+
+
+def test_the_rebuild_of_node_keeps_its_foreign_keys_enforcing(
+    settings: Settings,
+) -> None:
+    """``node`` is the parent of two foreign keys and batch mode copies it out.
+
+    ``run.node_id`` and ``node_dependency``'s composite pair both point here.
+    SQLite drops a table's triggers when it is rebuilt (see a83db6150739) and
+    it is equally capable of leaving a foreign key pointing at nothing, so the
+    guarantee is asserted after the copy rather than assumed to survive it.
+    """
+    upgrade_database_sync(settings.database_url, revision=PHASE_1_REVISION)
+    seed_a_phase_1_database(settings.database_url)
+    upgrade_database_sync(settings.database_url)
+
+    with closing(sqlite3.connect(database_path(settings.database_url))) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+
+        assert connection.execute("PRAGMA foreign_key_check").fetchall() == []
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO run (id, node_id, session_id, attempt, status,"
+                " harness, events_path, event_count, permission_denial_count,"
+                " created_ms) VALUES ('run_x', 'node_missing', 'sess_1', 1,"
+                " 'running', 'codex', '/x', 0, 0, 1)"
+            )
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO node_dependency (node_id, depends_on_id, session_id,"
+                " created_ms) VALUES ('node_1', 'node_missing', 'sess_1', 1)"
+            )
