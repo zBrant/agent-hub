@@ -66,6 +66,14 @@ class OrchestratorError(Exception):
     """The requested lifecycle operation is invalid for persisted state."""
 
 
+class ResourceNotFoundError(OrchestratorError):
+    """A requested session, node, or run does not exist."""
+
+
+class InvalidTransitionError(OrchestratorError):
+    """Persisted state does not permit the requested operation."""
+
+
 @dataclass(frozen=True, slots=True)
 class CreatedSession:
     session: Session
@@ -125,6 +133,12 @@ class SingleRunService:
         base_ref: str = "HEAD",
     ) -> CreatedSession:
         """Create the integration and fixed-node worktrees plus authored rows."""
+        adapter = self._adapter_factory(harness)
+        if model is not None and model not in adapter.supported_models:
+            raise ValueError(
+                f"unsupported model {model!r} for {harness!r}; "
+                f"expected one of {adapter.supported_models!r}"
+            )
         session_id = new_session_id()
         node_id = new_node_id()
         workspace = await init_session_workspace(
@@ -168,7 +182,9 @@ class SingleRunService:
         """Execute the fixed node, checkpoint it, and optionally integrate it."""
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         if lock.locked():
-            raise OrchestratorError(f"session {session_id} already has an active run")
+            raise InvalidTransitionError(
+                f"session {session_id} already has an active run"
+            )
         async with lock:
             return await self._run_locked(session_id)
 
@@ -176,17 +192,19 @@ class SingleRunService:
         """Apply the human gate for a safe run left awaiting review."""
         lock = self._locks.setdefault(session_id, asyncio.Lock())
         if lock.locked():
-            raise OrchestratorError(f"session {session_id} already has an active run")
+            raise InvalidTransitionError(
+                f"session {session_id} already has an active run"
+            )
         async with lock, self._database.session() as db_session:
             repository = Repository(db_session)
             session, node = await self._session_and_node(repository, session_id)
             if node.status is not NodeStatus.AWAITING_REVIEW:
-                raise OrchestratorError(
+                raise InvalidTransitionError(
                     f"node {node.id} is {node.status.value}, not awaiting_review"
                 )
             runs = await repository.list_runs(node.id)
             if not runs:
-                raise OrchestratorError(f"node {node.id} has no run to approve")
+                raise InvalidTransitionError(f"node {node.id} has no run to approve")
             run = runs[-1]
             meta = await read_meta(meta_path(self._settings.runs_root, run.id))
             if (
@@ -194,7 +212,7 @@ class SingleRunService:
                 or meta.node_id != node.id
                 or meta.session_id != session.id
             ):
-                raise OrchestratorError(
+                raise InvalidTransitionError(
                     f"metadata identity does not match run {run.id}; refusing merge"
                 )
             disposition = evaluate_run(
@@ -204,7 +222,7 @@ class SingleRunService:
                 changed=True,
             )
             if not disposition.mergeable:
-                raise OrchestratorError(
+                raise InvalidTransitionError(
                     f"run {run.id} is not safe to merge: {disposition.reason}"
                 )
 
@@ -217,7 +235,7 @@ class SingleRunService:
             repository = Repository(db_session)
             session, node = await self._session_and_node(repository, session_id)
             if node.status is not NodeStatus.READY:
-                raise OrchestratorError(
+                raise InvalidTransitionError(
                     f"node {node.id} is {node.status.value}; "
                     "Phase 1 starts only ready nodes"
                 )
@@ -229,7 +247,7 @@ class SingleRunService:
                     f"session {session_id} already has an active run"
                 )
             if node.worktree_path is None:
-                raise OrchestratorError(f"node {node.id} has no worktree")
+                raise InvalidTransitionError(f"node {node.id} has no worktree")
 
             run_id = new_run_id()
             # Resolve the adapter and validate its model/argv before persisting a
@@ -405,14 +423,45 @@ class SingleRunService:
     ) -> tuple[Session, Node]:
         session = await repository.get_session(session_id)
         if session is None:
-            raise OrchestratorError(f"no such session {session_id}")
+            raise ResourceNotFoundError(f"no such session {session_id}")
         nodes = await repository.list_nodes(session_id)
         if len(nodes) != 1:
-            raise OrchestratorError(
+            raise InvalidTransitionError(
                 f"Phase 1 session {session_id} must have exactly one node, "
                 f"got {len(nodes)}"
             )
         return session, nodes[0]
+
+    async def list_sessions(self, *, limit: int | None = None) -> tuple[Session, ...]:
+        async with self._database.session() as db_session:
+            rows = await Repository(db_session).list_sessions(limit=limit)
+            return tuple(rows)
+
+    async def get_session(self, session_id: SessionId) -> Session:
+        async with self._database.session() as db_session:
+            row = await Repository(db_session).get_session(session_id)
+            if row is None:
+                raise ResourceNotFoundError(f"no such session {session_id}")
+            return row
+
+    async def get_node(self, session_id: SessionId) -> Node:
+        async with self._database.session() as db_session:
+            _, node = await self._session_and_node(Repository(db_session), session_id)
+            return node
+
+    async def list_runs(self, session_id: SessionId) -> tuple[Run, ...]:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            _, node = await self._session_and_node(repository, session_id)
+            return tuple(await repository.list_runs(node.id))
+
+    async def get_diff(self, session_id: SessionId) -> str:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            session, node = await self._session_and_node(repository, session_id)
+            if node.base_ref is None:
+                raise InvalidTransitionError(f"node {node.id} has no base ref")
+            return await self._workspace(session).diff(node.id, base_ref=node.base_ref)
 
     async def _set_node(
         self,
@@ -445,7 +494,9 @@ class SingleRunService:
 
 __all__ = [
     "CreatedSession",
+    "InvalidTransitionError",
     "OrchestratorError",
+    "ResourceNotFoundError",
     "RunOutcome",
     "SingleRunService",
 ]

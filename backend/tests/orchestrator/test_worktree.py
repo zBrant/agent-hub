@@ -113,7 +113,10 @@ async def test_happy_path_create_commit_merge(workspace: SessionWorkspace) -> No
 
     assert node.path.is_dir()
     assert node.branch.endswith("/node_a")
-    assert node.base_ref == workspace.integration_branch
+    assert (
+        node.base_ref
+        == (await git(workspace.integration_path, "rev-parse", "HEAD")).strip()
+    )
     assert not node.blocked
 
     (node.path / "greeting.txt").write_text("hello from the agent\n")
@@ -236,7 +239,7 @@ async def test_node_with_two_parents_is_based_on_both(
     child = await workspace.create_node("node_c", parents=["node_a", "node_b"])
 
     assert not child.blocked
-    assert child.base_ref == parent_a.branch
+    assert child.base_ref == (await git(child.path, "rev-parse", "HEAD")).strip()
     assert [m.status for m in child.parent_merges] == [MergeStatus.MERGED]
     assert (child.path / "a-work.txt").exists()
     assert (child.path / "b-work.txt").exists()
@@ -325,3 +328,17 @@ async def test_escaping_node_ids_never_touch_the_target_repository(
 
 def test_default_workspaces_root_is_under_agenthub() -> None:
     assert default_workspaces_root().parts[-2:] == (".agenthub", "workspaces")
+
+
+async def test_diff_survives_integration_merge(workspace: SessionWorkspace) -> None:
+    node = await workspace.create_node("node_a")
+    (node.path / "greeting.txt").write_text("hello\n")
+    await workspace.commit("node_a", "feat: greeting")
+
+    before = await workspace.diff("node_a", base_ref=node.base_ref)
+    await workspace.merge_into_integration("node_a")
+    after = await workspace.diff("node_a", base_ref=node.base_ref)
+
+    assert before == after
+    assert "greeting.txt" in after
+    assert "+hello" in after

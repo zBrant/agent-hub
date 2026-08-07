@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api.health import router as health_router
+from app.api.session import router as session_router
 from app.config import Settings, get_settings
 from app.models.clock import now_ms
 from app.models.pricing import load_price_table
@@ -44,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = settings or get_settings()
     application.include_router(health_router)
+    application.include_router(session_router)
     return application
 
 

@@ -443,18 +443,14 @@ async def test_an_invalid_adapter_does_not_leave_a_running_attempt(
         prices=prices,
         adapter_factory=invalid_factory,
     )
-    created = await service.create_session(
-        repo_path=target_repo,
-        prompt="cannot start",
-        harness="missing-harness",
-        model=MODEL,
-    )
-
     with pytest.raises(ValueError, match="unknown harness"):
-        await service.run(created.session.id)
+        await service.create_session(
+            repo_path=target_repo,
+            prompt="cannot start",
+            harness="missing-harness",
+            model=MODEL,
+        )
 
     async with database.session() as db_session:
         repository = Repository(db_session)
-        node = await repository.get_node(created.node.id)
-        assert node is not None and node.status is NodeStatus.READY
-        assert await repository.list_runs(created.node.id) == []
+        assert await repository.list_sessions() == []

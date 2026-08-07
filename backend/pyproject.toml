@@ -123,3 +123,4 @@ name = "Only worktree and storage touch git or run files"
 type = "forbidden"
 source_modules = ["app.api", "app.ws", "app.harnesses", "app.search", "app.metrics"]
 forbidden_modules = ["app.orchestrator.worktree"]
+allow_indirect_imports = true

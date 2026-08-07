@@ -252,7 +252,7 @@ class SessionWorkspace:
         path = self.node_path(node_id)
         branch = self.node_branch(node_id)
         parent_branches = [self.node_branch(p) for p in parents]
-        base_ref = parent_branches[0] if parent_branches else self.integration_branch
+        source_ref = parent_branches[0] if parent_branches else self.integration_branch
 
         await self._git(
             self.integration_path,
@@ -262,7 +262,7 @@ class SessionWorkspace:
             branch,
             "--",
             str(path),
-            base_ref,
+            source_ref,
         )
 
         merges: list[MergeResult] = []
@@ -274,6 +274,10 @@ class SessionWorkspace:
                 # merge would report a conflict the human has not been shown yet.
                 break
 
+        # Persist an immutable commit, not the symbolic integration branch. The
+        # latter advances when this node merges and would make its final diff
+        # appear empty after a restart.
+        base_ref = await self._rev_parse(path, "HEAD")
         worktree = NodeWorktree(
             node_id=node_id,
             path=path,
@@ -290,6 +294,24 @@ class SessionWorkspace:
             blocked=worktree.blocked,
         )
         return worktree
+
+    async def diff(self, node_id: NodeId, *, base_ref: str) -> str:
+        """The node's patch from its immutable creation checkpoint."""
+        path = self.node_path(node_id)
+        base = await self._rev_parse(path, f"{base_ref}^{{commit}}")
+        branch = self.node_branch(node_id)
+        result = await self._git(
+            path,
+            "diff",
+            "--no-ext-diff",
+            "--binary",
+            "--find-renames",
+            "--end-of-options",
+            base,
+            branch,
+            "--",
+        )
+        return result.stdout
 
     async def commit(self, node_id: NodeId, message: str) -> CommitResult:
         """Stage everything in the node worktree and commit it."""
