@@ -10,13 +10,14 @@ lowest-risk piece, comes last.
 
 ## Status
 
-**Phase 1 implementation.** Phase 0 is complete. The acceptance run used Codex
-0.146.0 through ai-jail 1.16.0 and proved the entire path: isolated edit,
-structured events, four-field usage, append-only NDJSON replay, node commit, and
-integration merge. Phase 1 activity B1 is complete: the local-only FastAPI entry
-point is running and verified. The local suite has 196 passing tests and all
-static architecture gates pass. See [`phase-1.md`](phase-1.md) for the current
-work.
+**Phase 1 implementation.** Phase 0 is complete. Phase 1 activities B1–B4 are
+complete: local-only FastAPI, migrated SQLite projections, ordered
+NDJSON→SQLite→broadcast ingest with deterministic replay, and the persistent
+single-node run service. The B8 frontend shell is also in place; generated types
+remain gated on B5. The local suite has 360 passing tests (1 harness skip), and
+all static architecture and frontend type gates pass. REST (B5), WebSocket (B6),
+and kill/retry (B7) are next and can now proceed from the service boundary. See
+[`phase-1.md`](phase-1.md) for the activity details.
 
 ## Phases
 

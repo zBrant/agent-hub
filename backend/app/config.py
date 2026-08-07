@@ -17,6 +17,8 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_ROOT = Path.home() / ".agenthub"
+# Local MVP source checkout: pricing.yaml is version-controlled beside design.md.
+DEFAULT_PRICING_PATH = Path(__file__).resolve().parents[2] / "pricing.yaml"
 
 
 class Settings(BaseSettings):
@@ -32,6 +34,9 @@ class Settings(BaseSettings):
     database_path: Path | None = Field(default=None)
     # SQLAlchemy statement logging. Off by default; it prints prompts.
     database_echo: bool = Field(default=False)
+    # Kept configurable so replay and the live service cannot accidentally load
+    # different histories when the checkout moves.
+    pricing_path: Path = Field(default=DEFAULT_PRICING_PATH)
 
     @property
     def db_path(self) -> Path:

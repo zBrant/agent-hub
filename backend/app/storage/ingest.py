@@ -232,14 +232,24 @@ class RunIngest:
         await self._projection.apply(event)
         await self._broadcast(event)
 
-    async def finalize(self, *, at_ms: int, stats: ParseStats) -> RunMeta:
+    async def finalize(
+        self,
+        *,
+        at_ms: int,
+        stats: ParseStats,
+        harness_version: str | None = None,
+    ) -> RunMeta:
         """Write the run-end ``meta.json``: the parser's own verdict on itself.
 
         Called once the adapter's stream is exhausted. Until it is, the file on
         disk says ``finalized_ms: null`` and :attr:`RunMeta.trusted` is false —
         a run killed here is untrusted, which is the safe reading.
         """
-        self._meta = self._meta.finalize(at_ms=at_ms, stats=stats)
+        self._meta = self._meta.finalize(
+            at_ms=at_ms,
+            stats=stats,
+            harness_version=harness_version,
+        )
         await write_meta(self._meta_file, self._meta)
         return self._meta
 

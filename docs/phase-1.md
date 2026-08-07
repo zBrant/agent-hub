@@ -92,7 +92,7 @@ run while rejecting corruption elsewhere. Interrupted projections retain event
 and permission-denial counts, so their replay checks are as strong as completed
 runs. Parser trust and sanitized launch metadata live atomically in `meta.json`.
 
-### B4 — Single-run application service
+### B4 — Single-run application service ✅
 
 Replace the throwaway driver with an orchestrator service that creates the
 session integration worktree and node worktree, selects an adapter through the
@@ -101,6 +101,18 @@ successful run. One active run per session is sufficient.
 
 **Done when:** a fake adapter drives the complete lifecycle without HTTP, and
 the service has no harness-name conditional.
+
+**Result:** completed on 2026-08-06. `SingleRunService` creates the session
+integration worktree and its fixed node worktree, resolves adapters only through
+the registry contract, applies the mandatory ai-jail launcher, streams every
+event through B3, finalizes parser trust, checkpoints the node branch, and
+integrates only a changed, trusted success with no permission denials.
+`auto_merge=False` leaves the node `awaiting_review`; explicit approval repeats
+the safety check before git is touched. A per-session lock plus a persisted-run
+check enforce one active attempt. Tests drive the entire path with an arbitrary
+fake harness name and real temporary git repositories, including unsafe runs,
+manual approval, and concurrent-start refusal. The FastAPI lifespan now owns
+database migration, engine disposal, pricing, and this service.
 
 ### B5 — REST API
 

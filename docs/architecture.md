@@ -253,6 +253,7 @@ in the middle of a stream.
 | `api/` | REST routes, validation, serialization | business logic, git access |
 | `ws/` | topic multiplexing, backpressure | parsing harness output |
 | `orchestrator/graph.py` | pure DAG: validation, readiness, transition | any I/O |
+| `orchestrator/service.py` | Phase 1 session/run lifecycle, safety gates | HTTP or harness-specific branching |
 | `orchestrator/scheduler.py` | concurrency, retry, budget, transition persistence | talk to a CLI directly |
 | `orchestrator/planner.py` | LLM → DAG via structured output + correction loop | execute nodes |
 | `orchestrator/worktree.py` | git lifecycle: create, merge, conflict, GC | decide *when* to create |

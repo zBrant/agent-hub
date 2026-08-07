@@ -202,11 +202,24 @@ class RunMeta(BaseModel):
         """
         return self.parser is not None and self.parser.trusted
 
-    def finalize(self, *, at_ms: int, stats: ParseStats) -> RunMeta:
+    def finalize(
+        self,
+        *,
+        at_ms: int,
+        stats: ParseStats,
+        harness_version: str | None = None,
+    ) -> RunMeta:
         """The run-end version of this file."""
-        return self.model_copy(
-            update={"finalized_ms": at_ms, "parser": ParserTrust.from_stats(stats)}
-        )
+        update: dict[str, object] = {
+            "finalized_ms": at_ms,
+            "parser": ParserTrust.from_stats(stats),
+        }
+        # Most CLIs only reveal their exact version in the first stream event.
+        # The start copy remains useful if the process dies before that event;
+        # the finalized copy records the observed version when it exists.
+        if harness_version is not None:
+            update["harness_version"] = harness_version
+        return self.model_copy(update=update)
 
 
 def write_meta_sync(path: Path, meta: RunMeta) -> None:

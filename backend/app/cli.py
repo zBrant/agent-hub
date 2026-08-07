@@ -17,11 +17,6 @@ from app.storage.meta import MetaError
 from app.storage.replay import ReplayError, ReplayResult, replay_run
 from app.storage.repository import RepositoryError, repository
 
-# backend/app/cli.py -> repository root, where pricing.yaml lives beside
-# design.md. Not in Settings: the price table is repository data under version
-# control, not per-machine configuration.
-DEFAULT_PRICING = Path(__file__).resolve().parents[2] / "pricing.yaml"
-
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="agenthub")
@@ -45,7 +40,14 @@ def build_parser() -> argparse.ArgumentParser:
     replay.add_argument(
         "--root", type=Path, default=None, help="AgentHub root (default ~/.agenthub)"
     )
-    replay.add_argument("--pricing", type=Path, default=DEFAULT_PRICING)
+    replay.add_argument(
+        "--pricing",
+        type=Path,
+        default=None,
+        help=(
+            "price history (default: AGENTHUB_PRICING_PATH or repository pricing.yaml)"
+        ),
+    )
     return parser
 
 
@@ -62,14 +64,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     raise AssertionError(f"unhandled command {args.command!r}")
 
 
-async def _replay(*, run_id: str, root: Path | None, pricing: Path) -> int:
+async def _replay(*, run_id: str, root: Path | None, pricing: Path | None) -> int:
     settings = Settings() if root is None else Settings(root=root)
     if not settings.db_path.exists():
         print(f"no database at {settings.db_path}", file=sys.stderr)
         return 1
 
     try:
-        prices = load_price_history(pricing)
+        prices = load_price_history(pricing or settings.pricing_path)
     except PricingError as exc:
         print(str(exc), file=sys.stderr)
         return 1
