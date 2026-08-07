@@ -10,17 +10,20 @@ lowest-risk piece, comes last.
 
 ## Status
 
-**Phase 1 implementation.** Phase 0 is complete. Phase 1 activities B1–B10 are
-complete: local-only FastAPI, migrated SQLite projections, ordered
-NDJSON→SQLite→broadcast ingest with deterministic replay, and the persistent
+**Phase 1 complete.** Activities B1–B11 passed: local-only FastAPI, migrated
+SQLite projections, ordered NDJSON→SQLite→broadcast ingest with deterministic
+replay, and the persistent
 single-node run service with its persistent REST resource API and bounded,
 cursor-replay WebSocket broker, process-group kill, and immutable-attempt retry.
 B8/B9 are also complete: generated contracts, the persistent/live session
 view, structured feed, usage/cost, diff, and lifecycle controls. B10 proved the
 Codex app-server topology is interactive but not attachable to the active
 `exec --json` runtime, so the misleading PTY bridge is explicitly deferred.
-Phase 1 acceptance and operating documentation (B11) is next. See
-[`phase-1.md`](phase-1.md) for the activity details.
+B11 then exercised the full path with a real Codex session over HTTP and
+WebSocket, including reconnect, kill, immutable retry, two NDJSON replays, and
+database/REST/UI total agreement. See [`acceptance-phase-1.md`](acceptance-phase-1.md)
+for the evidence and [`phase-1.md`](phase-1.md) for the activity details. Phase
+2 graph design is next.
 
 ## Phases
 
@@ -28,7 +31,7 @@ Phase 1 acceptance and operating documentation (B11) is next. See
       launches a sandboxed harness, parses events and accumulated tokens, then
       commits and merges. If this works, the product is viable.
       Activity breakdown: [`phase-0.md`](phase-0.md).
-- [ ] **Phase 1 — Single-node orchestrator.** FastAPI + SQLite + WebSocket, one
+- [x] **Phase 1 — Single-node orchestrator.** FastAPI + SQLite + WebSocket, one
       session and one node streaming live in the browser, kill/retry,
       `agenthub replay <run_id>`. No graph yet.
 - [ ] **Phase 2 — The graph.** Planner with structured output, DAG validation,
@@ -39,7 +42,7 @@ Phase 1 acceptance and operating documentation (B11) is next. See
 - [ ] **Phase 4 — Code search.** ripgrep + ast-grep + tree-sitter tags + agentic
       chat, then sqlite-vec.
 
-Install and run instructions land with Phase 1, and the README gets them then.
+Install and run instructions are in the repository `README.md`.
 
 ## Post-MVP
 

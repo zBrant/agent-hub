@@ -277,7 +277,7 @@ drop-from-the-middle bridge remains mandatory when app-server becomes the
 primary ai-jail-contained Codex runtime. The evidence and topology boundary are
 recorded in `docs/architecture.md` §5.
 
-### B11 — Acceptance and operating documentation
+### B11 — Acceptance and operating documentation ✅
 
 Run one real Codex session through HTTP and WebSocket, disconnect/reconnect,
 kill or retry a second run, replay both from NDJSON, and verify the database and
@@ -285,6 +285,22 @@ UI totals. Add install/run instructions only after this succeeds.
 
 **Done when:** the acceptance record is committed and the roadmap marks Phase 1
 complete.
+
+**Result:** completed on 2026-08-07. A real Codex 0.146.0 session was created
+through HTTP and observed through the production WebSocket. The client
+disconnected at session-topic sequence 5, resumed on the same stream, and
+received sequence 6 without a gap before killing attempt 1 during a tool. Retry
+created attempt 2, completed successfully in the same node worktree, and
+stopped at `awaiting_review` with the exact accepted file in its checkpoint.
+
+Both runs were rebuilt independently from NDJSON. Attempt 1 remained
+interrupted with 6 events and no invented usage; attempt 2 remained successful
+with 12 events and four-field totals of 9,060 input + 485 output + 62,208 cache
+read + 0 cache write. SQLite, REST summaries, persisted events, and the UI
+component agreed on 71,753 total tokens and $0.045477 estimated equivalent
+cost. Install, run, session creation, replay, data-location, and verification
+instructions now live in `README.md`; the complete evidence is in
+`docs/acceptance-phase-1.md`.
 
 ## Explicitly out of scope
 
