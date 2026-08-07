@@ -325,7 +325,13 @@ class Repository:
         return row
 
     async def mark_run_interrupted(
-        self, run_id: RunId, *, at_ms: int | None = None, summary: str | None = None
+        self,
+        run_id: RunId,
+        *,
+        at_ms: int | None = None,
+        summary: str | None = None,
+        event_count: int | None = None,
+        permission_denial_count: int | None = None,
     ) -> Run:
         """Terminate a run with no ``RunFinished`` in its log.
 
@@ -338,6 +344,10 @@ class Repository:
         row.finished_ms = now_ms() if at_ms is None else at_ms
         if summary is not None:
             row.summary = summary
+        if event_count is not None:
+            row.event_count = event_count
+        if permission_denial_count is not None:
+            row.permission_denial_count = permission_denial_count
         await self._persist(row)
         return row
 

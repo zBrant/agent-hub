@@ -243,12 +243,20 @@ async def test_an_orphan_run_becomes_interrupted(
 ) -> None:
     assert [r.id for r in await repo.list_unfinished_runs()] == [run_row.id]
 
-    await repo.mark_run_interrupted(run_row.id, at_ms=9_999, summary="pid 4242 is gone")
+    await repo.mark_run_interrupted(
+        run_row.id,
+        at_ms=9_999,
+        summary="pid 4242 is gone",
+        event_count=17,
+        permission_denial_count=2,
+    )
 
     stored = await repo.get_run(run_row.id)
     assert stored is not None
     assert stored.status is RunState.INTERRUPTED
     assert stored.finished_ms == 9_999
+    assert stored.event_count == 17
+    assert stored.permission_denial_count == 2
     assert await repo.list_unfinished_runs() == []
 
 

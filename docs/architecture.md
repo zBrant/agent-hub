@@ -130,17 +130,21 @@ one of them becomes unreachable.
 
 Write path for an event, in this order:
 
-1. append to `events.ndjson` (batched `fsync`, not per line)
-2. update the SQLite projection (node status, token aggregate)
+1. append to `events.ndjson` and flush the record
+2. update the SQLite projection (`run` state and append-only usage rows)
 3. broadcast on the WebSocket
 
 If the process dies between 1 and 2, replay reconstructs. Reverse the order and
 you have state in the database that does not exist in the log — and you lose the
 ability to audit.
 
+The live writer flushes every record from Python's buffer. It does not call
+`fsync()` per line: the recovery model is process death, not sudden power loss,
+and a disk sync for every streamed event would stall throughput.
+
 **Required command:** `agenthub replay <run_id>` rebuilds the projections from the
 NDJSON. If it does not exist, or does not match the database, invariant 4 in
-`CLAUDE.md` is fiction.
+`AGENTS.md` is fiction.
 
 `usage_event` is append-only and never `UPDATE`d. Dashboard aggregates are `SUM()`
 over an index, not a mutable counter.
@@ -152,10 +156,11 @@ facts about the *orchestration*, and no harness will ever emit them:
 
 | Field | Why the log cannot supply it |
 |---|---|
-| `session_id`, `node_id` | `RunStarted` carries the **harness's** session id, not ours. Without these, a run row deleted for rebuild cannot be relinked to its node. |
+| `session_id`, `node_id`, `attempt` | `RunStarted` carries the **harness's** session id, not ours. Without these, a run row deleted for rebuild cannot be relinked to its node or retain its attempt number. |
 | `price_table_version` | See below. |
 | `argv`, `cwd`, sanitized `env`, harness version | The launch conditions. Reproducing a run means reproducing these. |
 | parser trust (`unknown`, `malformed`, unreconciled usage) | `ParseStats` is adapter state, not an event. B7 must refuse to merge a parser-untrusted run and B9 must show it, so it has to be durable somewhere. |
+| `created_ms` | A rebuild must retain the original row timestamp rather than stamp the replay time. |
 
 `meta.json` is written once at run start and finalized at run end. It is part of
 the source of truth, not a projection: deleting it loses information that
@@ -173,9 +178,11 @@ The rule: `meta.json` pins the `price_table_version` used at ingest, every
 requires `pricing.yaml` to retain superseded tables rather than only the current
 one.
 
-Until it does, replay of a run whose pinned version is not the loaded one must
-**refuse and say so**. Refusing is recoverable; silently repricing is not, and it
-is invisible in the diff.
+If the pinned version is absent, replay must permanently **refuse and say so**.
+That remains true even after superseded tables are retained: a table can be
+deleted accidentally or the database can move beside an older `pricing.yaml`.
+Refusing is recoverable; silently repricing is not, and it is invisible in the
+diff.
 
 ---
 

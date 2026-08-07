@@ -11,11 +11,15 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from app.models.pricing import (
+    PriceHistory,
     PriceTable,
+    PriceTableNotFound,
     PricingError,
     TokenCounts,
+    load_price_history,
     load_price_table,
     normalize_model_id,
 )
@@ -191,7 +195,105 @@ def test_malformed_table_raises() -> None:
 
 def test_bad_price_entry_raises() -> None:
     with pytest.raises(PricingError, match="bad price entry"):
-        PriceTable.from_mapping({"models": {"m": {"input": "free"}}})
+        PriceTable.from_mapping({"version": 1, "models": {"m": {"input": "free"}}})
+
+
+@pytest.mark.parametrize("version", [None, 0, -1, 1.5, True, "1"])
+def test_version_must_be_an_explicit_positive_integer(version: object) -> None:
+    raw = {"models": {"m": {"input": 1.0, "output": 1.0}}}
+    if version is not None:
+        raw["version"] = version
+    with pytest.raises(PricingError, match="positive integer"):
+        PriceTable.from_mapping(raw)
+
+
+# --------------------------------------------------------------------------
+# Price history — superseded tables are retained, never replaced
+# --------------------------------------------------------------------------
+
+
+def two_versions() -> dict[str, object]:
+    """Version 2 doubled the price of the one model in the table."""
+    return {
+        "version": 2,
+        "models": {"m": {"input": 2.0, "output": 20.0}},
+        "superseded": [{"version": 1, "models": {"m": {"input": 1.0, "output": 10.0}}}],
+    }
+
+
+def write_history(tmp_path: Path, raw: dict[str, object]) -> Path:
+    path = tmp_path / "pricing.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    return path
+
+
+def test_the_current_table_is_the_default(tmp_path: Path) -> None:
+    path = write_history(tmp_path, two_versions())
+    assert load_price_table(path).version == 2
+
+
+def test_a_superseded_table_is_still_reachable(tmp_path: Path) -> None:
+    """Computing cost at ingest only protects history if the price is findable."""
+    path = write_history(tmp_path, two_versions())
+    counts = TokenCounts(input_tokens=1_000_000)
+    assert load_price_table(path, version=1).cost_usd("m", counts) == pytest.approx(1.0)
+    assert load_price_table(path, version=2).cost_usd("m", counts) == pytest.approx(2.0)
+
+
+def test_a_missing_version_refuses_and_names_itself(tmp_path: Path) -> None:
+    """Replay depends on this: refusing is recoverable, repricing is not."""
+    path = write_history(tmp_path, two_versions())
+    with pytest.raises(PriceTableNotFound) as raised:
+        load_price_table(path, version=7)
+
+    assert raised.value.version == 7
+    assert "version 7" in str(raised.value)
+    assert "1, 2" in str(raised.value)
+    assert str(path) in str(raised.value)
+
+
+def test_a_duplicated_version_is_a_malformed_file(tmp_path: Path) -> None:
+    """A version identifies exactly one table, forever."""
+    raw = two_versions()
+    raw["superseded"] = [
+        {"version": 1, "models": {"m": {"input": 1.0, "output": 10.0}}},
+        {"version": 1, "models": {"m": {"input": 9.0, "output": 90.0}}},
+    ]
+    with pytest.raises(PricingError, match="duplicate price table version"):
+        load_price_history(write_history(tmp_path, raw))
+
+
+def test_a_superseded_table_may_not_be_newer_than_the_current_one(
+    tmp_path: Path,
+) -> None:
+    raw = two_versions()
+    raw["superseded"] = [{"version": 5, "models": {"m": {"input": 1.0, "output": 1.0}}}]
+    with pytest.raises(PricingError, match="newer than the current one"):
+        load_price_history(write_history(tmp_path, raw))
+
+
+def test_superseded_must_be_a_list_of_whole_tables(tmp_path: Path) -> None:
+    """Never a delta chain: a replay must not have to interpret history."""
+    raw = two_versions()
+    raw["superseded"] = {"1": {"models": {}}}
+    with pytest.raises(PricingError, match="list of whole price tables"):
+        load_price_history(write_history(tmp_path, raw))
+
+
+def test_the_shipped_file_has_a_history_of_exactly_one_version(
+    table: PriceTable,
+) -> None:
+    history = load_price_history(PRICING_YAML)
+    assert history.versions == (table.version,)
+    assert history.table(table.version) is history.current
+    assert history.table() is history.current
+
+
+def test_a_history_with_no_superseded_key_still_loads() -> None:
+    history = PriceHistory.from_mapping(
+        {"version": 3, "models": {"m": {"input": 1.0, "output": 1.0}}}
+    )
+    assert history.versions == (3,)
 
 
 # --------------------------------------------------------------------------

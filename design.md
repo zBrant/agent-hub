@@ -228,14 +228,20 @@ CREATE TABLE usage_event (
   run_id TEXT NOT NULL,
   node_id TEXT,
   session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
   ts INTEGER NOT NULL,
   harness TEXT NOT NULL,
   model TEXT NOT NULL,
+  source TEXT NOT NULL,       -- reported | reconstructed
   input_tokens INTEGER DEFAULT 0,
   output_tokens INTEGER DEFAULT 0,
   cache_read_tokens INTEGER DEFAULT 0,
   cache_write_tokens INTEGER DEFAULT 0,
-  cost_usd REAL              -- computed at ingest, with the price in effect then
+  cache_write_5m_tokens INTEGER DEFAULT 0,
+  cache_write_1h_tokens INTEGER DEFAULT 0,
+  price_table_version INTEGER NOT NULL,
+  cost_usd REAL,              -- computed at ingest, with the price in effect then
+  UNIQUE(run_id, seq)
 );
 CREATE INDEX ix_usage_session_ts ON usage_event(session_id, ts);
 ```

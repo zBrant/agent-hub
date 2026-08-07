@@ -13,8 +13,8 @@ they are marked as such throughout:
     The input to a run: what the user or the planner asked for, and where it was
     asked to happen. It exists *before* any event does and no amount of
     log-reading can invent it. Replay must therefore never delete a ``session``
-    or a ``node`` row — it discards and rebuilds ``run`` and ``usage_event``,
-    and recomputes the derived columns of the rows above them.
+    or a ``node`` row — it discards and rebuilds ``run`` and ``usage_event``.
+    Node and session transitions remain the orchestrator's responsibility.
 
 *derived*
     Produced by the run and reconstructible from its log. Every one of these
@@ -118,10 +118,10 @@ def _status_check(
 class Session(SQLModel, table=True):
     """One planning conversation plus its graph (`design.md` §5).
 
-    Every column here is *authored*. A session is created before its first run
-    exists, so nothing in any ``events.ndjson`` can reconstruct one; the derived
-    part of a session is :attr:`status`, which B3 recomputes from the state of
-    its nodes rather than reading directly out of a log.
+    A session is created before its first run exists, so nothing in any
+    ``events.ndjson`` can reconstruct its authored columns. :attr:`status` is a
+    projection of node states, but the transition is applied by the orchestrator
+    rather than replay storage (`docs/architecture.md` §3).
     """
 
     __tablename__ = "session"

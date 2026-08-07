@@ -11,8 +11,16 @@ stored on the row. Never recomputed in a query. Editing ``pricing.yaml``
 therefore affects future events only — cost history must not shift retroactively
 when a vendor changes prices.
 
-Everything here is pure except :func:`load_price_table`, which reads the YAML
-once at a boundary.
+That second rule only holds if a superseded price can still be *found*. Replay
+re-ingests, so a rebuild that reaches for the current table reprices every past
+run at today's prices — silently, and invisibly in any diff. ``pricing.yaml``
+therefore keeps its retired tables (`design.md` §4), :class:`PriceHistory`
+exposes them by version, and :meth:`PriceHistory.table` raises
+:class:`PriceTableNotFound` rather than falling back to the current one. Refusing
+is recoverable; repricing history is not.
+
+Everything here is pure except :func:`load_price_table` and
+:func:`load_price_history`, which read the YAML once at a boundary.
 
 Cache-write tiering: the API charges cache *writes* by TTL — roughly 1.25x the
 input price for the 5-minute tier and 2.0x for the 1-hour tier. Claude Code
@@ -24,7 +32,8 @@ the contract and carries the tier split alongside, for pricing only.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Self
 
@@ -45,6 +54,26 @@ def normalize_model_id(raw: str) -> str:
 
 class PricingError(Exception):
     """The price table itself is malformed. A missing *model* is not an error."""
+
+
+class PriceTableNotFound(PricingError):
+    """A pinned ``price_table_version`` is not in ``pricing.yaml`` any more.
+
+    Raised by :meth:`PriceHistory.table`, and the reason replay refuses instead
+    of continuing: the alternative is repricing a historical run at today's
+    prices, which invariant 3 exists to prevent and which no diff would show.
+    """
+
+    def __init__(self, version: int, known: tuple[int, ...], source: Path | None):
+        self.version = version
+        self.known = known
+        where = "the price history" if source is None else str(source)
+        listed = ", ".join(str(v) for v in known) or "none"
+        super().__init__(
+            f"price table version {version} is not in {where} "
+            f"(known versions: {listed}). Restore it under `superseded:` — "
+            "pricing a past run with a different table rewrites cost history."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -134,6 +163,10 @@ class PriceTable:
         if not isinstance(raw, dict):
             raise PricingError("price table must be a mapping")
 
+        version = raw.get("version")
+        if not isinstance(version, int) or isinstance(version, bool) or version < 1:
+            raise PricingError("price table `version` must be a positive integer")
+
         defaults = raw.get("defaults") or {}
         models_raw = raw.get("models")
         if not isinstance(models_raw, dict) or not models_raw:
@@ -160,7 +193,7 @@ class PriceTable:
                 raise PricingError(f"bad price entry for {model_id!r}: {exc}") from exc
 
         return cls(
-            version=int(raw.get("version", 0)),
+            version=version,
             models=models,
             cache_write_multiplier_5m=float(
                 defaults.get("cache_write_multiplier_5m", 1.25)
@@ -220,12 +253,85 @@ class PriceTable:
         )
 
 
-def load_price_table(path: Path) -> PriceTable:
-    """Read ``pricing.yaml``. The only I/O in this module."""
+@dataclass(frozen=True, slots=True)
+class PriceHistory:
+    """The current price table plus every table it superseded.
+
+    One file, not a directory of versions: a reviewer has to be able to see in a
+    single diff that raising a price *added* a table and did not edit an old one.
+    Each retired entry is a **complete** table rather than a delta — replay
+    depends on being able to reconstruct an exact price years later, and a delta
+    chain turns that into an interpretation.
+    """
+
+    current: PriceTable
+    superseded: Mapping[int, PriceTable] = field(default_factory=dict)
+    # Where it was loaded from, for error messages only.
+    source: Path | None = None
+
+    @property
+    def version(self) -> int:
+        """The version new ingests price with."""
+        return self.current.version
+
+    @property
+    def versions(self) -> tuple[int, ...]:
+        return tuple(sorted({self.current.version, *self.superseded}))
+
+    def table(self, version: int | None = None) -> PriceTable:
+        """The table for ``version``; the current one when ``version`` is None.
+
+        Raises :class:`PriceTableNotFound` for a version this file no longer
+        carries. It never falls back to the current table — see the module
+        docstring.
+        """
+        if version is None or version == self.current.version:
+            return self.current
+        found = self.superseded.get(version)
+        if found is None:
+            raise PriceTableNotFound(version, self.versions, self.source)
+        return found
+
+    @classmethod
+    def from_mapping(cls, raw: Any, *, source: Path | None = None) -> Self:
+        current = PriceTable.from_mapping(raw)
+        retired_raw = raw.get("superseded") or []
+        if not isinstance(retired_raw, list):
+            raise PricingError("`superseded` must be a list of whole price tables")
+
+        superseded: dict[int, PriceTable] = {}
+        for entry in retired_raw:
+            table = PriceTable.from_mapping(entry)
+            if table.version in superseded or table.version == current.version:
+                raise PricingError(
+                    f"duplicate price table version {table.version}: a version "
+                    "identifies exactly one table forever"
+                )
+            if table.version > current.version:
+                raise PricingError(
+                    f"superseded price table version {table.version} is newer "
+                    f"than the current one ({current.version}); versions only "
+                    "ever go up"
+                )
+            superseded[table.version] = table
+        return cls(current=current, superseded=superseded, source=source)
+
+
+def load_price_history(path: Path) -> PriceHistory:
+    """Read ``pricing.yaml`` with its retired tables. The only I/O here."""
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise PricingError(f"cannot read price table at {path}: {exc}") from exc
     except yaml.YAMLError as exc:
         raise PricingError(f"malformed price table at {path}: {exc}") from exc
-    return PriceTable.from_mapping(raw)
+    return PriceHistory.from_mapping(raw, source=path)
+
+
+def load_price_table(path: Path, *, version: int | None = None) -> PriceTable:
+    """One table out of ``pricing.yaml``; the current one by default.
+
+    Live ingest wants the default. Replay passes the version pinned in the run's
+    ``meta.json`` and must get that exact table or an exception.
+    """
+    return load_price_history(path).table(version)

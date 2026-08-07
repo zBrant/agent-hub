@@ -73,14 +73,24 @@ them into `models/` and re-exporting is the clean fix, but it collides with the
 `StrEnum` of the same name and forces a choice of representation on the
 persistence layer too — worth doing deliberately, not as a drive-by.
 
-### B3 — Ordered ingest and replay
+### B3 — Ordered ingest and replay ✅
 
 Implement the required write order: NDJSON append → SQLite projection → event
 broadcast. `agenthub replay <run_id>` must discard and rebuild only derived rows
-from the log, producing the same run/node state and usage totals.
+from the log, producing the same run projection and usage totals without
+mutating the authored session or node.
 
 **Done when:** crash-boundary tests cover death after steps 1 and 2, and replay
 is idempotent and byte-for-byte event compatible.
+
+**Result:** completed on 2026-08-06. One write path now enforces NDJSON append
+and flush → SQLite projection → broadcast, with tests observing each boundary.
+`agenthub replay <run_id>` rebuilds only `run` and `usage_event`, preserves the
+authored session/node rows, retains event timestamps and attempt number, refuses
+missing pinned price versions, and recovers a torn final line as an interrupted
+run while rejecting corruption elsewhere. Interrupted projections retain event
+and permission-denial counts, so their replay checks are as strong as completed
+runs. Parser trust and sanitized launch metadata live atomically in `meta.json`.
 
 ### B4 — Single-run application service
 

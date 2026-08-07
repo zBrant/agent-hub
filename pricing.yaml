@@ -9,6 +9,23 @@
 # When a harness runs under a Max/Pro subscription there is no per-token billing.
 # The number derived from this table is an "estimated equivalent cost", never
 # "spend" (invariant 7).
+#
+# CHANGING A PRICE
+#
+# Never edit a price in place. `usage_event.price_table_version` pins each row to
+# the table that produced its cost, and `agenthub replay` re-prices from that same
+# version — so editing version 1 rewrites the cost of every run already recorded
+# under it, silently, and the diff here looks like a one-line change.
+#
+# Instead:
+#   1. copy the whole current table (version, updated, defaults, models) into the
+#      first position of `superseded:` below, unchanged;
+#   2. edit the top-level table and bump `version`.
+#
+# Retired tables are kept in this file rather than in per-version files so the
+# addition and the edit show up in one reviewable diff. Each entry is a complete
+# table, never a delta: replay must be able to reconstruct an exact price years
+# later without interpreting a chain.
 
 version: 1
 updated: "2026-08-05"
@@ -49,3 +66,8 @@ models:
 # A model absent from this table gets cost_usd = null. That is deliberate: a
 # missing price must read as "unknown", never as zero. Zero is a number someone
 # will trust.
+
+# Retired tables, newest first. Empty because version 1 has never been superseded;
+# a run whose pinned version is missing here makes `agenthub replay` refuse rather
+# than reprice it (docs/architecture.md §4).
+superseded: []
