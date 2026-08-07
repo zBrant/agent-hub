@@ -533,6 +533,45 @@
         "title": "RunState",
         "type": "string"
       },
+      "RunSummaryResponse": {
+        "properties": {
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "estimated_equivalent_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Equivalent Cost Usd"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/TokenCountsResponse"
+          },
+          "trusted": {
+            "title": "Trusted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "run_id",
+          "trusted",
+          "tokens",
+          "estimated_equivalent_cost_usd",
+          "cost_complete"
+        ],
+        "title": "RunSummaryResponse",
+        "type": "object"
+      },
       "SessionResponse": {
         "properties": {
           "auto_merge": {
@@ -1101,6 +1140,106 @@
           }
         },
         "summary": "Start Run",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/runs/{run_id}/events": {
+      "get": {
+        "operationId": "list_run_events_api_sessions__session_id__runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Canonical persisted AgentEvent array"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Run Events",
+        "tags": [
+          "sessions"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/runs/{run_id}/summary": {
+      "get": {
+        "operationId": "get_run_summary_api_sessions__session_id__runs__run_id__summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Summary",
         "tags": [
           "sessions"
         ]

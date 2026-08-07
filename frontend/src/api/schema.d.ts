@@ -141,6 +141,40 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/sessions/{session_id}/runs/{run_id}/events": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List Run Events */
+        readonly get: operations["list_run_events_api_sessions__session_id__runs__run_id__events_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/sessions/{session_id}/runs/{run_id}/summary": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get Run Summary */
+        readonly get: operations["get_run_summary_api_sessions__session_id__runs__run_id__summary_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/health": {
         readonly parameters: {
             readonly query?: never;
@@ -338,6 +372,18 @@ export interface components {
          * @enum {string}
          */
         readonly RunState: "running" | "success" | "failed" | "interrupted" | "budget_exceeded";
+        /** RunSummaryResponse */
+        readonly RunSummaryResponse: {
+            /** Cost Complete */
+            readonly cost_complete: boolean;
+            /** Estimated Equivalent Cost Usd */
+            readonly estimated_equivalent_cost_usd: number | null;
+            /** Run Id */
+            readonly run_id: string;
+            readonly tokens: components["schemas"]["TokenCountsResponse"];
+            /** Trusted */
+            readonly trusted: boolean;
+        };
         /** SessionResponse */
         readonly SessionResponse: {
             /** Auto Merge */
@@ -704,6 +750,70 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["RunOutcomeResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly list_run_events_api_sessions__session_id__runs__run_id__events_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly session_id: string;
+                readonly run_id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Canonical persisted AgentEvent array */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_run_summary_api_sessions__session_id__runs__run_id__summary_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly session_id: string;
+                readonly run_id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["RunSummaryResponse"];
                 };
             };
             /** @description Validation Error */

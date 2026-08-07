@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.status import NodeStatus, RunState, SessionStatus
 from app.models.tables import Node, Run, Session
-from app.orchestrator.service import CreatedSession, RunOutcome
+from app.orchestrator.service import CreatedSession, RunOutcome, RunSummary
 
 
 class _StatusValue(Protocol):
@@ -156,6 +156,31 @@ class RunOutcomeResponse(BaseModel):
             block_reason=(
                 None if result.block_reason is None else result.block_reason.value
             ),
+        )
+
+
+class RunSummaryResponse(BaseModel):
+    run_id: str
+    trusted: bool
+    tokens: TokenCountsResponse
+    estimated_equivalent_cost_usd: float | None
+    cost_complete: bool
+
+    @classmethod
+    def from_result(cls, result: RunSummary) -> RunSummaryResponse:
+        counts = result.totals.counts
+        return cls(
+            run_id=result.run.id,
+            trusted=result.trusted,
+            tokens=TokenCountsResponse(
+                input_tokens=counts.input_tokens,
+                output_tokens=counts.output_tokens,
+                cache_read_tokens=counts.cache_read_tokens,
+                cache_write_tokens=counts.cache_write_tokens,
+                total_tokens=counts.total,
+            ),
+            estimated_equivalent_cost_usd=result.totals.cost_usd,
+            cost_complete=result.totals.complete,
         )
 
 

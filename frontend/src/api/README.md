@@ -15,8 +15,10 @@ FastAPI    ──► /openapi.json ──► openapi-typescript      ──► s
 AgentEvent ──► model_json_schema() ──► json-schema-to-typescript ──► src/api/events.d.ts
 ```
 
-`AgentEvent` travels over the WebSocket, so it never appears in the OpenAPI
-document. It is exported separately by `backend/scripts/export_schemas.py`.
+`AgentEvent` travels live over the WebSocket and the same canonical
+serialization is returned by the persisted run-event reader. It never appears
+as a second OpenAPI model; it is exported separately by
+`backend/scripts/export_schemas.py`.
 
 **Hand-writing a TypeScript type that mirrors a Python model is forbidden.** The
 mirror always drifts, and the drift shows up as an `undefined` field in the

@@ -6,6 +6,8 @@
  * and stream-scoped cursors for bounded replay after a reconnect.
  */
 
+import type { AgentEvent } from "@/api/events";
+
 export type SessionTopic = `session:${string}`;
 export type RunTopic = `run:${string}`;
 export type MetricsTopic = "metrics";
@@ -24,23 +26,11 @@ export function runTopic(runId: string): RunTopic {
 export const METRICS_TOPIC: MetricsTopic = "metrics";
 
 /**
- * SEAM — the payload the broker publishes on a topic.
- *
- * It is `unknown` on purpose. `AgentEvent` has no TypeScript form yet:
- * `src/api/events.d.ts` is generated from the canonical Pydantic schema and
- * docs/architecture.md §7 forbids hand-writing a mirror of a Python model.
- *
- * B9 replaces this single alias with the generated union:
- *
- *     import type { AgentEvent } from "@/api/events";
- *     export type TopicPayload = AgentEvent;
- *
- * Widening it is source-compatible for every subscriber, because `unknown`
- * forces them to narrow today. The one place the compiler will complain is
- * `decodeServerFrame` below — which is exactly where the runtime validation
- * belongs.
+ * The payload comes from the generated canonical Pydantic schema. Runtime
+ * validation below checks the stable envelope/discriminator fields; component
+ * code receives the generated union and narrows on `type`.
  */
-export type TopicPayload = unknown;
+export type TopicPayload = AgentEvent;
 
 /** A durable event delivered on one multiplexed topic. */
 export type EventFrame = {
@@ -84,6 +74,32 @@ function isTopic(value: unknown): value is Topic {
   );
 }
 
+const EVENT_TYPES = new Set([
+  "run_started",
+  "turn_started",
+  "assistant_text",
+  "thinking_delta",
+  "tool_call",
+  "tool_result",
+  "usage",
+  "permission",
+  "turn_finished",
+  "run_finished",
+  "raw_chunk",
+]);
+
+function isAgentEvent(value: unknown): value is AgentEvent {
+  if (typeof value !== "object" || value === null) return false;
+  const event = value as Record<string, unknown>;
+  return (
+    typeof event.type === "string" &&
+    EVENT_TYPES.has(event.type) &&
+    typeof event.run_id === "string" &&
+    typeof event.ts === "number" &&
+    Number.isSafeInteger(event.ts)
+  );
+}
+
 /**
  * Parse one raw frame. Returns `null` for anything unrecognizable — a malformed
  * frame must never take the connection down, and it must never be silently
@@ -111,7 +127,8 @@ export function decodeServerFrame(raw: unknown): ServerFrame | null {
       frame.stream.length === 0 ||
       typeof frame.seq !== "number" ||
       !Number.isSafeInteger(frame.seq) ||
-      frame.seq < 1
+      frame.seq < 1 ||
+      !isAgentEvent(frame.payload)
     ) {
       return null;
     }

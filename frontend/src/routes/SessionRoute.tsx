@@ -1,26 +1,278 @@
-import { Workflow } from "lucide-react";
-import { useParams } from "react-router";
-import { EmptyState } from "@/components/layout/EmptyState";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, ArrowLeft, Loader } from "lucide-react";
+import { useEffect } from "react";
+import { Link, useParams } from "react-router";
+import { ApiError, api } from "@/api/client";
+import { DiffView } from "@/components/session/DiffView";
+import { EventFeed } from "@/components/session/EventFeed";
+import {
+  type SessionAction,
+  SessionActions,
+} from "@/components/session/SessionActions";
+import { TokenSummary } from "@/components/session/TokenSummary";
+import { nodeStateVisual } from "@/lib/node-state";
+import { cn } from "@/lib/utils";
+import { useSessionFeedStore } from "@/stores/session-feed-store";
+import { sessionTopic } from "@/ws/protocol";
+import { useWebSocketClient } from "@/ws/WebSocketProvider";
+
+const EMPTY_EVENTS = [] as const;
+
+function message(error: unknown): string {
+  return error instanceof Error ? error.message : "Unexpected local API error";
+}
 
 export function SessionRoute() {
   const { id } = useParams();
+  const queryClient = useQueryClient();
+  const websocket = useWebSocketClient();
+  const append = useSessionFeedStore((state) => state.append);
+  const hydrate = useSessionFeedStore((state) => state.hydrate);
+
+  const session = useQuery({
+    queryKey: ["session", id],
+    queryFn: () => api.getSession(id ?? ""),
+    enabled: Boolean(id),
+  });
+  const node = useQuery({
+    queryKey: ["session", id, "node"],
+    queryFn: () => api.getNode(id ?? ""),
+    enabled: Boolean(id),
+  });
+  const runs = useQuery({
+    queryKey: ["session", id, "runs"],
+    queryFn: () => api.listRuns(id ?? ""),
+    enabled: Boolean(id),
+  });
+  const latest = runs.data?.at(-1);
+  const summary = useQuery({
+    queryKey: ["session", id, "run", latest?.id, "summary"],
+    queryFn: () => api.getRunSummary(id ?? "", latest?.id ?? ""),
+    enabled: Boolean(id && latest),
+  });
+  const persistedEvents = useQuery({
+    queryKey: ["session", id, "run", latest?.id, "events"],
+    queryFn: () => api.getRunEvents(id ?? "", latest?.id ?? ""),
+    enabled: Boolean(id && latest),
+  });
+  const diff = useQuery({
+    queryKey: ["session", id, "diff"],
+    queryFn: () => api.getDiff(id ?? ""),
+    enabled: Boolean(id),
+  });
+  const events = useSessionFeedStore((state) =>
+    latest ? (state.eventsByRun[latest.id] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
+  );
+
+  useEffect(() => {
+    if (latest && persistedEvents.data) {
+      hydrate(latest.id, persistedEvents.data);
+    }
+  }, [hydrate, latest, persistedEvents.data]);
+
+  useEffect(() => {
+    if (!id || !websocket) return;
+    return websocket.subscribe(sessionTopic(id), (event) => {
+      append(event);
+      if (event.type === "usage") {
+        void queryClient.invalidateQueries({
+          queryKey: ["session", id, "run", event.run_id, "summary"],
+        });
+      }
+      if (event.type === "run_started" || event.type === "run_finished") {
+        void Promise.all([
+          queryClient.invalidateQueries({
+            queryKey: ["session", id],
+            exact: true,
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["session", id, "node"],
+            exact: true,
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["session", id, "runs"],
+            exact: true,
+          }),
+          queryClient.invalidateQueries({
+            queryKey: ["session", id, "diff"],
+            exact: true,
+          }),
+        ]);
+      }
+    });
+  }, [append, id, queryClient, websocket]);
+
+  const action = useMutation({
+    mutationFn: async (kind: SessionAction) => {
+      if (!id) throw new Error("Missing session id");
+      switch (kind) {
+        case "start":
+          return api.start(id);
+        case "kill":
+          return api.kill(id);
+        case "retry":
+          return api.retry(id);
+        case "approve":
+          return api.approve(id);
+      }
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["session", id] });
+    },
+  });
+
+  if (!id) return <RouteError title="Missing session id" />;
+  if (session.isLoading || node.isLoading || runs.isLoading) {
+    return (
+      <div className="flex h-full items-center justify-center gap-2 text-meta text-fg-muted">
+        <Loader className="size-4 animate-spin" data-motion="essential" />
+        Loading persisted session…
+      </div>
+    );
+  }
+  const loadError = session.error ?? node.error ?? runs.error;
+  if (loadError || !session.data || !node.data) {
+    return (
+      <RouteError
+        title={
+          loadError instanceof ApiError && loadError.status === 404
+            ? "Session not found"
+            : "Could not load session"
+        }
+        detail={loadError ? message(loadError) : undefined}
+      />
+    );
+  }
+
+  const visual = nodeStateVisual(node.data.status);
+  const StatusIcon = visual.icon;
+  const terminal = latest && latest.status !== "running";
+  const unsafe = Boolean(terminal && summary.data && !summary.data.trusted);
 
   return (
-    <EmptyState
-      icon={Workflow}
-      title="Session view not built yet"
-      description={
-        <>
-          Node status, the structured event feed and the run controls land with
-          the live session view.
-          {id ? (
-            <>
-              {" "}
-              Requested session <code className="text-code text-fg">{id}</code>.
-            </>
-          ) : null}
-        </>
-      }
-    />
+    <div className="flex min-h-full flex-col bg-bg">
+      <header className="border-border border-b bg-surface px-4 py-3">
+        <div className="flex items-start gap-3">
+          <Link
+            aria-label="All sessions"
+            className="mt-1 text-fg-muted hover:text-fg"
+            to="/sessions"
+          >
+            <ArrowLeft className="size-4" />
+          </Link>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="truncate font-semibold text-title">
+                {session.data.title}
+              </h1>
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-sm border border-border bg-elevated px-1.5 py-0.5 text-badge",
+                  visual.text,
+                )}
+              >
+                <StatusIcon
+                  className={cn(
+                    "size-3",
+                    node.data.status === "running" && "animate-spin",
+                  )}
+                  data-motion={
+                    node.data.status === "running" ? "essential" : undefined
+                  }
+                />
+                {visual.label}
+              </span>
+              {unsafe ? (
+                <span className="inline-flex items-center gap-1 rounded-sm border border-blocked px-1.5 py-0.5 text-badge text-blocked">
+                  <AlertTriangle className="size-3" /> Parser drift — unsafe
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-1 flex flex-wrap gap-x-3 text-meta text-fg-muted">
+              <code className="text-code">{session.data.id}</code>
+              <span>{node.data.harness}</span>
+              <code className="text-code">
+                {node.data.model ?? "default model"}
+              </code>
+              {latest ? <span>attempt {latest.attempt}</span> : null}
+            </div>
+          </div>
+          <SessionActions
+            node={node.data}
+            pendingAction={action.isPending ? action.variables : null}
+            onAction={(kind) => action.mutate(kind)}
+          />
+        </div>
+        {action.error ? (
+          <p className="mt-2 text-meta text-failed">{message(action.error)}</p>
+        ) : null}
+      </header>
+
+      <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.85fr)]">
+        <div className="flex min-h-[420px] min-w-0 flex-col border-border lg:border-r">
+          <EventFeed events={events} />
+        </div>
+        <aside className="flex min-h-[420px] min-w-0 flex-col bg-surface">
+          <TokenSummary summary={summary.data ?? null} />
+          <RunHistory runs={runs.data ?? EMPTY_EVENTS} />
+          <DiffView patch={diff.data?.patch ?? ""} />
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function RunHistory({
+  runs,
+}: {
+  runs: readonly { id: string; attempt: number; status: string }[];
+}) {
+  return (
+    <section className="border-border border-b px-3 py-2">
+      <h2 className="mb-1 font-semibold text-ui">Run history</h2>
+      {runs.length === 0 ? (
+        <p className="text-meta text-fg-muted">No attempts yet.</p>
+      ) : (
+        <ol className="space-y-1">
+          {runs.map((run) => (
+            <li
+              key={run.id}
+              className="flex items-center justify-between gap-2 text-meta"
+            >
+              <code className="truncate text-code text-fg-muted">{run.id}</code>
+              <span className="shrink-0">
+                #{run.attempt} · {run.status}
+              </span>
+            </li>
+          ))}
+        </ol>
+      )}
+    </section>
+  );
+}
+
+function RouteError({
+  title,
+  detail,
+}: {
+  title: string;
+  detail?: string | undefined;
+}) {
+  return (
+    <div className="flex h-full items-center justify-center p-4 text-center">
+      <div>
+        <AlertTriangle className="mx-auto mb-2 size-5 text-failed" />
+        <h1 className="font-semibold text-ui">{title}</h1>
+        {detail ? (
+          <p className="mt-1 text-meta text-fg-muted">{detail}</p>
+        ) : null}
+        <Link
+          className="mt-3 inline-block text-meta text-accent hover:text-accent-hover"
+          to="/sessions"
+        >
+          Back to sessions
+        </Link>
+      </div>
+    </div>
   );
 }

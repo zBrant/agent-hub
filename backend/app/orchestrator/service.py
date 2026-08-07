@@ -24,7 +24,7 @@ import structlog
 from app.config import Settings
 from app.harnesses import create_adapter
 from app.harnesses.base import BaseHarnessAdapter, RunHandle, RunSpec
-from app.harnesses.events import RunStarted
+from app.harnesses.events import AgentEvent, RunStarted
 from app.models.clock import now_ms
 from app.models.ids import (
     NodeId,
@@ -53,7 +53,7 @@ from app.sandbox.aijail import SandboxPolicy, build_launcher, default_policy
 from app.storage.db import Database
 from app.storage.ingest import Broadcast, ingest_run, no_broadcast
 from app.storage.meta import RunMeta, build_meta, meta_path, read_meta
-from app.storage.ndjson import events_path
+from app.storage.ndjson import events_path, read_events
 from app.storage.repository import Repository, UsageTotals
 
 log = structlog.get_logger()
@@ -98,6 +98,13 @@ class RunOutcome:
     commit: CommitResult
     merge: MergeResult | None
     block_reason: RunBlockReason | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RunSummary:
+    run: Run
+    totals: UsageTotals
+    trusted: bool
 
 
 @dataclass(slots=True)
@@ -547,6 +554,36 @@ class SingleRunService:
             _, node = await self._session_and_node(repository, session_id)
             return tuple(await repository.list_runs(node.id))
 
+    async def get_run_summary(self, session_id: SessionId, run_id: RunId) -> RunSummary:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            _, node = await self._session_and_node(repository, session_id)
+            run = await repository.get_run(run_id)
+            if run is None or run.node_id != node.id:
+                raise ResourceNotFoundError(
+                    f"no such run {run_id} in session {session_id}"
+                )
+            meta = await read_meta(meta_path(self._settings.runs_root, run.id))
+            return RunSummary(
+                run=run,
+                totals=await repository.usage_totals(run_id=run.id),
+                trusted=meta.trusted,
+            )
+
+    async def list_run_events(
+        self, session_id: SessionId, run_id: RunId
+    ) -> tuple[AgentEvent, ...]:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            _, node = await self._session_and_node(repository, session_id)
+            run = await repository.get_run(run_id)
+            if run is None or run.node_id != node.id:
+                raise ResourceNotFoundError(
+                    f"no such run {run_id} in session {session_id}"
+                )
+            path = run.events_path
+        return await asyncio.to_thread(lambda: tuple(read_events(path)))
+
     async def get_diff(self, session_id: SessionId) -> str:
         async with self._database.session() as db_session:
             repository = Repository(db_session)
@@ -590,5 +627,6 @@ __all__ = [
     "OrchestratorError",
     "ResourceNotFoundError",
     "RunOutcome",
+    "RunSummary",
     "SingleRunService",
 ]

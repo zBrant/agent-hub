@@ -237,6 +237,13 @@ An event arriving over WS **invalidates a query** when it's a structural change
 (node completed, merge happened), and **updates the store** when it's stream data
 (text delta, PTY chunk). Confusing the two causes flicker or stale state.
 
+The live feed is hydrated from the run's persisted NDJSON reader before live
+facts are reconciled into its Zustand topic store. The reader returns the same
+canonical `AgentEvent` JSON serialization as the WebSocket, but its union stays
+generated from Pydantic's explicit JSON Schema rather than being duplicated in
+OpenAPI. This is what lets a browser refresh recover narrative events while
+SQLite remains only the derived structural index.
+
 Route components (`routes/`) are the only ones that compose — they fetch data and
 pass it down. Components in `components/` receive props and know nothing about the
 API.

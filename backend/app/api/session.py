@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Awaitable
 from typing import cast
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 
 from app.api.schemas import (
     CreatedSessionResponse,
@@ -15,11 +16,13 @@ from app.api.schemas import (
     NodeResponse,
     RunOutcomeResponse,
     RunResponse,
+    RunSummaryResponse,
     SessionResponse,
     node_response,
     run_response,
     session_response,
 )
+from app.harnesses.events import agent_event_adapter
 from app.orchestrator.service import (
     InvalidTransitionError,
     ResourceNotFoundError,
@@ -96,6 +99,29 @@ async def start_run(session_id: str, request: Request) -> RunOutcomeResponse:
 async def list_runs(session_id: str, request: Request) -> list[RunResponse]:
     rows = await _call(_service(request).list_runs(session_id))
     return [run_response(row) for row in rows]
+
+
+@router.get("/{session_id}/runs/{run_id}/summary", response_model=RunSummaryResponse)
+async def get_run_summary(
+    session_id: str, run_id: str, request: Request
+) -> RunSummaryResponse:
+    return RunSummaryResponse.from_result(
+        await _call(_service(request).get_run_summary(session_id, run_id))
+    )
+
+
+@router.get(
+    "/{session_id}/runs/{run_id}/events",
+    response_class=JSONResponse,
+    # AgentEvent remains generated from its canonical JSON Schema, never from
+    # a second OpenAPI mirror (architecture §7).
+    responses={200: {"description": "Canonical persisted AgentEvent array"}},
+)
+async def list_run_events(session_id: str, run_id: str, request: Request) -> Response:
+    events = await _call(_service(request).list_run_events(session_id, run_id))
+    return JSONResponse(
+        [agent_event_adapter.dump_python(event, mode="json") for event in events]
+    )
 
 
 @router.post("/{session_id}/kill", response_model=RunResponse)

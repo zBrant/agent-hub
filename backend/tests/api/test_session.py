@@ -168,6 +168,25 @@ def test_complete_rest_flow_and_persisted_reconnect(
         assert len(history) == 1
         assert history[0]["id"] == result["run_id"]
         assert history[0]["event_count"] == 3
+        summary = client.get(
+            f"/api/sessions/{session_id}/runs/{result['run_id']}/summary"
+        ).json()
+        assert summary["trusted"] is True
+        assert summary["tokens"] == {
+            "input_tokens": 1,
+            "output_tokens": 2,
+            "cache_read_tokens": 3,
+            "cache_write_tokens": 4,
+            "total_tokens": 10,
+        }
+        events = client.get(
+            f"/api/sessions/{session_id}/runs/{result['run_id']}/events"
+        ).json()
+        assert [event["type"] for event in events] == [
+            "run_started",
+            "usage",
+            "run_finished",
+        ]
         patch = client.get(f"/api/sessions/{session_id}/diff").json()["patch"]
         assert "api.txt" in patch
         assert "+created through REST" in patch

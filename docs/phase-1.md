@@ -215,7 +215,7 @@ when it meets a §2 text colour, because Tailwind v4 puts both in the `text-*`
 namespace. Every shadcn component funnels through `cn`, so it mis-sizes text
 application-wide with no type error.
 
-### B9 — Live session view
+### B9 — Live session view ✅
 
 Implement the single-session route with node status, structured event feed,
 token totals, equivalent cost, start/kill/retry controls, and final diff. The UI
@@ -224,6 +224,27 @@ as an unsafe run.
 
 **Done when:** refresh/reconnect preserves state and a fake streamed run drives
 the view through pending → running → done/failed/interrupted.
+
+**Result:** completed on 2026-08-06. `/sessions/:id` is now the operational
+single-node view: generated REST contracts hydrate session/node/run state,
+Zustand holds the live structured feed, and one session-topic subscription
+reconciles WebSocket facts with persisted NDJSON after refresh without
+duplicating the overlap. The backend exposes a run summary for the four token
+fields, ingest-time estimated equivalent cost, completeness, and parser trust;
+the event history endpoint returns the canonical `AgentEvent` serialization
+without introducing an OpenAPI mirror of that union.
+
+The dense two-panel UI renders status, harness/model/attempt metadata, event
+types, reconstructed usage labels, run history, token totals, estimated
+equivalent cost, and the final diff. Controls follow persisted node state for
+start, process-group kill, retry, and approval. Terminal untrusted runs carry a
+written parser-drift warning and cannot be mistaken for safe work. The sessions
+index links persisted sessions into the live route.
+
+Vitest and Testing Library now cover REST/WS overlap, canonical payload
+validation, true duplicate preservation, refresh of an interrupted attempt,
+parser-drift presentation, and a fake streamed route transition from ready to
+running to done. Frontend test, typecheck, lint, and production build pass.
 
 ### B10 — PTY attach
 
