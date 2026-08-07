@@ -24,11 +24,13 @@ from app.harnesses.events import (
 )
 from app.models.pricing import PriceTable, load_price_table
 from app.models.status import NodeStatus, RunState, SessionStatus
-from app.orchestrator.graph import RunBlockReason
+from app.orchestrator.graph import RunBlockReason, session_status_for_node
 from app.orchestrator.service import (
     InvalidTransitionError,
     OrchestratorError,
+    PlannedNode,
     SingleRunService,
+    session_status_for_nodes,
 )
 from app.orchestrator.worktree import CommitStatus, MergeStatus
 from app.storage.db import Database, upgrade_database_sync
@@ -131,8 +133,11 @@ class FakeAdapter:
         self.started.append(spec)
         self.started_event.set()
         if self.change:
+            # The prompt is in the payload so two nodes of one graph writing the
+            # same path produce a real add/add conflict when their branches are
+            # folded together, rather than two identical files git merges away.
             (spec.cwd / "agent.txt").write_text(
-                f"made by fake adapter: {self.status}\n"
+                f"made by fake adapter: {self.status}\n{spec.prompt}\n"
             )
         return cast(
             RunHandle,
@@ -577,6 +582,102 @@ async def test_kill_and_retry_reject_invalid_states(
         await service.kill(created.session.id)
     with pytest.raises(InvalidTransitionError, match="only failed or blocked"):
         await service.retry(created.session.id)
+
+
+@pytest.mark.parametrize("status", list(NodeStatus))
+def test_the_graph_projection_agrees_with_phase_1_on_a_single_node(
+    status: NodeStatus,
+) -> None:
+    """The generalization has to be a superset, or Phase 1's badge changes."""
+    assert session_status_for_nodes([status]) is session_status_for_node(status)
+
+
+def test_the_graph_projection_ranks_work_over_gates_over_waiting() -> None:
+    assert session_status_for_nodes([]) is SessionStatus.PLANNING
+    assert (
+        session_status_for_nodes([NodeStatus.RUNNING, NodeStatus.BLOCKED])
+        is SessionStatus.RUNNING
+    )
+    assert (
+        session_status_for_nodes([NodeStatus.DONE, NodeStatus.AWAITING_REVIEW])
+        is SessionStatus.PAUSED
+    )
+    # A failure with dependents still resolvable is a human's problem, not a
+    # finished graph; a failure with nothing left to do is a failed graph.
+    assert (
+        session_status_for_nodes([NodeStatus.FAILED, NodeStatus.BLOCKED])
+        is SessionStatus.PAUSED
+    )
+    assert (
+        session_status_for_nodes([NodeStatus.DONE, NodeStatus.FAILED])
+        is SessionStatus.FAILED
+    )
+    assert (
+        session_status_for_nodes([NodeStatus.SKIPPED, NodeStatus.DONE])
+        is SessionStatus.DONE
+    )
+
+
+async def test_a_conflicting_parent_fold_blocks_the_child_without_an_agent(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """`design.md` §2.2: the base is built before anything is launched.
+
+    Both parents wrote the same file, so the join's worktree cannot exist as
+    the merge of the two. That is the node's ``blocked`` state, reported as a
+    value — and no harness process is ever created for it.
+    """
+    adapters: list[FakeAdapter] = []
+
+    def factory(name: str) -> FakeAdapter:
+        adapter = FakeAdapter(name=name)
+        adapters.append(adapter)
+        return adapter
+
+    service = SingleRunService(
+        database=database,
+        settings=settings,
+        prices=prices,
+        adapter_factory=factory,
+        environment={"PATH": "/usr/bin", "HOME": "/Users/test"},
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo,
+        nodes=[
+            PlannedNode(name="left", prompt="left", harness="fake", model=MODEL),
+            PlannedNode(name="right", prompt="right", harness="fake", model=MODEL),
+            PlannedNode(
+                name="join",
+                prompt="join",
+                harness="fake",
+                model=MODEL,
+                depends_on=("left", "right"),
+            ),
+        ],
+    )
+    ids = graph.ids_by_name
+
+    left = await service.start_node(ids["left"])
+    right = await service.start_node(ids["right"])
+    assert left.status is NodeStatus.AWAITING_REVIEW
+    assert right.status is NodeStatus.AWAITING_REVIEW
+    launched = len(adapters)
+
+    join = await service.start_node(ids["join"], parents=(ids["left"], ids["right"]))
+
+    assert join.status is NodeStatus.BLOCKED
+    assert join.outcome is None
+    assert join.conflicts == (Path("agent.txt"),)
+    # Nothing was started for it: no adapter, no run row.
+    assert len(adapters) == launched
+    async with database.session() as db_session:
+        repository = Repository(db_session)
+        node = await repository.get_node(ids["join"])
+        assert node is not None and node.status is NodeStatus.BLOCKED
+        assert await repository.list_runs(ids["join"]) == []
 
 
 async def test_an_invalid_adapter_does_not_leave_a_running_attempt(

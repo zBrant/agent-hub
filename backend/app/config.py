@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     # Kept configurable so replay and the live service cannot accidentally load
     # different histories when the checkout moves.
     pricing_path: Path = Field(default=DEFAULT_PRICING_PATH)
+    # How many graph nodes may have a live agent at once (`design.md` §9).
+    #
+    # Two, not "as many as the graph allows". Each node is a whole CLI process
+    # with its own model context, and they all draw on one account's rate limit:
+    # ten in parallel exhausts the quota and leaves ten half-finished worktrees.
+    # The ceiling is a guard against a typo in a `.env` turning into a fork
+    # bomb, not a considered maximum — nothing here scales linearly past it.
+    max_concurrency: int = Field(default=2, ge=1, le=16)
 
     @property
     def db_path(self) -> Path:
