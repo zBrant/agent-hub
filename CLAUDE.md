@@ -13,7 +13,7 @@ dashboards. Single-user, binds to `127.0.0.1`, targets macOS.
 | `docs/conventions.md` | Python and TypeScript code standards |
 | `docs/design-system.md` | Visual tokens, components, UI rules |
 | `docs/roadmap.md` | **Where** the project is — phase status and what comes next |
-| `docs/phase-0.md` | The current phase, broken into activities with dependencies |
+| `docs/phase-2.md` | The current phase, broken into activities with dependencies |
 
 `design.md` is the source of truth for decisions already made. If you think one of
 them is wrong, say so — don't quietly work around it.
@@ -81,12 +81,22 @@ Before calling anything done: `ruff check`, `mypy app`, `pytest`, and
 
 ## Project state
 
-Current phase: **Phase 1 — single-node orchestrator** (see `design.md` §10 and
-`docs/phase-1.md`). Phase 0 passed end to end with Codex: sandbox, structured
-events, four-field usage, NDJSON replay, commit, and integration merge. Claude
+Current phase: **Phase 2 — the graph** (see `design.md` §10 and
+`docs/phase-2.md`). This is the heart of the product.
+
+Phases 0 and 1 are complete and were accepted against a real Codex session:
+sandbox, structured events, four-field usage, NDJSON replay with pinned price
+versions, the persistent run service, REST, the cursor-replay WebSocket broker,
+process-group kill, immutable-attempt retry, and the live session view. Claude
 Code's successful acceptance run is deferred while that account is not in use;
-its failure path remains covered. Do not jump ahead to the graph, dashboards, or
-code search before the Phase 1 acceptance path stands up.
+its failure path remains covered. Channel B (PTY attach) is deliberately
+deferred — B10 proved Codex's `exec --json` runtime is not attachable, and a
+misleading terminal is worse than none.
+
+Two things Phase 1 leaves standing that Phase 2 must generalize, not work
+around: `SingleRunService` assumes **one active run per session**, and nothing
+serializes concurrent merges into the shared integration worktree. Do not jump
+ahead to dashboards or code search before the graph executes.
 
 ## Language
 

@@ -22,8 +22,13 @@ Codex app-server topology is interactive but not attachable to the active
 B11 then exercised the full path with a real Codex session over HTTP and
 WebSocket, including reconnect, kill, immutable retry, two NDJSON replays, and
 database/REST/UI total agreement. See [`acceptance-phase-1.md`](acceptance-phase-1.md)
-for the evidence and [`phase-1.md`](phase-1.md) for the activity details. Phase
-2 graph design is next.
+for the evidence and [`phase-1.md`](phase-1.md) for the activity details.
+
+**Phase 2 is now planned** and broken into twelve activities in
+[`phase-2.md`](phase-2.md). The ordering front-loads the two real risks —
+generalizing the one-run-per-session service, and serializing concurrent merges
+into the shared integration worktree — and leaves the planner, the visible part,
+until the machinery under it is real.
 
 ## Phases
 
@@ -36,7 +41,7 @@ for the evidence and [`phase-1.md`](phase-1.md) for the activity details. Phase
       `agenthub replay <run_id>`. No graph yet.
 - [ ] **Phase 2 — The graph.** Planner with structured output, DAG validation,
       editable canvas, concurrent scheduler, per-worktree merge. *The heart of
-      the product.*
+      the product.* Activity breakdown: [`phase-2.md`](phase-2.md).
 - [ ] **Phase 3 — Dashboards.** Token/cost KPIs and system metrics, once there is
       real data to show.
 - [ ] **Phase 4 — Code search.** ripgrep + ast-grep + tree-sitter tags + agentic
