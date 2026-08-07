@@ -122,7 +122,7 @@ one of them becomes unreachable.
 ├── runs/
 │   └── <run_id>/
 │       ├── events.ndjson    # append-only, source of truth
-│       ├── meta.json        # argv, cwd, sanitized env, harness version
+│       ├── meta.json        # see below — what the log cannot carry
 │       └── pty.log          # raw Channel B bytes (optional, rotated)
 └── workspaces/
     └── <session_id>/{integration,node_a,node_b}/
@@ -144,6 +144,38 @@ NDJSON. If it does not exist, or does not match the database, invariant 4 in
 
 `usage_event` is append-only and never `UPDATE`d. Dashboard aggregates are `SUM()`
 over an index, not a mutable counter.
+
+### `meta.json` — what the event log structurally cannot carry
+
+An `AgentEvent` describes what the *agent* did. Three things a rebuild needs are
+facts about the *orchestration*, and no harness will ever emit them:
+
+| Field | Why the log cannot supply it |
+|---|---|
+| `session_id`, `node_id` | `RunStarted` carries the **harness's** session id, not ours. Without these, a run row deleted for rebuild cannot be relinked to its node. |
+| `price_table_version` | See below. |
+| `argv`, `cwd`, sanitized `env`, harness version | The launch conditions. Reproducing a run means reproducing these. |
+| parser trust (`unknown`, `malformed`, unreconciled usage) | `ParseStats` is adapter state, not an event. B7 must refuse to merge a parser-untrusted run and B9 must show it, so it has to be durable somewhere. |
+
+`meta.json` is written once at run start and finalized at run end. It is part of
+the source of truth, not a projection: deleting it loses information that
+`events.ndjson` cannot reconstruct.
+
+### Replay must not reprice history
+
+Invariant 3 says `cost_usd` is computed at ingest **with the price in effect at
+that moment**. Replay re-ingests, so a naive rebuild recomputes old runs at
+today's prices and silently rewrites cost history — which is the exact failure
+the invariant exists to prevent.
+
+The rule: `meta.json` pins the `price_table_version` used at ingest, every
+`usage_event` row carries it, and replay prices with **that** version. This
+requires `pricing.yaml` to retain superseded tables rather than only the current
+one.
+
+Until it does, replay of a run whose pinned version is not the loaded one must
+**refuse and say so**. Refusing is recoverable; silently repricing is not, and it
+is invisible in the diff.
 
 ---
 

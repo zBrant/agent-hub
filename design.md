@@ -254,6 +254,16 @@ Current Anthropic model IDs and pricing:
 Do not hardcode this table as the source of truth: keep it in a versioned
 `pricing.yaml` and allow overrides. Models and prices change.
 
+"Versioned" means **superseded tables are retained, not replaced**. Computing
+cost at ingest only protects history if the price that was in effect can still
+be found later: replay re-ingests, and a rebuild that reaches for the current
+table rewrites the cost of every past run. Each `usage_event` row therefore
+stores the `price_table_version` it was priced with, and replay prices with that
+version or refuses (`docs/architecture.md` §4).
+
+A model absent from the table yields `cost_usd = null`, never `0.0`. Zero is a
+number someone will trust.
+
 **Important UI label:** when Claude Code runs under a Max/Pro subscription, there
 is no per-token billing. The dashboard must say "estimated equivalent cost", not
 "spend". Otherwise you produce a number that alarms without meaning anything.
