@@ -168,8 +168,18 @@ WebSocket into `xterm.js`. Without a PTY the harness detects it is not a tty and
 changes behavior.
 
 **Channel A is the default** — dashboards, tokens, graph state, persisted history.
-**Channel B is an "Attach terminal" button** per node, for debugging and manual
-steering. Never extract state from Channel B.
+**Channel B is an "Attach terminal" button** per node only when the adapter has
+proved that a PTY client attaches to the *same live harness runtime*. Never
+extract state from Channel B. A CLI that can resume stored history in a second
+process has continuation, not live attach; presenting that process as the
+running node would be false and could put edits outside the run lifecycle.
+
+For Codex 0.146.0, `codex app-server` plus `codex --remote` is an interactive
+shared-session topology, but `codex exec --json` is not a client of that
+app-server and exposes no attach transport. Phase 1 keeps the stable
+`exec --json` Channel A adapter and therefore defers Codex Channel B. Enabling it
+requires app-server to become the adapter's primary runtime first; app-server's
+WebSocket surface is currently documented as experimental and unsupported.
 
 ### Adapter contract
 

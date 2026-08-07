@@ -10,14 +10,16 @@ lowest-risk piece, comes last.
 
 ## Status
 
-**Phase 1 implementation.** Phase 0 is complete. Phase 1 activities B1–B9 are
+**Phase 1 implementation.** Phase 0 is complete. Phase 1 activities B1–B10 are
 complete: local-only FastAPI, migrated SQLite projections, ordered
 NDJSON→SQLite→broadcast ingest with deterministic replay, and the persistent
 single-node run service with its persistent REST resource API and bounded,
 cursor-replay WebSocket broker, process-group kill, and immutable-attempt retry.
 B8/B9 are also complete: generated contracts, the persistent/live session
-view, structured feed, usage/cost, diff, and lifecycle controls. PTY topology
-validation (B10) is next. See
+view, structured feed, usage/cost, diff, and lifecycle controls. B10 proved the
+Codex app-server topology is interactive but not attachable to the active
+`exec --json` runtime, so the misleading PTY bridge is explicitly deferred.
+Phase 1 acceptance and operating documentation (B11) is next. See
 [`phase-1.md`](phase-1.md) for the activity details.
 
 ## Phases

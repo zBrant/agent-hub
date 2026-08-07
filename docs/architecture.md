@@ -201,7 +201,7 @@ diff.
 | Becomes | typed `AgentEvent` | `RawChunk(bytes)` |
 | Persisted to | `events.ndjson` | `pty.log` (rotated, disposable) |
 | Feeds | state, tokens, graph, dashboards, history | `xterm.js` only |
-| Enabled | always | on demand ("Attach terminal") |
+| Enabled | always | on demand, only for a proven live-attach capability |
 
 **Never derive state from Channel B.** It is pixels, not data. Channel B may be
 off for an entire session with nothing in the system noticing — if that isn't
@@ -210,6 +210,41 @@ true, someone is parsing ANSI somewhere.
 Backpressure matters: Channel B produces a lot of bytes. Use
 `asyncio.Queue(maxsize=N)` with a drop-from-the-middle policy, and never let a
 slow WebSocket client hold back the PTY reader.
+
+### Codex attach classification (validated 2026-08-06)
+
+The installed Codex CLI 0.146.0 has three distinct operations that must not be
+collapsed into one feature:
+
+| Operation | Classification | Consequence |
+|---|---|---|
+| `thread/read` against app-server | observational | Reads persisted history and does not subscribe to live events |
+| Two app-server clients using `thread/resume` | interactive | Both receive the same turn/item stream and either can drive later turns |
+| `codex exec --json` followed by another process | continuation only | The second process is not attached to the active `exec` runtime |
+
+The real-CLI experiment used one persisted Codex thread, two simultaneous
+WebSocket JSON-RPC clients, and one `turn/start`. Both clients received
+`turn/started`, item deltas, token usage, and `turn/completed`, including the
+same final `B10_SHARED` message. The actual terminal UI then connected with
+`codex resume <thread-id> --remote ws://127.0.0.1:<port>` in a PTY and rendered
+the same `B10_SEED` and `B10_SHARED` history. This proves that app-server is an
+interactive topology when it owns the session.
+
+It does **not** make app-server a sidecar for the current Channel A process.
+`codex exec --json` has no `--remote` option, and resuming its stored thread in
+app-server creates a separately driven runtime. During the original turn that
+runtime cannot faithfully mirror the active process; after the turn it is a
+continuation, which B7 deliberately keeps separate from retry. Letting it edit
+the node would also bypass the current run's NDJSON, checkpoint, and merge
+lifecycle.
+
+Therefore Phase 1 does not expose a Codex terminal or start a PTY reader. There
+is intentionally no raw-byte/WebSocket bridge whose consumer could apply
+backpressure. Channel B remains gated until the Codex adapter can use app-server
+as its primary, ai-jail-contained runtime and preserve Channel A's durable
+event, usage, interruption, and approval contracts. When that migration is
+made, the bounded drop-from-the-middle rule above is a release gate, not an
+optional optimization.
 
 ---
 

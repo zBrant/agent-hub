@@ -246,7 +246,7 @@ validation, true duplicate preservation, refresh of an interrupted attempt,
 parser-drift presentation, and a fake streamed route transition from ready to
 running to done. Frontend test, typecheck, lint, and production build pass.
 
-### B10 — PTY attach
+### B10 — PTY attach ✅
 
 Validate the Channel B design against the active Codex harness before building
 the terminal. `codex exec --json` is non-interactive, so do not assume a second
@@ -256,6 +256,26 @@ deferred. Only then bridge bounded raw bytes to xterm.js.
 
 **Done when:** the real CLI proves the selected topology and a slow WebSocket
 cannot backpressure the PTY reader.
+
+**Result:** completed on 2026-08-06 as a validated deferment for the active
+Codex adapter. Codex CLI 0.146.0 proved that app-server is genuinely
+interactive: two initialized WebSocket clients resumed one persisted thread,
+received the same live `turn/*`, `item/*`, and usage notifications, and saw the
+same final response. A real `codex resume --remote` TUI then opened that thread
+inside a PTY and rendered its shared history.
+
+The same experiment proved why this cannot be bolted onto the existing adapter.
+`codex exec --json` is a stable non-interactive process with no `--remote`
+surface. App-server can resume its persisted rollout only as a separate runtime;
+that is continuation, not observation of the active turn, and edits made there
+would escape the attempt's NDJSON/checkpoint/merge lifecycle. App-server's
+WebSocket transport is also explicitly documented as experimental and
+unsupported. Phase 1 therefore keeps the stable structured adapter and does
+not render a misleading terminal. No PTY reader or raw-byte WebSocket path is
+started, so a slow client has nothing to backpressure. The bounded
+drop-from-the-middle bridge remains mandatory when app-server becomes the
+primary ai-jail-contained Codex runtime. The evidence and topology boundary are
+recorded in `docs/architecture.md` §5.
 
 ### B11 — Acceptance and operating documentation
 
