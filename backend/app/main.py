@@ -15,6 +15,8 @@ from app.models.clock import now_ms
 from app.models.pricing import load_price_table
 from app.orchestrator.service import SingleRunService
 from app.storage.db import Database, upgrade_database
+from app.ws.broker import EventBroker
+from app.ws.router import router as websocket_router
 
 
 @asynccontextmanager
@@ -25,11 +27,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await upgrade_database(settings.database_url)
     prices = await asyncio.to_thread(load_price_table, settings.pricing_path)
     database = Database.from_settings(settings)
+    broker = EventBroker()
     app.state.database = database
+    app.state.broker = broker
     app.state.orchestrator = SingleRunService(
         database=database,
         settings=settings,
         prices=prices,
+        broadcast=broker.publish,
+        register_run=broker.register_run,
     )
     try:
         yield
@@ -46,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = settings or get_settings()
     application.include_router(health_router)
     application.include_router(session_router)
+    application.include_router(websocket_router)
     return application
 
 

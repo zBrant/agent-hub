@@ -133,7 +133,7 @@ state returns 409, missing resources return 404, and invalid bodies return 422.
 The node base checkpoint is now an immutable commit, so its diff remains
 available after integration merge and restart.
 
-### B6 — WebSocket event broker
+### B6 — WebSocket event broker ✅
 
 One `/ws` connection multiplexes `session:<id>` and `run:<id>` topics. Publish
 events only after they are durable in NDJSON and projected in SQLite. Bound each
@@ -141,6 +141,22 @@ subscriber queue and make disconnect cleanup deterministic.
 
 **Done when:** ordering tests prove a reconnect can fetch persisted state and
 then continue without an event gap or duplicate.
+
+**Result:** completed on 2026-08-06. The application now owns one `/ws` broker
+that multiplexes run and session topics and receives the canonical
+`AgentEvent` serialization only after B3 has flushed NDJSON and updated SQLite.
+Each browser has one bounded outbound queue; overflow removes the connection
+and closes it with retryable code 1013 without awaiting or failing ingest.
+
+Every topic carries a broker-stream identifier and monotonic sequence. Clients
+retain the last delivered cursor and atomically replay the bounded history on
+reconnect, dropping duplicate sequences. A new backend process issues a fresh
+stream checkpoint instead of accepting a stale cursor, and an expired history
+window is an explicit `history_gap` rather than silent data loss. Tests cover
+the real FastAPI WebSocket, dual-topic fan-out, canonical payloads, ordered
+reconnect replay, restart reset, expired cursors, service registration before
+the first broadcast, and slow-subscriber cleanup. The frontend's single socket
+implements the same cursor protocol and passes typecheck, lint, and build.
 
 ### B7 — Kill and retry
 

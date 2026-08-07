@@ -1,11 +1,9 @@
 /**
  * The only place the `/ws` wire format is written down.
  *
- * B6 (WebSocket event broker) owns the real format. Everything here is either
- * fixed by an already-written decision — topic multiplexing over a single
- * connection (docs/architecture.md §6) and the `<resource>:<id>` topic naming
- * (docs/conventions.md §4) — or is an explicitly marked seam. When B6 lands,
- * aligning the client is a change to this file and nothing else.
+ * B6 (WebSocket event broker) owns this format: topic multiplexing over a
+ * single connection (docs/architecture.md §6), `<resource>:<id>` topic names,
+ * and stream-scoped cursors for bounded replay after a reconnect.
  */
 
 export type SessionTopic = `session:${string}`;
@@ -44,15 +42,33 @@ export const METRICS_TOPIC: MetricsTopic = "metrics";
  */
 export type TopicPayload = unknown;
 
-/** A frame the broker sends. Only the envelope is fixed here; see TopicPayload. */
-export type ServerFrame = {
+/** A durable event delivered on one multiplexed topic. */
+export type EventFrame = {
+  type: "event";
+  stream: string;
   topic: Topic;
+  seq: number;
   payload: TopicPayload;
 };
 
-/** Control frames the client sends. Subscribe/unsubscribe is B8's mandate. */
+export type ReadyFrame = {
+  type: "ready";
+  stream: string;
+  topic: Topic;
+  cursor: number;
+};
+
+export type ErrorFrame = {
+  type: "error";
+  code: "invalid_frame" | "history_gap";
+  message: string;
+};
+
+export type ServerFrame = EventFrame | ReadyFrame | ErrorFrame;
+
+/** Control frames the client sends. A cursor is valid only in its stream. */
 export type ClientFrame =
-  | { type: "subscribe"; topic: Topic }
+  | { type: "subscribe"; topic: Topic; stream?: string; after?: number }
   | { type: "unsubscribe"; topic: Topic };
 
 export function encodeClientFrame(frame: ClientFrame): string {
@@ -63,8 +79,8 @@ function isTopic(value: unknown): value is Topic {
   return (
     typeof value === "string" &&
     (value === METRICS_TOPIC ||
-      value.startsWith("session:") ||
-      value.startsWith("run:"))
+      (value.startsWith("session:") && value.length > "session:".length) ||
+      (value.startsWith("run:") && value.length > "run:".length))
   );
 }
 
@@ -88,7 +104,49 @@ export function decodeServerFrame(raw: unknown): ServerFrame | null {
 
   if (typeof parsed !== "object" || parsed === null) return null;
   const frame = parsed as Record<string, unknown>;
-  if (!isTopic(frame.topic)) return null;
-
-  return { topic: frame.topic, payload: frame.payload };
+  if (frame.type === "event") {
+    if (
+      !isTopic(frame.topic) ||
+      typeof frame.stream !== "string" ||
+      frame.stream.length === 0 ||
+      typeof frame.seq !== "number" ||
+      !Number.isSafeInteger(frame.seq) ||
+      frame.seq < 1
+    ) {
+      return null;
+    }
+    return {
+      type: "event",
+      stream: frame.stream,
+      topic: frame.topic,
+      seq: frame.seq,
+      payload: frame.payload,
+    };
+  }
+  if (frame.type === "ready") {
+    if (
+      !isTopic(frame.topic) ||
+      typeof frame.stream !== "string" ||
+      frame.stream.length === 0 ||
+      typeof frame.cursor !== "number" ||
+      !Number.isSafeInteger(frame.cursor) ||
+      frame.cursor < 0
+    ) {
+      return null;
+    }
+    return {
+      type: "ready",
+      stream: frame.stream,
+      topic: frame.topic,
+      cursor: frame.cursor,
+    };
+  }
+  if (
+    frame.type === "error" &&
+    (frame.code === "invalid_frame" || frame.code === "history_gap") &&
+    typeof frame.message === "string"
+  ) {
+    return { type: "error", code: frame.code, message: frame.message };
+  }
+  return null;
 }

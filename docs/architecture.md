@@ -218,6 +218,14 @@ slow WebSocket client hold back the PTY reader.
 (`session:<id>`, `run:<id>`, `metrics`). One connection per panel overloads the
 backend and produces divergent event ordering between components.
 
+Event frames carry a process-scoped `stream` and a monotonic `seq` per topic.
+The client reconnects with both values; the broker atomically replays its
+bounded history before attaching live delivery. A cursor from another backend
+process is reset with a fresh `ready` checkpoint. If a cursor predates retained
+history, the broker reports `history_gap`; the consumer fetches persistent REST
+state before attaching at a fresh checkpoint. Never disguise a gap as a
+successful subscription.
+
 An event arriving over WS **invalidates a query** when it's a structural change
 (node completed, merge happened), and **updates the store** when it's stream data
 (text delta, PTY chunk). Confusing the two causes flicker or stale state.

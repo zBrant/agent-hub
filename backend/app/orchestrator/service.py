@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -60,6 +60,11 @@ log = structlog.get_logger()
 
 AdapterFactory = Callable[[str], BaseHarnessAdapter]
 PolicyFactory = Callable[[], SandboxPolicy]
+RunRegistration = Callable[[RunId, SessionId], Awaitable[None]]
+
+
+async def no_run_registration(run_id: RunId, session_id: SessionId) -> None:
+    """Default registration hook for transports without a live broker."""
 
 
 class OrchestratorError(Exception):
@@ -107,6 +112,7 @@ class SingleRunService:
         adapter_factory: AdapterFactory = create_adapter,
         policy_factory: PolicyFactory = default_policy,
         broadcast: Broadcast = no_broadcast,
+        register_run: RunRegistration = no_run_registration,
         environment: Mapping[str, str] | None = None,
     ) -> None:
         self._database = database
@@ -115,6 +121,7 @@ class SingleRunService:
         self._adapter_factory = adapter_factory
         self._policy_factory = policy_factory
         self._broadcast = broadcast
+        self._register_run = register_run
         # A copy makes the launch conditions stable for the service lifetime and
         # lets tests prove sanitization without mutating the process environment.
         self._environment = dict(os.environ if environment is None else environment)
@@ -270,6 +277,7 @@ class SingleRunService:
                 node_id=node.id,
                 events_path=events_path(self._settings.runs_root, run_id),
             )
+            await self._register_run(run.id, run.session_id)
             meta = build_meta(
                 run_id=run.id,
                 session_id=run.session_id,

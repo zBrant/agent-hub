@@ -189,10 +189,16 @@ def service_for(
     prices: PriceTable,
     adapter: FakeAdapter,
     broadcasts: list[AgentEvent] | None = None,
+    registrations: list[tuple[str, str]] | None = None,
 ) -> SingleRunService:
     async def broadcast(event: AgentEvent) -> None:
         if broadcasts is not None:
+            assert registrations
             broadcasts.append(event)
+
+    async def register_run(run_id: str, session_id: str) -> None:
+        if registrations is not None:
+            registrations.append((run_id, session_id))
 
     def factory(name: str) -> FakeAdapter:
         assert name == adapter.name
@@ -204,6 +210,7 @@ def service_for(
         prices=prices,
         adapter_factory=factory,
         broadcast=broadcast,
+        register_run=register_run,
         environment={
             "PATH": "/usr/bin",
             "HOME": "/Users/test",
@@ -237,12 +244,14 @@ async def test_fake_adapter_drives_the_complete_auto_merge_lifecycle(
 ) -> None:
     adapter = FakeAdapter(name="future-harness")
     broadcasts: list[AgentEvent] = []
+    registrations: list[tuple[str, str]] = []
     service = service_for(
         database=database,
         settings=settings,
         prices=prices,
         adapter=adapter,
         broadcasts=broadcasts,
+        registrations=registrations,
     )
     created = await service.create_session(
         repo_path=target_repo,
@@ -267,6 +276,7 @@ async def test_fake_adapter_drives_the_complete_auto_merge_lifecycle(
         "turn_finished",
         "run_finished",
     ]
+    assert registrations == [(outcome.run_id, created.session.id)]
     assert (created.session.workspace_root / "integration" / "agent.txt").exists()
     assert await persisted(
         database, created.session.id, created.node.id, outcome.run_id

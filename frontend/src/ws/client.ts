@@ -1,8 +1,8 @@
 import {
   type ClientFrame,
   decodeServerFrame,
+  type EventFrame,
   encodeClientFrame,
-  type ServerFrame,
   type Topic,
   type TopicPayload,
 } from "@/ws/protocol";
@@ -14,7 +14,12 @@ export type ConnectionStatus =
   | "reconnecting"
   | "closed";
 
-export type TopicHandler = (payload: TopicPayload, frame: ServerFrame) => void;
+export type TopicHandler = (payload: TopicPayload, frame: EventFrame) => void;
+
+type TopicCursor = {
+  stream: string;
+  seq: number;
+};
 
 export type WebSocketClientOptions = {
   /** Absolute or same-origin path. Vite proxies `/ws` to 127.0.0.1:8000. */
@@ -44,6 +49,8 @@ export class WebSocketClient {
 
   /** Topic → handlers. The key set is also the resubscribe list after a drop. */
   readonly #handlers = new Map<Topic, Set<TopicHandler>>();
+  /** Last delivered sequence per topic, retained across transport reconnects. */
+  readonly #cursors = new Map<Topic, TopicCursor>();
 
   #socket: WebSocket | null = null;
   #status: ConnectionStatus = "idle";
@@ -76,7 +83,7 @@ export class WebSocketClient {
       this.#attempt = 0;
       this.#setStatus("open");
       for (const topic of this.#handlers.keys()) {
-        this.#send({ type: "subscribe", topic });
+        this.#sendSubscribe(topic);
       }
     };
 
@@ -84,6 +91,19 @@ export class WebSocketClient {
       if (this.#socket !== socket) return;
       const frame = decodeServerFrame(event.data);
       if (!frame) return;
+      if (frame.type === "ready") {
+        this.#cursors.set(frame.topic, {
+          stream: frame.stream,
+          seq: frame.cursor,
+        });
+        return;
+      }
+      if (frame.type !== "event") return;
+      const cursor = this.#cursors.get(frame.topic);
+      if (cursor?.stream === frame.stream && frame.seq <= cursor.seq) {
+        return;
+      }
+      this.#cursors.set(frame.topic, { stream: frame.stream, seq: frame.seq });
       const handlers = this.#handlers.get(frame.topic);
       if (!handlers) return;
       for (const handler of handlers) handler(frame.payload, frame);
@@ -108,6 +128,7 @@ export class WebSocketClient {
     this.#disposed = true;
     this.#clearRetryTimer();
     this.#handlers.clear();
+    this.#cursors.clear();
     const socket = this.#socket;
     this.#socket = null;
     if (socket) {
@@ -138,7 +159,7 @@ export class WebSocketClient {
     if (!handlers) {
       handlers = new Set();
       this.#handlers.set(topic, handlers);
-      this.#send({ type: "subscribe", topic });
+      this.#sendSubscribe(topic);
     }
     handlers.add(handler);
 
@@ -148,6 +169,7 @@ export class WebSocketClient {
       current.delete(handler);
       if (current.size > 0) return;
       this.#handlers.delete(topic);
+      this.#cursors.delete(topic);
       this.#send({ type: "unsubscribe", topic });
     };
   }
@@ -157,6 +179,20 @@ export class WebSocketClient {
     // resubscribed from `#handlers`, which is the authoritative set.
     if (this.#socket?.readyState !== WebSocket.OPEN) return;
     this.#socket.send(encodeClientFrame(frame));
+  }
+
+  #sendSubscribe(topic: Topic): void {
+    const cursor = this.#cursors.get(topic);
+    this.#send(
+      cursor
+        ? {
+            type: "subscribe",
+            topic,
+            stream: cursor.stream,
+            after: cursor.seq,
+          }
+        : { type: "subscribe", topic },
+    );
   }
 
   #scheduleReconnect(): void {
