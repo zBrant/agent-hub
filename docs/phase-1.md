@@ -41,7 +41,7 @@ only to `127.0.0.1`; a real Uvicorn process returned `200 OK` from `/health`, an
 the OpenAPI contract plus lifespan are covered by tests. FastAPI, Uvicorn,
 SQLModel, aiosqlite, Alembic, and settings support are locked in `uv.lock`.
 
-### B2 — SQLite schema and migrations
+### B2 — SQLite schema and migrations ✅
 
 Create the Phase 1 subset of the data model: session, node, run, and append-only
 usage event. Enable WAL and foreign keys on every connection. Store event paths,
@@ -50,6 +50,28 @@ and ingest-time estimated equivalent cost.
 
 **Done when:** Alembic builds an empty database and repository tests prove
 foreign keys, WAL, append-only usage, and retry as multiple runs for one node.
+
+**Result:** completed on 2026-08-06, 66 new tests. Columns are split into
+*authored* (input no log can invent — replay must never delete a `session` or
+`node` row) and *derived* (each names the event it comes from). `usage_event`
+gains `seq`, unique per run, because two `Usage` events can be identical in
+every other field and a double ingest would otherwise double the totals.
+Append-only is a `BEFORE UPDATE ... RAISE(ABORT)` trigger, not a convention.
+`PRAGMA foreign_keys` is applied per connection via a `connect` listener —
+it is off by default and a pooled connection that skips it stops enforcing
+every declared FK.
+
+Two things it surfaced that changed the design: replay would have silently
+repriced history, and `meta.json` has to carry `session_id`/`node_id` because
+`RunStarted` holds the *harness's* session id, not ours. Both are now specified
+in `docs/architecture.md` §4.
+
+One known wart: `RunStatus`/`UsageSource` are declared in both
+`app/harnesses/events.py` (as `Literal`, for the wire) and `app/models/status.py`
+(as `StrEnum`, for the rows), with a drift test pinning them together. Moving
+them into `models/` and re-exporting is the clean fix, but it collides with the
+`StrEnum` of the same name and forces a choice of representation on the
+persistence layer too — worth doing deliberately, not as a drive-by.
 
 ### B3 — Ordered ingest and replay
 
@@ -109,6 +131,24 @@ OpenAPI; generate `AgentEvent` TypeScript from the canonical schema and commit
 both outputs.
 
 **Done when:** `pnpm typecheck`, Biome, and the generated-type drift check pass.
+
+**Partial result:** the scaffold landed on 2026-08-06 — Vite + React 19 + TS
+strict, Tailwind v4 on the §2 tokens, Biome, TanStack Query, Zustand, router,
+and one WebSocket client with topic multiplexing and jittered reconnect.
+`typecheck`, `lint` and `build` pass and the shell renders.
+
+**Still open:** type generation. `pnpm gen:api` is wired and fails with an
+actionable message, but it needs the OpenAPI document from B5 and an exported
+`AgentEvent` JSON Schema from the backend. `src/api/` therefore holds no types
+at all — `docs/architecture.md` §7 forbids a hand-written mirror, and a
+placeholder that drifts is worse than an absent file. The drift check in this
+activity's done-when cannot run until B5 exists.
+
+Corrections to `docs/design-system.md` §12 came out of this and are recorded
+there; the one with teeth is that `tailwind-merge` silently drops a §3 text size
+when it meets a §2 text colour, because Tailwind v4 puts both in the `text-*`
+namespace. Every shadcn component funnels through `cn`, so it mis-sizes text
+application-wide with no type error.
 
 ### B9 — Live session view
 
