@@ -18,16 +18,22 @@ from app.harnesses.events import (
     RunFinished,
     RunStarted,
     RunStatus,
+    ToolCall,
     TurnFinished,
     Usage,
 )
 from app.models.pricing import PriceTable, load_price_table
 from app.models.status import NodeStatus, RunState, SessionStatus
 from app.orchestrator.graph import RunBlockReason
-from app.orchestrator.service import OrchestratorError, SingleRunService
+from app.orchestrator.service import (
+    InvalidTransitionError,
+    OrchestratorError,
+    SingleRunService,
+)
 from app.orchestrator.worktree import CommitStatus, MergeStatus
 from app.storage.db import Database, upgrade_database_sync
 from app.storage.meta import read_meta_sync
+from app.storage.ndjson import read_events
 from app.storage.repository import Repository
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -115,6 +121,7 @@ class FakeAdapter:
         )
         self.started: list[RunSpec] = []
         self.started_event = asyncio.Event()
+        self.tool_started = asyncio.Event()
         self.killed = False
 
     def build_argv(self, spec: RunSpec) -> list[str]:
@@ -124,7 +131,9 @@ class FakeAdapter:
         self.started.append(spec)
         self.started_event.set()
         if self.change:
-            (spec.cwd / "agent.txt").write_text("made by fake adapter\n")
+            (spec.cwd / "agent.txt").write_text(
+                f"made by fake adapter: {self.status}\n"
+            )
         return cast(
             RunHandle,
             FakeHandle(spec=spec, argv=tuple(self.build_argv(spec))),
@@ -138,6 +147,9 @@ class FakeAdapter:
 
     async def kill(self, handle: RunHandle) -> None:
         self.killed = True
+        self.status = "interrupted"
+        if self.release is not None:
+            self.release.set()
 
     async def events(self, handle: RunHandle) -> AsyncIterator[AgentEvent]:
         fake = cast(FakeHandle, handle)
@@ -153,6 +165,14 @@ class FakeAdapter:
             harness_version="9.9.9",
         )
         if self.release is not None:
+            yield ToolCall(
+                run_id=spec.run_id,
+                ts=1_005,
+                call_id="active-tool",
+                tool="shell",
+                input={"command": "long task"},
+            )
+            self.tool_started.set()
             await self.release.wait()
         yield Usage(
             run_id=spec.run_id,
@@ -436,6 +456,127 @@ async def test_a_second_run_is_refused_while_the_first_is_active(
 
     release.set()
     await first
+
+
+async def test_kill_during_a_tool_persists_interruption_and_never_merges(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    release = asyncio.Event()
+    adapter = FakeAdapter(name="fake", release=release)
+    service = service_for(
+        database=database,
+        settings=settings,
+        prices=prices,
+        adapter=adapter,
+    )
+    created = await service.create_session(
+        repo_path=target_repo,
+        prompt="start a long tool",
+        harness=adapter.name,
+        model=MODEL,
+        auto_merge=True,
+    )
+    running = asyncio.create_task(service.run(created.session.id))
+    await adapter.tool_started.wait()
+
+    killed = await service.kill(created.session.id)
+    outcome = await running
+
+    assert adapter.killed is True
+    assert killed.id == outcome.run_id
+    assert killed.status is RunState.INTERRUPTED
+    assert outcome.run_status is RunState.INTERRUPTED
+    assert outcome.node_status is NodeStatus.FAILED
+    assert outcome.merge is None
+    assert not (created.session.workspace_root / "integration" / "agent.txt").exists()
+    events = list(read_events(settings.runs_root / outcome.run_id / "events.ndjson"))
+    assert [event.type for event in events] == [
+        "run_started",
+        "tool_call",
+        "usage",
+        "turn_finished",
+        "run_finished",
+    ]
+    assert isinstance(events[-1], RunFinished)
+    assert events[-1].status == "interrupted"
+
+
+async def test_retry_creates_a_new_run_and_preserves_failed_attempt(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    adapter = FakeAdapter(name="fake", status="failed")
+    service = service_for(
+        database=database,
+        settings=settings,
+        prices=prices,
+        adapter=adapter,
+    )
+    created = await service.create_session(
+        repo_path=target_repo,
+        prompt="repair the implementation",
+        harness=adapter.name,
+        model=MODEL,
+        auto_merge=True,
+    )
+    failed = await service.run(created.session.id)
+    adapter.status = "success"
+
+    retried = await service.retry(created.session.id)
+
+    assert failed.run_status is RunState.FAILED
+    assert retried.run_status is RunState.SUCCESS
+    assert retried.node_status is NodeStatus.DONE
+    assert retried.run_id != failed.run_id
+    async with database.session() as db_session:
+        runs = await Repository(db_session).list_runs(created.node.id)
+    assert [(run.id, run.attempt, run.status) for run in runs] == [
+        (failed.run_id, 1, RunState.FAILED),
+        (retried.run_id, 2, RunState.SUCCESS),
+    ]
+    assert (settings.runs_root / failed.run_id / "events.ndjson").exists()
+    assert (settings.runs_root / retried.run_id / "events.ndjson").exists()
+    assert failed.commit.commit is not None
+    assert created.node.worktree_path is not None
+    assert (
+        await git(
+            created.node.worktree_path,
+            "cat-file",
+            "-t",
+            failed.commit.commit,
+        )
+        == "commit\n"
+    )
+
+
+async def test_kill_and_retry_reject_invalid_states(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    adapter = FakeAdapter(name="fake")
+    service = service_for(
+        database=database,
+        settings=settings,
+        prices=prices,
+        adapter=adapter,
+    )
+    created = await service.create_session(
+        repo_path=target_repo,
+        prompt="ordinary run",
+        harness=adapter.name,
+        model=MODEL,
+    )
+    with pytest.raises(InvalidTransitionError, match="no active run"):
+        await service.kill(created.session.id)
+    with pytest.raises(InvalidTransitionError, match="only failed or blocked"):
+        await service.retry(created.session.id)
 
 
 async def test_an_invalid_adapter_does_not_leave_a_running_attempt(

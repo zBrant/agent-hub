@@ -158,7 +158,7 @@ reconnect replay, restart reset, expired cursors, service registration before
 the first broadcast, and slow-subscriber cleanup. The frontend's single socket
 implements the same cursor protocol and passes typecheck, lint, and build.
 
-### B7 — Kill and retry
+### B7 — Kill and retry ✅
 
 Kill the process group, persist an interrupted terminal event, keep the failed
 node branch for inspection, and create a new `Run` for retry. Never mutate the
@@ -170,6 +170,24 @@ another process for the same logical run without losing event order.
 
 **Done when:** tests cover kill during a tool, retry after failure, and refusal to
 merge any interrupted or parser-untrusted run.
+
+**Result:** completed on 2026-08-06. `SingleRunService` now tracks the active
+adapter handle for each session, including the start/kill race, and exposes
+kill as a normal lifecycle operation. Both process adapters launch an isolated
+process group; kill sends TERM to the group, escalates to KILL after the bounded
+grace period, and synthesizes a durable `RunFinished(status="interrupted")`.
+The partial node work is checkpointed for inspection, the node becomes failed,
+and neither automatic nor explicit approval can merge it.
+
+Retry is allowed only after a terminal failed or safety-blocked attempt. It
+reuses the node brief and worktree but inserts a new `Run` with the next attempt
+number, a separate NDJSON/meta directory, and independent token/cost rows; the
+old row, log, and failed checkpoint remain unchanged. REST now exposes
+`POST /api/sessions/{id}/kill` and `/retry`, with regenerated OpenAPI and
+TypeScript contracts. Tests kill both real subprocess stand-ins plus a fake run
+while a tool is active, prove interrupted events survive in NDJSON, prove the
+integration branch stays untouched, and prove retry retains attempt 1 while
+attempt 2 succeeds.
 
 ### B8 — Frontend shell and generated types ✅
 

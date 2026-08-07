@@ -16,7 +16,7 @@ import asyncio
 import contextlib
 import os
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import structlog
@@ -100,6 +100,18 @@ class RunOutcome:
     block_reason: RunBlockReason | None = None
 
 
+@dataclass(slots=True)
+class _ActiveRun:
+    run_id: RunId
+    adapter: BaseHarnessAdapter
+    handle: RunHandle | None = None
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    completed: asyncio.Event = field(default_factory=asyncio.Event)
+    kill_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    kill_requested: bool = False
+    kill_sent: bool = False
+
+
 class SingleRunService:
     """Own the one active node run allowed per Phase 1 session."""
 
@@ -126,6 +138,7 @@ class SingleRunService:
         # lets tests prove sanitization without mutating the process environment.
         self._environment = dict(os.environ if environment is None else environment)
         self._locks: dict[SessionId, asyncio.Lock] = {}
+        self._active: dict[SessionId, _ActiveRun] = {}
 
     async def create_session(
         self,
@@ -193,7 +206,53 @@ class SingleRunService:
                 f"session {session_id} already has an active run"
             )
         async with lock:
-            return await self._run_locked(session_id)
+            try:
+                return await self._run_locked(session_id)
+            finally:
+                self._complete_active(session_id)
+
+    async def kill(self, session_id: SessionId) -> Run:
+        """Terminate the active process tree and wait for its durable outcome."""
+        active = self._active.get(session_id)
+        if active is None:
+            # Preserve the 404/409 distinction even when nothing is active.
+            await self.get_session(session_id)
+            raise InvalidTransitionError(f"session {session_id} has no active run")
+        active.kill_requested = True
+        await self._kill_active(active)
+        await active.completed.wait()
+        async with self._database.session() as db_session:
+            run = await Repository(db_session).get_run(active.run_id)
+            if run is None:  # pragma: no cover - authored before registration
+                raise OrchestratorError(f"run {active.run_id} vanished after kill")
+            return run
+
+    async def retry(self, session_id: SessionId) -> RunOutcome:
+        """Create a new attempt after a failed or safety-blocked run."""
+        lock = self._locks.setdefault(session_id, asyncio.Lock())
+        if lock.locked():
+            raise InvalidTransitionError(
+                f"session {session_id} already has an active run"
+            )
+        async with lock:
+            try:
+                async with self._database.session() as db_session:
+                    repository = Repository(db_session)
+                    session, node = await self._session_and_node(repository, session_id)
+                    if node.status not in (NodeStatus.FAILED, NodeStatus.BLOCKED):
+                        raise InvalidTransitionError(
+                            f"node {node.id} is {node.status.value}; "
+                            "only failed or blocked nodes can retry"
+                        )
+                    runs = await repository.list_runs(node.id)
+                    if not runs or not runs[-1].status.terminal:
+                        raise InvalidTransitionError(
+                            f"node {node.id} has no terminal run to retry"
+                        )
+                    await self._set_node(repository, session, node, NodeStatus.READY)
+                return await self._run_locked(session_id)
+            finally:
+                self._complete_active(session_id)
 
     async def approve(self, session_id: SessionId) -> MergeResult:
         """Apply the human gate for a safe run left awaiting review."""
@@ -278,6 +337,8 @@ class SingleRunService:
                 events_path=events_path(self._settings.runs_root, run_id),
             )
             await self._register_run(run.id, run.session_id)
+            active = _ActiveRun(run_id=run.id, adapter=adapter)
+            self._active[session_id] = active
             meta = build_meta(
                 run_id=run.id,
                 session_id=run.session_id,
@@ -300,6 +361,7 @@ class SingleRunService:
                 adapter=adapter,
                 spec=spec,
                 meta=meta,
+                active=active,
             )
             projected = await repository.get_run(run.id)
             if projected is None:  # pragma: no cover - ingest just wrote it
@@ -366,6 +428,7 @@ class SingleRunService:
         adapter: BaseHarnessAdapter,
         spec: RunSpec,
         meta: RunMeta,
+        active: _ActiveRun,
     ) -> RunMeta:
         handle: RunHandle | None = None
         harness_version: str | None = None
@@ -380,6 +443,10 @@ class SingleRunService:
             ) as opened:
                 ingest = opened
                 handle = await adapter.start(spec)
+                active.handle = handle
+                active.ready.set()
+                if active.kill_requested:
+                    await self._kill_active(active)
                 async for event in adapter.events(handle):
                     if isinstance(event, RunStarted):
                         harness_version = event.harness_version
@@ -425,6 +492,23 @@ class SingleRunService:
                 run_id=run.id,
             )
             raise
+        finally:
+            active.ready.set()
+
+    async def _kill_active(self, active: _ActiveRun) -> None:
+        async with active.kill_lock:
+            await active.ready.wait()
+            if active.handle is None or active.kill_sent:
+                return
+            await active.adapter.kill(active.handle)
+            active.kill_sent = True
+
+    def _complete_active(self, session_id: SessionId) -> None:
+        active = self._active.pop(session_id, None)
+        if active is None:
+            return
+        active.ready.set()
+        active.completed.set()
 
     async def _session_and_node(
         self, repository: Repository, session_id: SessionId

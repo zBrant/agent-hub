@@ -134,6 +134,13 @@ Write path for an event, in this order:
 2. update the SQLite projection (`run` state and append-only usage rows)
 3. broadcast on the WebSocket
 
+An operator kill follows the same path. The adapter terminates its isolated
+process group and synthesizes `RunFinished(status="interrupted")`; that event is
+appended, projected, and broadcast like any other terminal fact. Partial work
+is checkpointed but never merged. Retry inserts another `run` row and another
+NDJSON directory for the same node — it never edits the previous attempt or
+reuses its log.
+
 If the process dies between 1 and 2, replay reconstructs. Reverse the order and
 you have state in the database that does not exist in the log — and you lose the
 ability to audit.

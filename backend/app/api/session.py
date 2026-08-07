@@ -98,6 +98,18 @@ async def list_runs(session_id: str, request: Request) -> list[RunResponse]:
     return [run_response(row) for row in rows]
 
 
+@router.post("/{session_id}/kill", response_model=RunResponse)
+async def kill_run(session_id: str, request: Request) -> RunResponse:
+    return run_response(await _call(_service(request).kill(session_id)))
+
+
+@router.post("/{session_id}/retry", response_model=RunOutcomeResponse)
+async def retry_run(session_id: str, request: Request) -> RunOutcomeResponse:
+    return RunOutcomeResponse.from_result(
+        await _call(_service(request).retry(session_id))
+    )
+
+
 @router.post("/{session_id}/approve", response_model=MergeResponse)
 async def approve(session_id: str, request: Request) -> MergeResponse:
     return MergeResponse.from_result(await _call(_service(request).approve(session_id)))

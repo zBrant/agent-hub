@@ -197,6 +197,8 @@ def test_missing_resources_and_invalid_bodies_are_transport_errors(
         assert client.get("/api/sessions/sess_missing").status_code == 404
         assert client.get("/api/sessions/sess_missing/node").status_code == 404
         assert client.get("/api/sessions/sess_missing/runs").status_code == 404
+        assert client.post("/api/sessions/sess_missing/kill").status_code == 404
+        assert client.post("/api/sessions/sess_missing/retry").status_code == 404
         invalid = client.post(
             "/api/sessions",
             json={"repo_path": "/tmp/repo", "prompt": "", "harness": "codex"},
@@ -212,6 +214,26 @@ def test_missing_resources_and_invalid_bodies_are_transport_errors(
         )
         assert unknown.status_code == 422
         assert client.get("/api/sessions").json() == []
+
+
+def test_kill_and_retry_invalid_transitions_are_conflicts(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        created = client.post(
+            "/api/sessions",
+            json={
+                "repo_path": str(target_repo),
+                "prompt": "create api.txt",
+                "harness": "fake",
+                "model": MODEL,
+            },
+        ).json()
+        session_id = created["session"]["id"]
+
+        assert client.post(f"/api/sessions/{session_id}/kill").status_code == 409
+        assert client.post(f"/api/sessions/{session_id}/retry").status_code == 409
 
 
 def test_manual_approval_endpoint(settings: Settings, target_repo: Path) -> None:

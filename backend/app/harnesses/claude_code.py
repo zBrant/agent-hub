@@ -887,6 +887,7 @@ class ClaudeCodeAdapter:
         process = handle.process
         if process.returncode is not None:
             return
+        handle.interrupted = True
         _signal_group(handle, signal.SIGTERM)
         try:
             await asyncio.wait_for(process.wait(), timeout=5.0)
@@ -944,7 +945,11 @@ class ClaudeCodeAdapter:
         yield RunFinished(
             run_id=handle.run_id,
             ts=now_ms(),
-            status=run_status(exit_code, state.last_status),
+            status=(
+                "interrupted"
+                if handle.interrupted
+                else run_status(exit_code, state.last_status)
+            ),
             exit_code=exit_code,
             summary=state.last_summary,
         )

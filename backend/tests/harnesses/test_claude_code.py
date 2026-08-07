@@ -553,6 +553,32 @@ async def test_the_turn_reason_beats_the_exit_code() -> None:
     assert events[-1].status == "interrupted"
 
 
+async def test_kill_terminates_the_process_group_as_interrupted() -> None:
+    process = await asyncio.create_subprocess_exec(
+        "python3",
+        "-c",
+        "import time; time.sleep(30)",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    handle = RunHandle(run_id=RUN_ID, argv=("python3",), process=process, started_ms=0)
+    adapter = ClaudeCodeAdapter()
+
+    async def consume() -> list[AgentEvent]:
+        return [event async for event in adapter.events(handle)]
+
+    consuming = asyncio.create_task(consume())
+    await asyncio.sleep(0.1)
+    await adapter.kill(handle)
+    events = await asyncio.wait_for(consuming, timeout=5)
+
+    assert process.returncode is not None
+    assert isinstance(events[-1], RunFinished)
+    assert events[-1].status == "interrupted"
+
+
 async def test_cancelling_the_stream_kills_the_process_tree() -> None:
     process = await asyncio.create_subprocess_exec(
         "python3",
