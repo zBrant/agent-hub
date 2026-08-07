@@ -77,8 +77,7 @@ database level.
 `orchestrator/graph.py`, extending what is there rather than replacing it.
 
 Cycle detection, orphan `depends_on` detection, topological sort, ready-set
-computation given a set of completed nodes, and deadlock detection — nothing
-ready, nothing running, not complete.
+computation, and deadlock detection.
 
 **Pure. No I/O, no async, no database** (`docs/architecture.md` §3). This is the
 module that should have exhaustive tests, because it is the only part of the
@@ -87,6 +86,33 @@ scheduler that can be tested without processes, worktrees, or time.
 **Done when:** property-style tests cover cycles of length 1, 2 and n, diamonds,
 disconnected components, and the deadlock case; and every function is total —
 an invalid graph returns a typed error, never raises.
+
+**Result:** completed on 2026-08-07, 123 tests. `build_dag` returns
+`Dag | InvalidDag`; `evaluate_graph` is the single call the scheduler makes per
+tick, returning one consistent snapshot.
+
+Four things this activity settled that the documents left open, all now
+reflected in `design.md` §9:
+
+- **Ready takes a status *map*, not a set of completed ids.** A set cannot
+  express that `awaiting_review` is neither complete nor blocking-forever, nor
+  tell `failed`/`blocked` apart from `pending` for propagation. The sketch in
+  `docs/architecture.md` §3 has the same problem.
+- **Four outcomes, not one `break`**: `active`, `waiting_on_human`, `complete`,
+  `deadlocked`. Given a valid DAG, `deadlocked` is only reachable when a
+  transition was not persisted — it detects a scheduler bug.
+- **A `skipped` node satisfies its dependents**, and a startable node is
+  `pending` *or* `ready`.
+- **A cycle is reported as a shortest path** through the strongly connected
+  component's lowest node id, not as the whole SCC — an eight-node SCC
+  containing a two-node loop tells C8's correction loop almost nothing about
+  which edge to delete. All defect categories are reported in one pass, because
+  C8 bounds that loop to three attempts and must not spend one per typo.
+
+`blocked` nodes carry the *named* ancestors responsible, propagated through
+intermediate pending nodes, so a diamond's join names the branch that failed
+rather than its immediate parent. `design.md` §8's drawer shows a reason, and
+"failed dependency" without the dependency is not a reason.
 
 ---
 

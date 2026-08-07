@@ -503,11 +503,35 @@ async def run_graph(graph, max_concurrency=3):
 
     while not graph.is_complete():
         ready = [n for n in graph.nodes
-                 if n.status == "pending" and set(n.depends_on) <= done]
+                 if n.status in ("pending", "ready")
+                 and set(n.depends_on) <= done]
         if not ready and not running:
-            break   # deadlock, or everything blocked — report it
+            break   # see the four outcomes below
         ...
 ```
+
+Two corrections to that sketch, both found by building it:
+
+**A startable node is `pending` *or* `ready`.** State is persisted on every
+transition, so a node marked `ready` and not yet launched when the orchestrator
+dies would never be picked up again after a restart.
+
+**`not ready and not running` is three different situations, not one.** The
+scheduler distinguishes four outcomes:
+
+| Outcome | Meaning |
+|---|---|
+| `active` | Something is running or startable. |
+| `waiting_on_human` | A gate holds it — `awaiting_review`, or a `blocked` node needing resolution. Under `auto_merge` off this is the system working correctly (invariant 6), not a stall. |
+| `complete` | Every node reached a terminal state. |
+| `deadlocked` | Nothing running, nothing ready, no gate open, not complete. |
+
+Given a validated DAG, `deadlocked` is only reachable when a transition was not
+persisted — so it detects a scheduler bug, not a graph state, and deserves a
+loud log rather than a quiet exit.
+
+**A `skipped` node satisfies its dependents.** A skip that blocks everything
+downstream is not a usable operator action.
 
 What matters:
 
