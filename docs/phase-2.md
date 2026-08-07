@@ -29,18 +29,22 @@ resource, and `docs/architecture.md` §4's write ordering says nothing about it.
 So the ordering below front-loads both, and leaves the planner — the visible,
 demo-friendly part — until the machinery underneath it is real.
 
+Two edges of the graph below changed once the work started. C2 turned out not
+to need C1: the pure core takes plain ids and statuses, so making it depend on
+the tables would only have coupled them. And C5 turned out to belong with C4
+rather than after C3 — they are the same file and the same problem, worktrees
+under concurrency, and neither needs a scheduler to be provable.
+
 ## Activities
 
 ```mermaid
 flowchart TD
-    C1[C1 · Graph schema] --> C2[C2 · Pure DAG core]
-    C1 --> C4[C4 · Multi-node worktrees]
-    C2 --> C3[C3 · Scheduler]
-    C4 --> C3
-    C3 --> C5[C5 · Merge serialization]
+    C1[C1 · Graph schema] --> C4[C4 · Multi-node worktrees]
+    C2[C2 · Pure DAG core] --> C3[C3 · Scheduler]
+    C4 --> C5[C5 · Merge serialization]
+    C5 --> C3
     C3 --> C6[C6 · Budgets and restart recovery]
-    C5 --> C7[C7 · Human gate]
-    C6 --> C7
+    C6 --> C7[C7 · Acceptance and human gate]
     C7 --> C8[C8 · Planner]
     C8 --> C9[C9 · Graph REST and WS]
     C9 --> C10[C10 · Editable canvas]
