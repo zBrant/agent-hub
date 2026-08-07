@@ -24,6 +24,37 @@ Two deviations from `design.md` §2.2 that real git forces:
    are folded in with ``git merge`` inside the fresh worktree
    (see :meth:`SessionWorkspace.create_node`).
 
+Concurrency, measured rather than assumed (C4/C5). Two separate mutexes, because
+the two races have different scopes — see :class:`_LockRegistry`:
+
+* **Registering worktrees in parallel is not safe**, though it looks like it is.
+  ``git worktree add`` creates ``.git/worktrees/<id>/`` and fills in ``commondir``
+  in two steps, and a *concurrent* add enumerates that same directory: catching
+  the file at zero bytes kills it with ``fatal: failed to read
+  .git/worktrees/<other>/commondir: Undefined error: 0`` (exit 128, errno unset —
+  a short read, not a missing file). Measured on git 2.39.5: 0 failures in 60
+  rounds at 2, 3, 4 and 8-way concurrency, 3 in 60 at 16-way, 4 in 60 at 24-way.
+  Rare at the scheduler's ``max_concurrency`` of 2-3, and a hard exception at
+  exactly the wrong moment — while a node is being materialized. So worktree
+  *registration* is serialized per repository: only ``add``/``remove``/``prune``
+  are inside the mutex, so a node is never waiting on another node's agent, and
+  the checkout is short next to the run that follows. ``worktree list`` survived
+  a thousand concurrent attempts — it tolerates a half-written entry — and stays
+  unlocked, which also keeps ``remove_node`` from deadlocking on itself, since
+  ``asyncio.Lock`` is not reentrant.
+* **Merging in parallel is not safe**, and git does not fail cleanly. Its locking
+  is per file (``index.lock``, ``<ref>.lock``) and is released between the
+  commands of a merge *sequence*, so a second ``git merge`` started while the
+  first is unfinished produces, depending on timing: exit 128 *"You have not
+  concluded your merge (MERGE_HEAD exists)"*, exit 128 *"stash failed"*, exit 128
+  *"Unable to create index.lock"*, or exit **1** *"Unable to write index"* — the
+  last of which is the dangerous one, since exit 1 is also how a real conflict
+  exits. Worse, whichever loser reaches ``git merge --abort`` first aborts the
+  *winner's* merge. Measured with five nodes: one commit landed and four raised;
+  in one run of five, nothing landed at all and the shared worktree was left
+  dirty. Hence :meth:`SessionWorkspace.merge_into_integration` holds a mutex for
+  the whole sequence, abort included.
+
 Conventions that are load-bearing here:
 
 * Every git invocation goes through :func:`_git` /
@@ -202,6 +233,82 @@ async def _real_path(path: Path) -> Path:
     return await asyncio.to_thread(lambda: path.expanduser().resolve())
 
 
+class _LockRegistry:
+    """Mutexes for a shared *thing on disk*, keyed by its resolved path.
+
+    Why not an attribute of :class:`SessionWorkspace`: the workspace is a frozen
+    value object that callers rebuild from database columns whenever they need it
+    (``SingleRunService._workspace``), so a per-instance lock would be a brand
+    new, uncontended lock on every call and would serialize nothing at all. What
+    is being protected is the directory, not the Python object describing it, so
+    the lock's identity has to come from the path. Resolved, because ``/var`` and
+    ``/private/var`` are the same worktree and must not get two mutexes.
+
+    Why not one global lock: the two registries below have deliberately different
+    scopes. Merges contend per *integration worktree* — two sessions have two of
+    them and must never wait on each other. Worktree registration contends per
+    *repository*, because ``.git/worktrees/`` is shared by every session opened
+    on that repository.
+
+    In-process only, deliberately. A cross-process guard (an ``flock`` on a file
+    beside the repository) would be needed if two ``agenthub`` processes could
+    drive one workspace, and git would not provide it: ``git worktree lock`` only
+    marks a worktree as not-prunable, and ``index.lock`` covers a single command,
+    not a merge *sequence*. But AgentHub is a single-user tool bound to
+    127.0.0.1 with one orchestrator process (`design.md` §1), and the SQLite
+    projection and the run event log already assume a single writer — a git lock
+    alone would advertise a guarantee the rest of the process does not keep. So
+    it is out of scope, along with the human who runs ``git merge`` by hand in
+    the integration worktree. Both fail loudly rather than silently; the failure
+    modes are in the module docstring.
+    """
+
+    def __init__(self, purpose: str) -> None:
+        self._purpose = purpose
+        self._locks: dict[Path, tuple[asyncio.AbstractEventLoop, asyncio.Lock]] = {}
+
+    def get(self, key: Path) -> asyncio.Lock:
+        """The mutex for ``key``, created on first use.
+
+        ``asyncio.Lock`` binds to the loop that first awaits it, so the loop is
+        part of the entry: a lock left behind by a previous loop (a test's, or a
+        restarted server's) can never be awaited again, and is replaced rather
+        than reused. AgentHub runs one loop, so in production a given key takes
+        this branch exactly once.
+        """
+        loop = asyncio.get_running_loop()
+        entry = self._locks.get(key)
+        if entry is not None and entry[0] is loop:
+            return entry[1]
+
+        lock = asyncio.Lock()
+        self._locks[key] = (loop, lock)
+        log.debug("worktree.lock_created", purpose=self._purpose, key=str(key))
+        for stale, (owner, _) in list(self._locks.items()):
+            if owner.is_closed():
+                del self._locks[stale]
+        return lock
+
+
+# Serializes the merge sequence into one integration worktree (C5).
+_MERGE_LOCKS = _LockRegistry("integration merge")
+
+# Serializes `git worktree add|remove|prune` per repository, keyed by the git
+# common dir so that every session opened on one repository shares it (C4).
+_REGISTRY_LOCKS = _LockRegistry("worktree registration")
+
+
+async def _common_dir(cwd: Path) -> Path:
+    """The repository's ``.git`` shared by all of its worktrees.
+
+    ``--path-format=absolute`` because the default prints ``.git`` relative to
+    the cwd, and the *same* repository reached from two worktrees has to produce
+    the same lock key. Resolved for the same reason.
+    """
+    result = await _git(cwd, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    return await _real_path(Path(result.stdout.strip()))
+
+
 @dataclass(frozen=True, slots=True)
 class SessionWorkspace:
     """The worktrees of one session. Build it with :func:`init_session_workspace`.
@@ -248,22 +355,27 @@ class SessionWorkspace:
 
         The base is the integration branch when there are no parents, otherwise
         the first parent's branch with the remaining parents merged in.
+
+        Only the ``add`` is serialized (see :class:`_LockRegistry`); folding the
+        remaining parents happens in this node's own worktree, contends with
+        nobody, and stays outside the mutex.
         """
         path = self.node_path(node_id)
         branch = self.node_branch(node_id)
         parent_branches = [self.node_branch(p) for p in parents]
         source_ref = parent_branches[0] if parent_branches else self.integration_branch
 
-        await self._git(
-            self.integration_path,
-            "worktree",
-            "add",
-            "-b",
-            branch,
-            "--",
-            str(path),
-            source_ref,
-        )
+        async with await self.registry_lock():
+            await self._git(
+                self.integration_path,
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                "--",
+                str(path),
+                source_ref,
+            )
 
         merges: list[MergeResult] = []
         for extra in parent_branches[1:]:
@@ -347,6 +459,18 @@ class SessionWorkspace:
             changed_paths=changed,
         )
 
+    async def integration_lock(self) -> asyncio.Lock:
+        """The mutex serializing merges into *this* session's integration
+        worktree. Shared by every :class:`SessionWorkspace` value pointing at the
+        same worktree; independent from any other session's."""
+        return _MERGE_LOCKS.get(await _real_path(self.integration_path))
+
+    async def registry_lock(self) -> asyncio.Lock:
+        """The mutex serializing ``git worktree add|remove|prune`` on this
+        *repository*. Shared with every other session opened on it, because
+        ``.git/worktrees/`` is one directory (see :class:`_LockRegistry`)."""
+        return _REGISTRY_LOCKS.get(await _common_dir(self.integration_path))
+
     async def merge_into_integration(
         self,
         node_id: NodeId,
@@ -358,14 +482,24 @@ class SessionWorkspace:
         Returns ``CONFLICTED`` (never raises) when git cannot reconcile the
         change; the merge is aborted first so the shared integration worktree
         does not stay half-merged and block every other node.
+
+        Serialized per integration worktree. The lock covers the *whole*
+        sequence — the up-to-date check, the merge, and the abort — because every
+        step reads or writes the one shared index; releasing it between steps is
+        what turns a second node's merge into a false conflict or a crash (see
+        the module docstring). Node worktrees stay fully parallel; a merge is
+        fast and the queue drains in arrival order, so a waiting node is delayed,
+        never starved.
         """
         branch = self.node_branch(node_id)
-        return await self._merge(
-            self.integration_path,
-            source=branch,
-            target=self.integration_branch,
-            message=message or f"agenthub: merge {node_id} into {INTEGRATION}",
-        )
+        lock = await self.integration_lock()
+        async with lock:
+            return await self._merge(
+                self.integration_path,
+                source=branch,
+                target=self.integration_branch,
+                message=message or f"agenthub: merge {node_id} into {INTEGRATION}",
+            )
 
     async def remove_node(self, node_id: NodeId, *, force: bool = False) -> None:
         """Remove the node's worktree. Idempotent.
@@ -375,21 +509,31 @@ class SessionWorkspace:
         branches is a session-level decision, not a node-level one.
         """
         path = self.node_path(node_id)
-        if await _real_path(path) not in await self.list_worktrees():
-            await self._git(self.integration_path, "worktree", "prune")
-            return
+        lock = await self.registry_lock()
+        # The check is inside the mutex — `list_worktrees` does not take it, so
+        # there is no reentrancy to worry about, and reading the registry while
+        # another node is registering itself is the race being avoided.
+        async with lock:
+            if await _real_path(path) not in await self.list_worktrees():
+                await self._git(self.integration_path, "worktree", "prune")
+                return
 
-        args = ["worktree", "remove"]
-        if force:
-            args.append("--force")
-        args += ["--", str(path)]
-        await self._git(self.integration_path, *args)
-        await self._git(self.integration_path, "worktree", "prune")
+            args = ["worktree", "remove"]
+            if force:
+                args.append("--force")
+            args += ["--", str(path)]
+            await self._git(self.integration_path, *args)
+            await self._git(self.integration_path, "worktree", "prune")
         log.info("worktree.removed", session_id=self.session_id, node_id=node_id)
 
     async def list_worktrees(self) -> tuple[Path, ...]:
         """Resolved paths of every worktree of the repository, including the
-        target repo itself and the integration worktree."""
+        target repo itself and the integration worktree.
+
+        Deliberately *not* behind the registration mutex: git tolerates a
+        half-written entry here (measured), and taking it would deadlock
+        :meth:`remove_node`, which calls this from inside that mutex.
+        """
         result = await self._git(
             self.integration_path, "worktree", "list", "--porcelain"
         )
@@ -487,9 +631,16 @@ async def init_session_workspace(
     _valid_name(session_id, kind="session id")
     repo = await _real_path(repo_path)
 
-    probe = await _git(repo, "rev-parse", "--git-common-dir", ok_codes=(0, 128))
+    probe = await _git(
+        repo,
+        "rev-parse",
+        "--path-format=absolute",
+        "--git-common-dir",
+        ok_codes=(0, 128),
+    )
     if probe.returncode != 0:
         raise NotARepositoryError(f"{repo} is not a git repository: {probe.stderr}")
+    common_dir = await _real_path(Path(probe.stdout.strip()))
 
     # Pin the base to a sha now: it cannot be re-read as an option, and the
     # session is not silently rebased if the user moves the branch afterwards.
@@ -516,21 +667,24 @@ async def init_session_workspace(
         identity=identity,
     )
 
-    existing = await _git(repo, "worktree", "list", "--porcelain")
     integration = await _real_path(workspace.integration_path)
-    if integration in _parse_worktree_list(existing.stdout):
-        return workspace
+    # Check and add under the repository's registration mutex: two sessions
+    # starting at once on one repository write to the same `.git/worktrees/`.
+    async with _REGISTRY_LOCKS.get(common_dir):
+        existing = await _git(repo, "worktree", "list", "--porcelain")
+        if integration in _parse_worktree_list(existing.stdout):
+            return workspace
 
-    await _git(
-        repo,
-        "worktree",
-        "add",
-        "-b",
-        workspace.integration_branch,
-        "--",
-        str(workspace.integration_path),
-        base_commit,
-    )
+        await _git(
+            repo,
+            "worktree",
+            "add",
+            "-b",
+            workspace.integration_branch,
+            "--",
+            str(workspace.integration_path),
+            base_commit,
+        )
     log.info(
         "worktree.session_initialized",
         session_id=session_id,
