@@ -36,9 +36,9 @@ records rather than evaluates), the two verdicts a reviewer can give
 (:meth:`NodeRunService.approve_node` and :meth:`NodeRunService.reject_node`), and
 the composition of the next attempt's prompt from the rejections that came
 before it (:meth:`NodeRunService._compose_prompt`). A rejection is not a separate
-mechanism from a retry — it *is* a retry with a reason attached — so it goes
-through :meth:`NodeRunService._retry_locked` with everything else, and there is
-one place where a new attempt is opened rather than two that must agree.
+mechanism from a retry — it prepares a retry with a reason attached — so it
+goes through :meth:`NodeRunService._prepare_retry_locked` with everything else.
+Only the scheduler opens the new attempt after an HTTP rejection.
 
 The scheduler is not here. This module knows how to run *a* node; deciding
 *which* nodes and *when* is ``orchestrator/scheduler.py``, over the pure core in
@@ -86,6 +86,7 @@ from app.models.pricing import PriceTable
 from app.models.status import NodeStatus, RunState, SessionStatus
 from app.models.tables import Node, Run, Session
 from app.orchestrator.graph import (
+    Dag,
     DagError,
     GraphNode,
     InvalidDag,
@@ -110,7 +111,9 @@ from app.storage.repository import (
     CriterionOutcome,
     NodeReview,
     Repository,
+    RepositoryError,
     ReviewDecision,
+    SessionGraph,
     UsageTotals,
 )
 
@@ -119,6 +122,7 @@ log = structlog.get_logger()
 AdapterFactory = Callable[[str], BaseHarnessAdapter]
 PolicyFactory = Callable[[], SandboxPolicy]
 RunRegistration = Callable[[RunId, SessionId], Awaitable[None]]
+NodeTransition = Callable[[Node], Awaitable[None]]
 
 # A node the scheduler may hand to a harness. `design.md` §9's correction: a
 # node persisted `ready` and not yet launched when the process died must still
@@ -158,6 +162,10 @@ ORPHAN_POLL_S = 0.1
 
 async def no_run_registration(run_id: RunId, session_id: SessionId) -> None:
     """Default registration hook for transports without a live broker."""
+
+
+async def no_node_transition(node: Node) -> None:
+    """Default transition hook for callers without a graph topic."""
 
 
 class OrchestratorError(Exception):
@@ -525,6 +533,7 @@ class NodeRunService:
         policy_factory: PolicyFactory = default_policy,
         broadcast: Broadcast = no_broadcast,
         register_run: RunRegistration = no_run_registration,
+        on_transition: NodeTransition = no_node_transition,
         environment: Mapping[str, str] | None = None,
         limits: NodeLimits | None = None,
         reaper: ProcessReaper = DEFAULT_REAPER,
@@ -540,6 +549,7 @@ class NodeRunService:
         self._policy_factory = policy_factory
         self._broadcast = broadcast
         self._register_run = register_run
+        self._on_transition = on_transition
         # A copy makes the launch conditions stable for the service lifetime and
         # lets tests prove sanitization without mutating the process environment.
         self._environment = dict(os.environ if environment is None else environment)
@@ -725,6 +735,150 @@ class NodeRunService:
             nodes=tuple(created),
             ids_by_name=dict(allocated),
         )
+
+    async def update_node(
+        self,
+        node_id: NodeId,
+        *,
+        name: str,
+        prompt: str,
+        harness: str,
+        model: str | None,
+        acceptance_criteria: Sequence[str] = (),
+        touches: Sequence[str] = (),
+        estimated_effort: str | None = None,
+    ) -> Node:
+        """Replace authored fields while the graph is still a proposal."""
+        if not name.strip() or not prompt.strip():
+            raise ValueError("node name and prompt must not be blank")
+        adapter = self._adapter_factory(harness)
+        if model is not None and model not in adapter.supported_models:
+            raise ValueError(
+                f"unsupported model {model!r} for {harness!r}; "
+                f"expected one of {adapter.supported_models!r}"
+            )
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            node = await self._require_node(repository, node_id)
+            graph = await self._require_editable_graph(repository, node.session_id)
+            if any(other.id != node.id and other.name == name for other in graph.nodes):
+                raise ValueError(f"node name {name!r} already exists in this graph")
+            return await repository.update_node(
+                node.id,
+                name=name,
+                prompt=prompt,
+                harness=harness,
+                model=model,
+                acceptance_criteria=acceptance_criteria,
+                touches=touches,
+                estimated_effort=estimated_effort,
+            )
+
+    async def delete_node(self, node_id: NodeId) -> SessionGraph:
+        """Remove one proposed node and both sides of its incident edges."""
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            node = await self._require_node(repository, node_id)
+            graph = await self._require_editable_graph(repository, node.session_id)
+            if len(graph.nodes) == 1:
+                raise InvalidTransitionError(
+                    "a proposed graph must keep at least one node"
+                )
+            await repository.delete_node(node.id)
+            updated = await repository.load_graph(node.session_id)
+            if updated is None:  # pragma: no cover - parent FK survived the delete
+                raise ResourceNotFoundError(f"no such session {node.session_id}")
+            return updated
+
+    async def add_dependency(
+        self, node_id: NodeId, depends_on_id: NodeId
+    ) -> SessionGraph:
+        """Add one proposal edge after validating the resulting whole DAG."""
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            node = await self._require_node(repository, node_id)
+            graph = await self._require_editable_graph(repository, node.session_id)
+            by_id = graph.by_id()
+            if depends_on_id not in by_id:
+                raise ResourceNotFoundError(
+                    f"no such dependency {depends_on_id} in session {node.session_id}"
+                )
+            edge = (node_id, depends_on_id)
+            if any((row.node_id, row.depends_on_id) == edge for row in graph.edges):
+                raise InvalidTransitionError(
+                    f"dependency {node_id} -> {depends_on_id} already exists"
+                )
+            depends_on = graph.depends_on()
+            proposal = [
+                GraphNode(
+                    id=row.id,
+                    depends_on=tuple(
+                        sorted(
+                            depends_on[row.id]
+                            | ({depends_on_id} if row.id == node_id else set())
+                        )
+                    ),
+                )
+                for row in graph.nodes
+            ]
+            dag = build_dag(proposal)
+            if isinstance(dag, InvalidDag):
+                raise InvalidGraphError(dag.errors)
+            await repository.add_dependency(node_id, depends_on_id)
+            updated = await repository.load_graph(node.session_id)
+            if updated is None:  # pragma: no cover - parent still exists
+                raise ResourceNotFoundError(f"no such session {node.session_id}")
+            return updated
+
+    async def remove_dependency(
+        self, node_id: NodeId, depends_on_id: NodeId
+    ) -> SessionGraph:
+        """Remove one edge while the graph remains an editable proposal."""
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            node = await self._require_node(repository, node_id)
+            await self._require_editable_graph(repository, node.session_id)
+            if not await repository.remove_dependency(node_id, depends_on_id):
+                raise ResourceNotFoundError(
+                    f"no such dependency {node_id} -> {depends_on_id}"
+                )
+            updated = await repository.load_graph(node.session_id)
+            if updated is None:  # pragma: no cover - parent still exists
+                raise ResourceNotFoundError(f"no such session {node.session_id}")
+            return updated
+
+    async def approve_graph(self, session_id: SessionId) -> SessionGraph:
+        """Approve a proposal by making its root nodes scheduler-ready.
+
+        No approval column is needed: an editable proposal has only ``pending``
+        nodes, while an approved graph has at least one root in ``ready``.
+        Dependents remain ``pending`` until their parents complete.
+        """
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            graph = await self._require_editable_graph(repository, session_id)
+            if not graph.nodes:
+                raise InvalidTransitionError("an empty graph cannot be approved")
+            dag = self._validated_dag(graph)
+            roots = [node for node in graph.nodes if not dag.dependencies_of(node.id)]
+            for node in roots:
+                await self._set_node(repository, node, NodeStatus.READY)
+            approved = await repository.load_graph(session_id)
+            if approved is None:  # pragma: no cover - session was just loaded
+                raise ResourceNotFoundError(f"no such session {session_id}")
+            return approved
+
+    async def require_graph_approved(self, session_id: SessionId) -> SessionGraph:
+        """Return a graph that has crossed the plan-approval gate."""
+        graph = await self.get_graph(session_id)
+        self._validated_dag(graph)
+        if graph.nodes and all(
+            node.status is NodeStatus.PENDING for node in graph.nodes
+        ):
+            raise InvalidTransitionError(
+                f"graph {session_id} is still a proposal; approve it before running"
+            )
+        return graph
 
     # ------------------------------------------------------------------
     # Execution
@@ -949,9 +1103,10 @@ class NodeRunService:
         the same place, which is why there is one path and not two.
         """
         async with self._node_slot(node_id):
-            return await self._retry_locked(
+            await self._prepare_retry_locked(
                 node_id, allowed=_RETRYABLE, feedback=feedback
             )
+            return await self._run_locked(node_id)
 
     async def retry(self, session_id: SessionId) -> RunOutcome:
         node = await self.get_node(session_id)
@@ -963,13 +1118,14 @@ class NodeRunService:
         *,
         feedback: str,
         outcomes: Mapping[int, CriterionOutcome] | None = None,
-    ) -> RunOutcome:
-        """Reject a reviewed attempt and immediately open the next one.
+    ) -> NodeReview:
+        """Reject a reviewed attempt and leave its node ready for scheduling.
 
         The other half of the human gate (`design.md` §8's ``awaiting_review``
-        row, invariant 6). Nothing merges: the rejected attempt's commit stays
-        on the node's own branch, and the new run starts in the same worktree
-        with the reviewer's words appended to the authored prompt.
+        row, invariant 6). Nothing merges or runs in this call: the rejected
+        attempt's commit stays on the node branch, the verdict is made durable,
+        and the scheduler later opens the next immutable attempt with the
+        reviewer's words appended to the authored prompt.
 
         ``feedback`` is required and must not be blank. A rejection with no
         reason produces an attempt that differs from the last one only by luck,
@@ -988,12 +1144,15 @@ class NodeRunService:
                 "input is what the reviewer says was wrong"
             )
         async with self._node_slot(node_id):
-            return await self._retry_locked(
+            review = await self._prepare_retry_locked(
                 node_id,
                 allowed=(NodeStatus.AWAITING_REVIEW,),
                 feedback=feedback,
                 outcomes=outcomes,
             )
+            if review is None:  # pragma: no cover - feedback is required above
+                raise OrchestratorError(f"rejection for {node_id} was not recorded")
+            return review
 
     async def approve_node(
         self,
@@ -1077,21 +1236,21 @@ class NodeRunService:
     # Internals
     # ------------------------------------------------------------------
 
-    async def _retry_locked(
+    async def _prepare_retry_locked(
         self,
         node_id: NodeId,
         *,
         allowed: Sequence[NodeStatus],
         feedback: str | None = None,
         outcomes: Mapping[int, CriterionOutcome] | None = None,
-    ) -> RunOutcome:
-        """Record the verdict on the last attempt, then open the next one.
+    ) -> NodeReview | None:
+        """Record a verdict and make the node ready for a later run.
 
         The single retry path. :meth:`retry_node` and :meth:`reject_node` differ
         only in which node states they accept and in whether feedback is
-        mandatory; everything after that — the terminal-run check, the verdict,
-        the transition to ``ready`` and the new run — is one sequence, in one
-        transaction up to the point the agent starts.
+        mandatory. The terminal-run check, verdict and transition to ``ready``
+        are one sequence; starting the agent is deliberately outside it so an
+        HTTP rejection never holds the request for a whole run.
 
         The verdict is written **before** the transition, so a process that dies
         between them restarts into a ``ready`` node whose accumulated feedback is
@@ -1099,6 +1258,7 @@ class NodeRunService:
         rejection anyway. The opposite order loses the reviewer's words and
         re-runs the identical prompt, which is the worst of both.
         """
+        review: NodeReview | None = None
         async with self._database.session() as db_session:
             repository = Repository(db_session)
             node = await self._require_node(repository, node_id)
@@ -1114,7 +1274,7 @@ class NodeRunService:
                     f"node {node.id} has no terminal run to retry"
                 )
             if feedback is not None or outcomes:
-                await self._record_verdict(
+                review = await self._record_verdict(
                     repository,
                     node_id=node.id,
                     attempt=runs[-1].attempt,
@@ -1123,7 +1283,7 @@ class NodeRunService:
                     outcomes=outcomes,
                 )
             await self._set_node(repository, node, NodeStatus.READY)
-        return await self._run_locked(node_id)
+        return review
 
     async def _record_verdict(
         self,
@@ -1134,7 +1294,7 @@ class NodeRunService:
         decision: ReviewDecision,
         feedback: str | None = None,
         outcomes: Mapping[int, CriterionOutcome] | None = None,
-    ) -> None:
+    ) -> NodeReview:
         """Persist one human decision about one attempt.
 
         Two rows' worth of authored input, written together: the overall
@@ -1144,7 +1304,7 @@ class NodeRunService:
             await repository.resolve_acceptance_results(
                 node_id=node_id, attempt=attempt, outcomes=outcomes
             )
-        await repository.record_review(
+        review = await repository.record_review(
             node_id=node_id,
             attempt=attempt,
             decision=decision,
@@ -1160,6 +1320,7 @@ class NodeRunService:
                 for position, outcome in sorted((outcomes or {}).items())
             },
         )
+        return review
 
     async def _compose_prompt(self, repository: Repository, node: Node) -> str:
         """The authored prompt, plus every rejection this node has collected.
@@ -1254,11 +1415,11 @@ class NodeRunService:
                 branch=created.branch,
                 base_ref=created.base_ref,
             )
-            await self._set_node(
-                repository,
-                node,
-                NodeStatus.BLOCKED if created.blocked else NodeStatus.READY,
+            prepared_status = (
+                NodeStatus.BLOCKED if created.blocked else NodeStatus.READY
             )
+            if node.status is not prepared_status:
+                await self._set_node(repository, node, prepared_status)
         if created.blocked:
             log.warning(
                 "orchestrator.node_base_conflicted",
@@ -1590,8 +1751,33 @@ class NodeRunService:
         sibling rows — SQLModel's identity map does not refresh a row another
         connection changed, and a graph is precisely the case where it did.
         """
-        await repository.set_node_status(node.id, status)
+        persisted = await repository.set_node_status(node.id, status)
         await self._project_session_status(node.session_id)
+        await self._on_transition(persisted)
+
+    async def _require_editable_graph(
+        self, repository: Repository, session_id: SessionId
+    ) -> SessionGraph:
+        """A proposal is editable only before approval changes a node state."""
+        graph = await repository.load_graph(session_id)
+        if graph is None:
+            raise ResourceNotFoundError(f"no such session {session_id}")
+        if any(node.status is not NodeStatus.PENDING for node in graph.nodes):
+            raise InvalidTransitionError(
+                f"graph {session_id} is no longer an editable pending proposal"
+            )
+        return graph
+
+    @staticmethod
+    def _validated_dag(graph: SessionGraph) -> Dag:
+        depends_on = graph.depends_on()
+        dag = build_dag(
+            GraphNode(id=node.id, depends_on=tuple(sorted(depends_on[node.id])))
+            for node in graph.nodes
+        )
+        if isinstance(dag, InvalidDag):
+            raise InvalidGraphError(dag.errors)
+        return dag
 
     async def _project_session_status(self, session_id: SessionId) -> None:
         lock = self._projection_locks.setdefault(session_id, asyncio.Lock())
@@ -1664,8 +1850,17 @@ class NodeRunService:
     async def list_nodes(self, session_id: SessionId) -> tuple[Node, ...]:
         async with self._database.session() as db_session:
             repository = Repository(db_session)
-            await self.get_session(session_id)
+            if await repository.get_session(session_id) is None:
+                raise ResourceNotFoundError(f"no such session {session_id}")
             return tuple(await repository.list_nodes(session_id))
+
+    async def get_graph(self, session_id: SessionId) -> SessionGraph:
+        """Return the session, nodes and edges in one bounded storage read."""
+        async with self._database.session() as db_session:
+            graph = await Repository(db_session).load_graph(session_id)
+            if graph is None:
+                raise ResourceNotFoundError(f"no such session {session_id}")
+            return graph
 
     async def acceptance_results(
         self, node_id: NodeId, *, attempt: int | None = None
@@ -1691,11 +1886,50 @@ class NodeRunService:
             await self._require_node(repository, node_id)
             return tuple(await repository.list_reviews(node_id))
 
+    async def resolve_acceptance_results(
+        self,
+        node_id: NodeId,
+        *,
+        attempt: int,
+        outcomes: Mapping[int, CriterionOutcome],
+    ) -> tuple[AcceptanceResult, ...]:
+        """Resolve checklist entries without recording an overall verdict."""
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            await self._require_node(repository, node_id)
+            try:
+                rows = await repository.resolve_acceptance_results(
+                    node_id=node_id, attempt=attempt, outcomes=outcomes
+                )
+            except RepositoryError as error:
+                raise ValueError(str(error)) from error
+            return tuple(rows)
+
+    async def list_node_runs(self, node_id: NodeId) -> tuple[Run, ...]:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            await self._require_node(repository, node_id)
+            return tuple(await repository.list_runs(node_id))
+
     async def list_runs(self, session_id: SessionId) -> tuple[Run, ...]:
         async with self._database.session() as db_session:
             repository = Repository(db_session)
             _, node = await self._session_and_node(repository, session_id)
             return tuple(await repository.list_runs(node.id))
+
+    async def get_node_run_summary(self, node_id: NodeId, run_id: RunId) -> RunSummary:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            await self._require_node(repository, node_id)
+            run = await repository.get_run(run_id)
+            if run is None or run.node_id != node_id:
+                raise ResourceNotFoundError(f"no such run {run_id} for node {node_id}")
+            meta = await read_meta(meta_path(self._settings.runs_root, run.id))
+            return RunSummary(
+                run=run,
+                totals=await repository.usage_totals(run_id=run.id),
+                trusted=meta.trusted,
+            )
 
     async def get_run_summary(self, session_id: SessionId, run_id: RunId) -> RunSummary:
         async with self._database.session() as db_session:
@@ -1727,10 +1961,30 @@ class NodeRunService:
             path = run.events_path
         return await asyncio.to_thread(lambda: tuple(read_events(path)))
 
+    async def list_node_run_events(
+        self, node_id: NodeId, run_id: RunId
+    ) -> tuple[AgentEvent, ...]:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            await self._require_node(repository, node_id)
+            run = await repository.get_run(run_id)
+            if run is None or run.node_id != node_id:
+                raise ResourceNotFoundError(f"no such run {run_id} for node {node_id}")
+            path = run.events_path
+        return await asyncio.to_thread(lambda: tuple(read_events(path)))
+
     async def get_diff(self, session_id: SessionId) -> str:
         async with self._database.session() as db_session:
             repository = Repository(db_session)
             session, node = await self._session_and_node(repository, session_id)
+            if node.base_ref is None:
+                raise InvalidTransitionError(f"node {node.id} has no base ref")
+            return await self._workspace(session).diff(node.id, base_ref=node.base_ref)
+
+    async def get_node_diff(self, node_id: NodeId) -> str:
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            node, session = await self._node_and_session(repository, node_id)
             if node.base_ref is None:
                 raise InvalidTransitionError(f"node {node.id} has no base ref")
             return await self._workspace(session).diff(node.id, base_ref=node.base_ref)
@@ -1766,11 +2020,6 @@ def _materializable_parents(
     return tuple(resolved)
 
 
-# `api/session.py` still imports the Phase 1 name and C3 may not edit it.
-# Renaming the import is C9's, when the routes become node-addressed.
-SingleRunService = NodeRunService
-
-
 __all__ = [
     "DEFAULT_REAPER",
     "REVIEW_FEEDBACK_HEADER",
@@ -1795,7 +2044,6 @@ __all__ = [
     "ReviewDecision",
     "RunOutcome",
     "RunSummary",
-    "SingleRunService",
     "probe_process",
     "session_status_for_nodes",
     "terminate_process_group",

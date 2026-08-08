@@ -31,8 +31,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Request, status
 
-from app.api.deps import call, service
-from app.api.schemas import CreatedGraphResponse, CreateGraphRequest
+from app.api.deps import call, scheduler, service
+from app.api.schemas import (
+    CreatedGraphResponse,
+    CreateGraphRequest,
+    GraphResponse,
+    GraphRunResponse,
+)
 
 router = APIRouter(prefix="/api/graphs", tags=["graphs"])
 
@@ -62,6 +67,31 @@ async def create_graph(
         )
     )
     return CreatedGraphResponse.from_result(result)
+
+
+@router.get("/{session_id}", response_model=GraphResponse)
+async def get_graph(session_id: str, request: Request) -> GraphResponse:
+    return GraphResponse.from_result(await call(service(request).get_graph(session_id)))
+
+
+@router.post("/{session_id}/approve", response_model=GraphResponse)
+async def approve_graph(session_id: str, request: Request) -> GraphResponse:
+    return GraphResponse.from_result(
+        await call(service(request).approve_graph(session_id))
+    )
+
+
+@router.post(
+    "/{session_id}/runs",
+    response_model=GraphRunResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def run_graph(session_id: str, request: Request) -> GraphRunResponse:
+    await call(service(request).require_graph_approved(session_id))
+    return GraphRunResponse(
+        session_id=session_id,
+        scheduled=scheduler(request).schedule_graph(session_id),
+    )
 
 
 __all__ = ["router"]

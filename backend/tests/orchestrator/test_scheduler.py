@@ -1865,7 +1865,7 @@ async def test_auto_merge_on_records_the_criteria_and_merges_anyway(
     assert await verdicts(service, node_id) == []
 
 
-async def test_a_rejection_opens_a_new_run_carrying_the_feedback(
+async def test_a_rejection_leaves_a_durable_retry_for_the_scheduler(
     database: Database,
     settings: Settings,
     prices: PriceTable,
@@ -1896,16 +1896,26 @@ async def test_a_rejection_opens_a_new_run_carrying_the_feedback(
     # The first attempt was launched with exactly what the operator authored.
     assert harness.specs[0].prompt == "a"
 
-    outcome = await service.reject_node(
+    review = await service.reject_node(
         node_id, feedback=feedback, outcomes={0: CriterionOutcome.FAIL}
     )
+
+    # The HTTP-facing use case stops here: verdict first, then `ready`, and no
+    # agent run hidden inside the rejection request.
+    assert review.attempt == 1
+    assert [state for state, _ in await runs_of(database, node_id)] == [
+        RunState.SUCCESS
+    ]
+    assert (await statuses(database, graph))["a"] is NodeStatus.READY
+
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
 
     # A new Run, never a mutated one (B7).
     assert [state for state, _ in await runs_of(database, node_id)] == [
         RunState.SUCCESS,
         RunState.SUCCESS,
     ]
-    assert outcome.run_id != harness.specs[0].run_id
+    assert harness.specs[-1].run_id != harness.specs[0].run_id
     retried = harness.specs[-1]
     assert retried.prompt.startswith("a\n")
     assert feedback in retried.prompt
@@ -1980,7 +1990,9 @@ async def test_rejecting_twice_accumulates_every_earlier_rejection(
     await scheduler_for(service, database, settings).run_graph(graph.session.id)
 
     await service.reject_node(node_id, feedback="the tests are still skipped")
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
     await service.reject_node(node_id, feedback="now the migration is missing")
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
 
     third = harness.specs[-1].prompt
     assert third.count(REVIEW_FEEDBACK_HEADER) == 1

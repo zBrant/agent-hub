@@ -25,6 +25,7 @@ from app.orchestrator.service import (
     RunOutcome,
     RunSummary,
 )
+from app.storage.repository import SessionGraph
 
 
 class _StatusValue(Protocol):
@@ -91,6 +92,50 @@ class NodeResponse(BaseModel):
     status: NodeStatus
     created_ms: int
     updated_ms: int
+
+
+class UpdateNodeRequest(BaseModel):
+    """Complete replacement of a proposal node's authored fields."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    acceptance_criteria: tuple[str, ...] = ()
+    harness: str = Field(min_length=1)
+    model: str | None = None
+    touches: tuple[str, ...] = ()
+    estimated_effort: str | None = None
+
+
+class NodeDependencyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    node_id: str
+    depends_on_id: str
+    session_id: str
+    created_ms: int
+
+
+class GraphResponse(BaseModel):
+    session: SessionResponse
+    nodes: tuple[NodeResponse, ...]
+    edges: tuple[NodeDependencyResponse, ...]
+
+    @classmethod
+    def from_result(cls, result: SessionGraph) -> GraphResponse:
+        return cls(
+            session=SessionResponse.model_validate(result.session),
+            nodes=tuple(NodeResponse.model_validate(node) for node in result.nodes),
+            edges=tuple(
+                NodeDependencyResponse.model_validate(edge) for edge in result.edges
+            ),
+        )
+
+
+class GraphRunResponse(BaseModel):
+    session_id: str
+    scheduled: bool
 
 
 class CreatedSessionResponse(BaseModel):

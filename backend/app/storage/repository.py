@@ -277,6 +277,38 @@ class Repository:
     async def get_node(self, node_id: NodeId) -> Node | None:
         return await self._session.get(Node, node_id)
 
+    async def update_node(
+        self,
+        node_id: NodeId,
+        *,
+        name: str,
+        prompt: str,
+        harness: str,
+        model: str | None,
+        acceptance_criteria: Sequence[str],
+        touches: Sequence[str],
+        estimated_effort: str | None,
+        at_ms: int | None = None,
+    ) -> Node:
+        """Replace the authored fields of one proposed activity.
+
+        Whether the proposal is still editable is an orchestration decision;
+        this method only persists the complete authored value.  Replacing the
+        value in one commit avoids a canvas save exposing a half-old node to a
+        concurrent graph read.
+        """
+        row = await self._require_node(node_id)
+        row.name = name
+        row.prompt = prompt
+        row.harness = harness
+        row.model = model
+        row.acceptance_criteria = tuple(acceptance_criteria)
+        row.touches = tuple(touches)
+        row.estimated_effort = estimated_effort
+        row.updated_ms = now_ms() if at_ms is None else at_ms
+        await self._persist(row)
+        return row
+
     async def list_nodes(self, session_id: SessionId) -> Sequence[Node]:
         statement = (
             select(Node)

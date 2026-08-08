@@ -439,7 +439,7 @@ Three things the documents got wrong:
 
 ---
 
-### C9 — Graph REST and WebSocket ⚠️
+### C9 — Graph REST and WebSocket ✅
 
 Create a graph from a planner proposal, edit nodes and edges before approval,
 approve, run, and per-node operations. Routes validate and delegate; every
@@ -452,7 +452,7 @@ B6's bounded, cursor-replay broker — do not write a second one.
 one after it has started, and a reconnect replaying node transitions without a
 gap.
 
-**Partial result:** completed on 2026-08-07, 19 tests. Node-addressed routes
+**First half:** completed on 2026-08-07, 19 tests. Node-addressed routes
 nest under the session — `/sessions/{id}/nodes/{node_id}/...` — so containment
 is checkable: addressing another session's node returns 404 rather than
 silently operating on its worktree. The session-addressed routes stay; their
@@ -460,28 +460,33 @@ silently operating on its worktree. The session-addressed routes stay; their
 was. The graph topic goes through the broker's retention path, so an evicted
 cursor still raises instead of silently resuming.
 
-**Half of this activity did not land, and the cause was a scoping mistake in
-this plan, not in the work.** C9 was scoped out of `app/orchestrator/**`, so it
-could not add the service use cases its own routes needed, and correctly
-refused to put them in `api/` (architecture §1 rule 3). Missing at the service
-layer: `update_node` and the editable-only-while-pending check, a graph read
-that includes edges, graph approve, wiring `GraphScheduler` into `app.state`,
-per-node `/diff` and `/runs`, standalone criterion resolution, and a node
-transition hook — routes publish after they return, so a transition the
-*scheduler* causes never reaches the graph topic.
+**Follow-up result:** the missing orchestration seam is now complete. A graph
+read returns nodes and edges; pending proposals support complete node edits,
+node removal, and edge addition/removal; every added edge is validated through
+the pure DAG core before persistence. Approving promotes only roots to
+`ready`, which records the plan gate without a migration, and every later edit
+is refused because the graph is no longer an all-`pending` proposal.
 
-`reject_node` also still runs the retry synchronously. C9's analysis is that
-scheduling it from the transport is impossible — there is no point between the
-transition and the run a route can observe — and the fix is a service-level
-split, specified but not implementable from `api/`.
+`GraphScheduler` is process-owned in `app.state`, deduplicates background runs
+per session, and cancels them before database shutdown. The REST surface now
+has graph approve/run plus per-node diff, attempts, summaries, canonical
+events, and standalone criterion resolution. `reject_node` was split at the
+durable boundary: it records the verdict, transitions to `ready`, and returns
+202; the scheduler creates the new immutable attempt afterward with all prior
+feedback composed into its prompt.
 
-These are being closed as a follow-up with the orchestrator scope C9 lacked.
+Node transitions now leave one service hook after the node and session
+projections are committed. This makes scheduler-caused `ready`, `running`,
+review, failure, and terminal states visible on the bounded graph topic; routes
+no longer publish a guessed final state. A WebSocket test proves the scheduler's
+`running` and terminal frames arrive in sequence. The complete suite is 677
+passed, 2 optional harness tests skipped; Ruff, mypy, import contracts,
+generated schemas, frontend typecheck, lint, tests, and build are green.
 
-**The topic vocabulary changed.** `docs/architecture.md` §6 lists
-`session:<id>`, `run:<id>` and `metrics`; there is now also
-`graph:<session_id>`. The frontend's `src/ws/protocol.ts` holds the matching
-union and is hand-written, not generated — the exact edits it needs are
-recorded in C9's report and must land with C10.
+**The topic vocabulary changed.** `docs/architecture.md` §6 now includes
+`graph:<session_id>`. The frontend's `src/ws/protocol.ts` union is hand-written,
+not generated; decoding `node_status` frames remains part of C10, while the
+expanded REST schema is already generated for it.
 
 ---
 

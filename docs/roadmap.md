@@ -24,11 +24,11 @@ WebSocket, including reconnect, kill, immutable retry, two NDJSON replays, and
 database/REST/UI total agreement. See [`acceptance-phase-1.md`](acceptance-phase-1.md)
 for the evidence and [`phase-1.md`](phase-1.md) for the activity details.
 
-**Phase 2 is now planned** and broken into twelve activities in
-[`phase-2.md`](phase-2.md). The ordering front-loads the two real risks —
-generalizing the one-run-per-session service, and serializing concurrent merges
-into the shared integration worktree — and leaves the planner, the visible part,
-until the machinery under it is real.
+**Phase 2 is in progress.** C1–C9 are complete: graph persistence and the pure
+DAG core, concurrent worktrees and serialized merges, the scheduler with
+budgets/recovery, the acceptance gate, structured planner, and the complete
+graph REST/WebSocket orchestration surface. C10 — the editable canvas — is next;
+see [`phase-2.md`](phase-2.md).
 
 ## Phases
 

@@ -204,9 +204,55 @@ def test_http_transitions_reach_a_subscribed_socket_in_order(
             assert first["topic"] == f"graph:{session_id}"
             assert first["seq"] == 1
             assert first["payload"]["node_id"] == node_id
-            assert first["payload"]["status"] == "awaiting_review"
+            assert first["payload"]["status"] == "running"
 
-            assert client.post(f"{base}/approve", json={}).status_code == 200
             second = socket.receive_json()
             assert second["seq"] == 2
-            assert second["payload"]["status"] == "done"
+            assert second["payload"]["status"] == "awaiting_review"
+
+            assert client.post(f"{base}/approve", json={}).status_code == 200
+            third = socket.receive_json()
+            assert third["seq"] == 3
+            assert third["payload"]["status"] == "done"
+
+
+def test_scheduler_transitions_reach_the_graph_topic(
+    tmp_path: Path, target_repo: Path
+) -> None:
+    """Removing the service transition hook makes this test wait forever."""
+    settings = Settings(
+        root=tmp_path / "agenthub", pricing_path=REPO_ROOT / "pricing.yaml"
+    )
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        created = client.post(
+            "/api/graphs",
+            json={
+                "repo_path": str(target_repo),
+                "auto_merge": True,
+                "nodes": [
+                    {
+                        "name": "a",
+                        "prompt": "do a",
+                        "harness": "fake",
+                        "model": MODEL,
+                    }
+                ],
+            },
+        ).json()
+        session_id = created["session"]["id"]
+
+        with client.websocket_connect("/ws") as socket:
+            socket.send_json({"type": "subscribe", "topic": f"graph:{session_id}"})
+            assert socket.receive_json()["type"] == "ready"
+
+            assert client.post(f"/api/graphs/{session_id}/approve").status_code == 200
+            approved = socket.receive_json()
+            assert approved["seq"] == 1
+            assert approved["payload"]["status"] == "ready"
+
+            assert client.post(f"/api/graphs/{session_id}/runs").status_code == 202
+            running = socket.receive_json()
+            finished = socket.receive_json()
+            assert (running["seq"], running["payload"]["status"]) == (2, "running")
+            assert (finished["seq"], finished["payload"]["status"]) == (3, "done")

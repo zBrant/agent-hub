@@ -20,6 +20,8 @@ from app.config import Settings
 from app.harnesses.base import ParseStats, RunHandle, RunSpec
 from app.harnesses.events import AgentEvent, RunFinished, RunStarted, RunStatus, Usage
 from app.models.pricing import load_price_table
+from app.models.tables import Node
+from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -140,10 +142,26 @@ def install_fake_service(client: TestClient, settings: Settings) -> FakeAdapter:
     exists.
     """
     adapter = FakeAdapter()
-    client.app.state.orchestrator = NodeRunService(
+
+    async def publish_transition(node: Node) -> None:
+        await client.app.state.broker.publish_node_status(
+            session_id=node.session_id,
+            node_id=node.id,
+            status=node.status.value,
+            ts=node.updated_ms,
+        )
+
+    orchestrator = NodeRunService(
         database=client.app.state.database,
         settings=settings,
         prices=load_price_table(PRICING_YAML),
         adapter_factory=lambda name: adapter,
+        on_transition=publish_transition,
+    )
+    client.app.state.orchestrator = orchestrator
+    client.app.state.scheduler = GraphScheduler(
+        lifecycle=orchestrator,
+        database=client.app.state.database,
+        settings=settings,
     )
     return adapter

@@ -25,11 +25,14 @@ Nothing here inspects a node's status. Every refusal below is an
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, Query, Request, Response, status
+from fastapi.responses import JSONResponse
 
-from app.api.deps import announce, call, resolve_node, service
+from app.api.deps import call, resolve_node, scheduler, service
 from app.api.schemas import (
     AcceptanceResultResponse,
+    DiffResponse,
+    GraphResponse,
     MergeResponse,
     NodeResponse,
     NodeReviewResponse,
@@ -38,11 +41,14 @@ from app.api.schemas import (
     ReviewOutcomesRequest,
     RunOutcomeResponse,
     RunResponse,
+    RunSummaryResponse,
+    UpdateNodeRequest,
     acceptance_response,
     node_response,
     review_response,
     run_response,
 )
+from app.harnesses.events import agent_event_adapter
 
 router = APIRouter(prefix="/api/sessions/{session_id}/nodes", tags=["nodes"])
 
@@ -58,6 +64,59 @@ async def get_node(session_id: str, node_id: str, request: Request) -> NodeRespo
     return node_response(await resolve_node(request, session_id, node_id))
 
 
+@router.put("/{node_id}", response_model=NodeResponse)
+async def update_node(
+    session_id: str, node_id: str, request: Request, body: UpdateNodeRequest
+) -> NodeResponse:
+    node = await resolve_node(request, session_id, node_id)
+    updated = await call(
+        service(request).update_node(
+            node.id,
+            name=body.name,
+            prompt=body.prompt,
+            harness=body.harness,
+            model=body.model,
+            acceptance_criteria=body.acceptance_criteria,
+            touches=body.touches,
+            estimated_effort=body.estimated_effort,
+        )
+    )
+    return node_response(updated)
+
+
+@router.delete("/{node_id}", response_model=GraphResponse)
+async def delete_node(session_id: str, node_id: str, request: Request) -> GraphResponse:
+    node = await resolve_node(request, session_id, node_id)
+    return GraphResponse.from_result(await call(service(request).delete_node(node.id)))
+
+
+@router.put("/{node_id}/dependencies/{depends_on_id}", response_model=GraphResponse)
+async def add_dependency(
+    session_id: str,
+    node_id: str,
+    depends_on_id: str,
+    request: Request,
+) -> GraphResponse:
+    node = await resolve_node(request, session_id, node_id)
+    await resolve_node(request, session_id, depends_on_id)
+    return GraphResponse.from_result(
+        await call(service(request).add_dependency(node.id, depends_on_id))
+    )
+
+
+@router.delete("/{node_id}/dependencies/{depends_on_id}", response_model=GraphResponse)
+async def remove_dependency(
+    session_id: str,
+    node_id: str,
+    depends_on_id: str,
+    request: Request,
+) -> GraphResponse:
+    node = await resolve_node(request, session_id, node_id)
+    return GraphResponse.from_result(
+        await call(service(request).remove_dependency(node.id, depends_on_id))
+    )
+
+
 @router.post("/{node_id}/runs", response_model=RunOutcomeResponse)
 async def run_node(
     session_id: str, node_id: str, request: Request
@@ -70,15 +129,53 @@ async def run_node(
     """
     node = await resolve_node(request, session_id, node_id)
     outcome = await call(service(request).run_node(node.id))
-    await announce(request, await resolve_node(request, session_id, node_id))
     return RunOutcomeResponse.from_result(outcome)
+
+
+@router.get("/{node_id}/runs", response_model=list[RunResponse])
+async def list_runs(
+    session_id: str, node_id: str, request: Request
+) -> list[RunResponse]:
+    node = await resolve_node(request, session_id, node_id)
+    rows = await call(service(request).list_node_runs(node.id))
+    return [run_response(row) for row in rows]
+
+
+@router.get("/{node_id}/runs/{run_id}/summary", response_model=RunSummaryResponse)
+async def get_run_summary(
+    session_id: str, node_id: str, run_id: str, request: Request
+) -> RunSummaryResponse:
+    node = await resolve_node(request, session_id, node_id)
+    return RunSummaryResponse.from_result(
+        await call(service(request).get_node_run_summary(node.id, run_id))
+    )
+
+
+@router.get(
+    "/{node_id}/runs/{run_id}/events",
+    response_class=JSONResponse,
+    responses={200: {"description": "Canonical persisted AgentEvent array"}},
+)
+async def list_run_events(
+    session_id: str, node_id: str, run_id: str, request: Request
+) -> Response:
+    node = await resolve_node(request, session_id, node_id)
+    events = await call(service(request).list_node_run_events(node.id, run_id))
+    return JSONResponse(
+        [agent_event_adapter.dump_python(event, mode="json") for event in events]
+    )
+
+
+@router.get("/{node_id}/diff", response_model=DiffResponse)
+async def get_diff(session_id: str, node_id: str, request: Request) -> DiffResponse:
+    node = await resolve_node(request, session_id, node_id)
+    return DiffResponse(patch=await call(service(request).get_node_diff(node.id)))
 
 
 @router.post("/{node_id}/kill", response_model=RunResponse)
 async def kill_node(session_id: str, node_id: str, request: Request) -> RunResponse:
     node = await resolve_node(request, session_id, node_id)
     run = await call(service(request).kill_node(node.id))
-    await announce(request, await resolve_node(request, session_id, node_id))
     return run_response(run)
 
 
@@ -92,7 +189,6 @@ async def retry_node(
     node = await resolve_node(request, session_id, node_id)
     feedback = None if body is None else body.feedback
     outcome = await call(service(request).retry_node(node.id, feedback=feedback))
-    await announce(request, await resolve_node(request, session_id, node_id))
     return RunOutcomeResponse.from_result(outcome)
 
 
@@ -107,40 +203,27 @@ async def approve_node(
     node = await resolve_node(request, session_id, node_id)
     outcomes = None if body is None else body.outcomes
     merge = await call(service(request).approve_node(node.id, outcomes=outcomes))
-    await announce(request, await resolve_node(request, session_id, node_id))
+    scheduler(request).schedule_graph(session_id)
     return MergeResponse.from_result(merge)
 
 
-@router.post("/{node_id}/reject", response_model=RunOutcomeResponse)
+@router.post(
+    "/{node_id}/reject",
+    response_model=NodeReviewResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def reject_node(
     session_id: str, node_id: str, request: Request, body: RejectRequest
-) -> RunOutcomeResponse:
-    """The human gate's no: record the verdict, then retry with feedback.
-
-    **This request is held open for the whole retry, and that is a reported
-    defect rather than a design.** C7 flagged it for C9 to decide, and the
-    decision is that the retry should be *scheduled* — the verdict is durable
-    before the transition to ``ready``, so a process that dies between them
-    restarts into a node the scheduler picks up carrying the feedback anyway.
-
-    It is not implemented here because it cannot be implemented here honestly.
-    ``reject_node`` is one call that performs the state check, writes the
-    verdict, transitions the node and then runs an agent; the transport has no
-    point between the fourth and the fifth at which it could answer 202. The
-    two ways to fake it are both worse than the wait: returning 202 before the
-    check means an invalid transition arrives as an unobserved task exception
-    instead of a 409, and pre-checking the status in this function puts the
-    state machine in a route (`docs/architecture.md` §1 rule 3). The fix is a
-    service method that returns after the transition; see C9's report.
-    """
+) -> NodeReviewResponse:
+    """Persist the rejection, then let the graph scheduler own the retry."""
     node = await resolve_node(request, session_id, node_id)
-    outcome = await call(
+    review = await call(
         service(request).reject_node(
             node.id, feedback=body.feedback, outcomes=body.outcomes
         )
     )
-    await announce(request, await resolve_node(request, session_id, node_id))
-    return RunOutcomeResponse.from_result(outcome)
+    scheduler(request).schedule_graph(session_id)
+    return review_response(review)
 
 
 @router.get("/{node_id}/acceptance", response_model=list[AcceptanceResultResponse])
@@ -158,6 +241,26 @@ async def list_acceptance_results(
     """
     node = await resolve_node(request, session_id, node_id)
     rows = await call(service(request).acceptance_results(node.id, attempt=attempt))
+    return [acceptance_response(row) for row in rows]
+
+
+@router.patch(
+    "/{node_id}/acceptance/{attempt}",
+    response_model=list[AcceptanceResultResponse],
+)
+async def resolve_acceptance_results(
+    session_id: str,
+    node_id: str,
+    attempt: int,
+    request: Request,
+    body: ReviewOutcomesRequest,
+) -> list[AcceptanceResultResponse]:
+    node = await resolve_node(request, session_id, node_id)
+    rows = await call(
+        service(request).resolve_acceptance_results(
+            node.id, attempt=attempt, outcomes=body.outcomes
+        )
+    )
     return [acceptance_response(row) for row in rows]
 
 

@@ -91,6 +91,7 @@ from app.orchestrator.graph import (
 )
 from app.orchestrator.service import (
     InvalidGraphError,
+    InvalidTransitionError,
     NodeExecution,
     NodeRunService,
     OrchestratorError,
@@ -195,10 +196,77 @@ class GraphScheduler:
         self._lifecycle = lifecycle
         self._database = database
         self._max_concurrency = settings.max_concurrency
+        self._scheduled: dict[SessionId, asyncio.Task[GraphRunResult]] = {}
 
     @property
     def max_concurrency(self) -> int:
         return self._max_concurrency
+
+    def schedule_graph(self, session_id: SessionId) -> bool:
+        """Start one supervised graph task without holding an HTTP request.
+
+        ``False`` means this process already owns a live scheduler for the
+        session.  The task is retained until completion, and failures are
+        logged at this task edge rather than becoming unobserved exceptions.
+        """
+        active = self._scheduled.get(session_id)
+        if active is not None and not active.done():
+            return False
+        task = asyncio.create_task(
+            self._run_approved_graph(session_id), name=f"graph:{session_id}"
+        )
+        self._scheduled[session_id] = task
+
+        def completed_callback(completed: asyncio.Task[GraphRunResult]) -> None:
+            self._graph_finished(session_id, completed)
+
+        task.add_done_callback(completed_callback)
+        return True
+
+    async def close(self) -> None:
+        """Cancel every process-owned graph task before database shutdown."""
+        tasks = tuple(self._scheduled.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._scheduled.clear()
+
+    def _graph_finished(
+        self, session_id: SessionId, task: asyncio.Task[GraphRunResult]
+    ) -> None:
+        if self._scheduled.get(session_id) is task:
+            self._scheduled.pop(session_id, None)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            log.error(
+                "scheduler.background_failed",
+                session_id=session_id,
+                error_type=type(error).__name__,
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    async def _run_approved_graph(self, session_id: SessionId) -> GraphRunResult:
+        """The background entry point enforces the human plan gate.
+
+        Direct :meth:`run_graph` remains the low-level scheduler primitive used
+        by exhaustive scheduler tests. Every process-owned background launch
+        comes through here, so a caller cannot bypass graph approval merely by
+        reaching the scheduler object instead of the REST preflight.
+        """
+        async with self._database.session() as db_session:
+            graph = await Repository(db_session).load_graph(session_id)
+        if graph is None:
+            raise ResourceNotFoundError(f"no such session {session_id}")
+        if graph.nodes and all(
+            node.status is NodeStatus.PENDING for node in graph.nodes
+        ):
+            raise InvalidTransitionError(
+                f"graph {session_id} is still a proposal; approve it before running"
+            )
+        return await self.run_graph(session_id)
 
     async def run_graph(self, session_id: SessionId) -> GraphRunResult:
         """Run every node the graph permits, ``max_concurrency`` at a time.

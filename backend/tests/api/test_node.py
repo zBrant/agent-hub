@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -222,10 +223,21 @@ def test_rejection_carries_feedback_into_the_next_attempt(
                 "outcomes": {"0": "fail"},
             },
         )
-        assert rejected.status_code == 200
-        assert rejected.json()["node_status"] == "awaiting_review"
+        assert rejected.status_code == 202
+        assert rejected.json()["decision"] == "rejected"
+        assert rejected.json()["attempt"] == 1
 
-        # B7: a retry is a new Run, and the reviewer's words reach its prompt.
+        second_attempt: list[dict[str, object]] = []
+        for _ in range(100):
+            second_attempt = client.get(
+                f"{base}/acceptance", params={"attempt": 2}
+            ).json()
+            if second_attempt:
+                break
+            time.sleep(0.01)
+
+        # The request returned a verdict; the scheduler opened the immutable
+        # retry in the background with the reviewer's words.
         assert adapter.attempts == 2
         assert REVIEW_FEEDBACK_HEADER in adapter.specs[-1].prompt
         assert "trailing newline" in adapter.specs[-1].prompt
@@ -238,7 +250,6 @@ def test_rejection_carries_feedback_into_the_next_attempt(
         assert reviews[0]["feedback"] == "the file is missing a trailing newline"
         first_attempt = client.get(f"{base}/acceptance", params={"attempt": 1}).json()
         assert [row["outcome"] for row in first_attempt] == ["fail"]
-        second_attempt = client.get(f"{base}/acceptance", params={"attempt": 2}).json()
         assert [row["outcome"] for row in second_attempt] == ["unevaluated"]
 
 

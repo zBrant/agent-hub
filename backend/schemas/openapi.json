@@ -224,6 +224,52 @@
         "title": "DiffResponse",
         "type": "object"
       },
+      "GraphResponse": {
+        "properties": {
+          "edges": {
+            "items": {
+              "$ref": "#/components/schemas/NodeDependencyResponse"
+            },
+            "title": "Edges",
+            "type": "array"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeResponse"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionResponse"
+          }
+        },
+        "required": [
+          "session",
+          "nodes",
+          "edges"
+        ],
+        "title": "GraphResponse",
+        "type": "object"
+      },
+      "GraphRunResponse": {
+        "properties": {
+          "scheduled": {
+            "title": "Scheduled",
+            "type": "boolean"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "scheduled"
+        ],
+        "title": "GraphRunResponse",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -281,6 +327,34 @@
           "conflicts"
         ],
         "title": "MergeResponse",
+        "type": "object"
+      },
+      "NodeDependencyResponse": {
+        "properties": {
+          "created_ms": {
+            "title": "Created Ms",
+            "type": "integer"
+          },
+          "depends_on_id": {
+            "title": "Depends On Id",
+            "type": "string"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "node_id",
+          "depends_on_id",
+          "session_id",
+          "created_ms"
+        ],
+        "title": "NodeDependencyResponse",
         "type": "object"
       },
       "NodeResponse": {
@@ -989,6 +1063,72 @@
         "title": "TokenCountsResponse",
         "type": "object"
       },
+      "UpdateNodeRequest": {
+        "additionalProperties": false,
+        "description": "Complete replacement of a proposal node's authored fields.",
+        "properties": {
+          "acceptance_criteria": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Acceptance Criteria",
+            "type": "array"
+          },
+          "estimated_effort": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Effort"
+          },
+          "harness": {
+            "minLength": 1,
+            "title": "Harness",
+            "type": "string"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "prompt": {
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          },
+          "touches": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Touches",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "prompt",
+          "harness"
+        ],
+        "title": "UpdateNodeRequest",
+        "type": "object"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1074,6 +1214,132 @@
           }
         },
         "summary": "Create Graph",
+        "tags": [
+          "graphs"
+        ]
+      }
+    },
+    "/api/graphs/{session_id}": {
+      "get": {
+        "operationId": "get_graph_api_graphs__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Graph",
+        "tags": [
+          "graphs"
+        ]
+      }
+    },
+    "/api/graphs/{session_id}/approve": {
+      "post": {
+        "operationId": "approve_graph_api_graphs__session_id__approve_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Approve Graph",
+        "tags": [
+          "graphs"
+        ]
+      }
+    },
+    "/api/graphs/{session_id}/runs": {
+      "post": {
+        "operationId": "run_graph_api_graphs__session_id__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Graph",
         "tags": [
           "graphs"
         ]
@@ -1424,6 +1690,55 @@
       }
     },
     "/api/sessions/{session_id}/nodes/{node_id}": {
+      "delete": {
+        "operationId": "delete_node_api_sessions__session_id__nodes__node_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Node",
+        "tags": [
+          "nodes"
+        ]
+      },
       "get": {
         "operationId": "get_node_api_sessions__session_id__nodes__node_id__get",
         "parameters": [
@@ -1469,6 +1784,65 @@
           }
         },
         "summary": "Get Node",
+        "tags": [
+          "nodes"
+        ]
+      },
+      "put": {
+        "operationId": "update_node_api_sessions__session_id__nodes__node_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateNodeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NodeResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Node",
         "tags": [
           "nodes"
         ]
@@ -1547,6 +1921,80 @@
         ]
       }
     },
+    "/api/sessions/{session_id}/nodes/{node_id}/acceptance/{attempt}": {
+      "patch": {
+        "operationId": "resolve_acceptance_results_api_sessions__session_id__nodes__node_id__acceptance__attempt__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "attempt",
+            "required": true,
+            "schema": {
+              "title": "Attempt",
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewOutcomesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AcceptanceResultResponse"
+                  },
+                  "title": "Response Resolve Acceptance Results Api Sessions  Session Id  Nodes  Node Id  Acceptance  Attempt  Patch",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Acceptance Results",
+        "tags": [
+          "nodes"
+        ]
+      }
+    },
     "/api/sessions/{session_id}/nodes/{node_id}/approve": {
       "post": {
         "description": "The human gate's yes: record the verdict, then merge (invariant 6).",
@@ -1616,6 +2064,175 @@
         ]
       }
     },
+    "/api/sessions/{session_id}/nodes/{node_id}/dependencies/{depends_on_id}": {
+      "delete": {
+        "operationId": "remove_dependency_api_sessions__session_id__nodes__node_id__dependencies__depends_on_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "depends_on_id",
+            "required": true,
+            "schema": {
+              "title": "Depends On Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remove Dependency",
+        "tags": [
+          "nodes"
+        ]
+      },
+      "put": {
+        "operationId": "add_dependency_api_sessions__session_id__nodes__node_id__dependencies__depends_on_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "depends_on_id",
+            "required": true,
+            "schema": {
+              "title": "Depends On Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Add Dependency",
+        "tags": [
+          "nodes"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/nodes/{node_id}/diff": {
+      "get": {
+        "operationId": "get_diff_api_sessions__session_id__nodes__node_id__diff_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiffResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Diff",
+        "tags": [
+          "nodes"
+        ]
+      }
+    },
     "/api/sessions/{session_id}/nodes/{node_id}/kill": {
       "post": {
         "operationId": "kill_node_api_sessions__session_id__nodes__node_id__kill_post",
@@ -1669,7 +2286,7 @@
     },
     "/api/sessions/{session_id}/nodes/{node_id}/reject": {
       "post": {
-        "description": "The human gate's no: record the verdict, then retry with feedback.\n\n**This request is held open for the whole retry, and that is a reported\ndefect rather than a design.** C7 flagged it for C9 to decide, and the\ndecision is that the retry should be *scheduled* \u2014 the verdict is durable\nbefore the transition to ``ready``, so a process that dies between them\nrestarts into a node the scheduler picks up carrying the feedback anyway.\n\nIt is not implemented here because it cannot be implemented here honestly.\n``reject_node`` is one call that performs the state check, writes the\nverdict, transitions the node and then runs an agent; the transport has no\npoint between the fourth and the fifth at which it could answer 202. The\ntwo ways to fake it are both worse than the wait: returning 202 before the\ncheck means an invalid transition arrives as an unobserved task exception\ninstead of a 409, and pre-checking the status in this function puts the\nstate machine in a route (`docs/architecture.md` \u00a71 rule 3). The fix is a\nservice method that returns after the transition; see C9's report.",
+        "description": "Persist the rejection, then let the graph scheduler own the retry.",
         "operationId": "reject_node_api_sessions__session_id__nodes__node_id__reject_post",
         "parameters": [
           {
@@ -1702,11 +2319,11 @@
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RunOutcomeResponse"
+                  "$ref": "#/components/schemas/NodeReviewResponse"
                 }
               }
             },
@@ -1853,6 +2470,59 @@
       }
     },
     "/api/sessions/{session_id}/nodes/{node_id}/runs": {
+      "get": {
+        "operationId": "list_runs_api_sessions__session_id__nodes__node_id__runs_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunResponse"
+                  },
+                  "title": "Response List Runs Api Sessions  Session Id  Nodes  Node Id  Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Runs",
+        "tags": [
+          "nodes"
+        ]
+      },
       "post": {
         "description": "Run one already-materialized node to its terminal or gated state.\n\nSynchronous, exactly as Phase 1's ``POST /runs`` is: the response *is* the\noutcome. See the module note on :func:`reject_node` for why that is a\ndeliberate cost here and a reported problem there.",
         "operationId": "run_node_api_sessions__session_id__nodes__node_id__runs_post",
@@ -1899,6 +2569,124 @@
           }
         },
         "summary": "Run Node",
+        "tags": [
+          "nodes"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/nodes/{node_id}/runs/{run_id}/events": {
+      "get": {
+        "operationId": "list_run_events_api_sessions__session_id__nodes__node_id__runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Canonical persisted AgentEvent array"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Run Events",
+        "tags": [
+          "nodes"
+        ]
+      }
+    },
+    "/api/sessions/{session_id}/nodes/{node_id}/runs/{run_id}/summary": {
+      "get": {
+        "operationId": "get_run_summary_api_sessions__session_id__nodes__node_id__runs__run_id__summary_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "node_id",
+            "required": true,
+            "schema": {
+              "title": "Node Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSummaryResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Run Summary",
         "tags": [
           "nodes"
         ]

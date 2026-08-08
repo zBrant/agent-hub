@@ -238,7 +238,7 @@ class _LockRegistry:
 
     Why not an attribute of :class:`SessionWorkspace`: the workspace is a frozen
     value object that callers rebuild from database columns whenever they need it
-    (``SingleRunService._workspace``), so a per-instance lock would be a brand
+    (``NodeRunService._workspace``), so a per-instance lock would be a brand
     new, uncontended lock on every call and would serialize nothing at all. What
     is being protected is the directory, not the Python object describing it, so
     the lock's identity has to come from the path. Resolved, because ``/var`` and

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -188,3 +189,103 @@ def test_a_graph_node_cannot_be_run_before_the_scheduler_materializes_it(
         refused = client.post(f"/api/sessions/{session_id}/nodes/{node_id}/runs")
         assert refused.status_code == 409
         assert "pending" in refused.json()["detail"]
+        graph_refused = client.post(f"/api/graphs/{session_id}/runs")
+        assert graph_refused.status_code == 409
+        assert "approve" in graph_refused.json()["detail"]
+
+
+def test_edit_approve_run_and_node_reads_close_the_graph_contract(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        created = client.post(
+            "/api/graphs",
+            json={
+                "repo_path": str(target_repo),
+                "auto_merge": True,
+                "nodes": [node_body("a"), node_body("b"), node_body("remove-me")],
+            },
+        ).json()
+        session_id = created["session"]["id"]
+        a = created["ids_by_name"]["a"]
+        b = created["ids_by_name"]["b"]
+        remove_me = created["ids_by_name"]["remove-me"]
+        graph_url = f"/api/graphs/{session_id}"
+        nodes_url = f"/api/sessions/{session_id}/nodes"
+
+        graph = client.get(graph_url)
+        assert graph.status_code == 200
+        assert graph.json()["edges"] == []
+
+        removed = client.delete(f"{nodes_url}/{remove_me}")
+        assert removed.status_code == 200
+        assert {node["id"] for node in removed.json()["nodes"]} == {a, b}
+
+        replacement = {
+            "name": "renamed-b",
+            "prompt": "implement b",
+            "acceptance_criteria": ["b works"],
+            "harness": "fake",
+            "model": MODEL,
+            "touches": ["backend/**"],
+            "estimated_effort": "small",
+        }
+        updated = client.put(f"{nodes_url}/{b}", json=replacement)
+        assert updated.status_code == 200
+        assert updated.json()["name"] == "renamed-b"
+
+        edged = client.put(f"{nodes_url}/{b}/dependencies/{a}")
+        assert edged.status_code == 200
+        assert [
+            (edge["node_id"], edge["depends_on_id"]) for edge in edged.json()["edges"]
+        ] == [(b, a)]
+        cycle = client.put(f"{nodes_url}/{a}/dependencies/{b}")
+        assert cycle.status_code == 422
+        assert cycle.json()["detail"]["errors"][0]["kind"] == "cycle"
+        assert len(client.get(graph_url).json()["edges"]) == 1
+
+        approved = client.post(f"{graph_url}/approve")
+        assert approved.status_code == 200
+        assert {node["id"]: node["status"] for node in approved.json()["nodes"]} == {
+            a: "ready",
+            b: "pending",
+        }
+        assert client.put(f"{nodes_url}/{b}", json=replacement).status_code == 409
+        assert client.delete(f"{nodes_url}/{b}/dependencies/{a}").status_code == 409
+
+        started = client.post(f"{graph_url}/runs")
+        assert started.status_code == 202
+        assert started.json() == {"session_id": session_id, "scheduled": True}
+
+        final: dict[str, object] = {}
+        for _ in range(200):
+            final = client.get(graph_url).json()
+            if {node["status"] for node in final["nodes"]} == {"done"}:  # type: ignore[index]
+                break
+            time.sleep(0.01)
+        assert {node["status"] for node in final["nodes"]} == {"done"}  # type: ignore[index]
+
+        for node_id in (a, b):
+            base = f"{nodes_url}/{node_id}"
+            runs = client.get(f"{base}/runs")
+            assert runs.status_code == 200
+            assert len(runs.json()) == 1
+            run_id = runs.json()[0]["id"]
+            assert (
+                client.get(f"{base}/runs/{run_id}/summary").json()["tokens"][
+                    "total_tokens"
+                ]
+                == 10
+            )
+            assert [
+                event["type"]
+                for event in client.get(f"{base}/runs/{run_id}/events").json()
+            ] == ["run_started", "usage", "run_finished"]
+            assert "api.txt" in client.get(f"{base}/diff").json()["patch"]
+
+        resolved = client.patch(
+            f"{nodes_url}/{b}/acceptance/1", json={"outcomes": {"0": "pass"}}
+        )
+        assert resolved.status_code == 200
+        assert [row["outcome"] for row in resolved.json()] == ["pass"]

@@ -592,7 +592,7 @@ async def test_rebuilt_workspace_values_share_one_merge_lock(
     workspace: SessionWorkspace, tmp_path: Path
 ) -> None:
     """`SessionWorkspace` is a value object that callers rebuild from database
-    columns on every operation (`SingleRunService._workspace`). The lock is keyed
+    columns on every operation (`NodeRunService._workspace`). The lock is keyed
     by the resolved integration path precisely so those rebuilds — and any other
     spelling of the same directory — still serialize against each other."""
 

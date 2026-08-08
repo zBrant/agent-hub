@@ -22,7 +22,7 @@ from app.harnesses.events import (
 )
 from app.main import create_app
 from app.models.pricing import load_price_table
-from app.orchestrator.service import SingleRunService
+from app.orchestrator.service import NodeRunService
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 PRICING_YAML = REPO_ROOT / "pricing.yaml"
@@ -122,7 +122,7 @@ class FakeAdapter:
 
 def install_fake_service(client: TestClient, settings: Settings) -> None:
     adapter = FakeAdapter()
-    client.app.state.orchestrator = SingleRunService(
+    client.app.state.orchestrator = NodeRunService(
         database=client.app.state.database,
         settings=settings,
         prices=load_price_table(PRICING_YAML),

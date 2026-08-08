@@ -15,11 +15,12 @@ does not consult the node's status, and no route below it may.
 from __future__ import annotations
 
 from collections.abc import Awaitable
-from typing import Protocol, cast
+from typing import cast
 
 from fastapi import HTTPException, Request
 
 from app.models.tables import Node
+from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import (
     InvalidGraphError,
     InvalidTransitionError,
@@ -28,25 +29,12 @@ from app.orchestrator.service import (
 )
 
 
-class NodeStatusPublisher(Protocol):
-    """The one broker call the REST layer makes.
-
-    A structural type rather than an import of :class:`app.ws.broker.EventBroker`
-    so that ``api/`` and ``ws/`` stay siblings that do not depend on each other
-    (`docs/architecture.md` §1 puts them in one layer, not in a stack).
-    """
-
-    async def publish_node_status(
-        self, *, session_id: str, node_id: str, status: str, ts: int
-    ) -> None: ...
-
-
 def service(request: Request) -> NodeRunService:
     return cast(NodeRunService, request.app.state.orchestrator)
 
 
-def publisher(request: Request) -> NodeStatusPublisher:
-    return cast(NodeStatusPublisher, request.app.state.broker)
+def scheduler(request: Request) -> GraphScheduler:
+    return cast(GraphScheduler, request.app.state.scheduler)
 
 
 async def call[T](operation: Awaitable[T]) -> T:
@@ -111,27 +99,9 @@ async def resolve_node(request: Request, session_id: str, node_id: str) -> Node:
     )
 
 
-async def announce(request: Request, node: Node) -> None:
-    """Broadcast one node transition, after the orchestrator persisted it.
-
-    Called with a row that was **read back** from the database, never with a
-    status the route inferred. `docs/architecture.md` §4 fixes the order as
-    NDJSON → SQLite → broadcast, and a transport that published its own guess
-    would put a frame on the wire describing state that does not exist yet.
-    """
-    await publisher(request).publish_node_status(
-        session_id=node.session_id,
-        node_id=node.id,
-        status=node.status.value,
-        ts=node.updated_ms,
-    )
-
-
 __all__ = [
-    "NodeStatusPublisher",
-    "announce",
     "call",
-    "publisher",
     "resolve_node",
+    "scheduler",
     "service",
 ]

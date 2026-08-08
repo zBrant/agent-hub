@@ -15,6 +15,8 @@ from app.api.session import router as session_router
 from app.config import Settings, get_settings
 from app.models.clock import now_ms
 from app.models.pricing import load_price_table
+from app.models.tables import Node
+from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
 from app.storage.db import Database, upgrade_database
 from app.ws.broker import EventBroker
@@ -32,16 +34,34 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     broker = EventBroker()
     app.state.database = database
     app.state.broker = broker
-    app.state.orchestrator = NodeRunService(
+
+    async def publish_transition(node: Node) -> None:
+        await broker.publish_node_status(
+            session_id=node.session_id,
+            node_id=node.id,
+            status=node.status.value,
+            ts=node.updated_ms,
+        )
+
+    orchestrator = NodeRunService(
         database=database,
         settings=settings,
         prices=prices,
         broadcast=broker.publish,
         register_run=broker.register_run,
+        on_transition=publish_transition,
     )
+    scheduler = GraphScheduler(
+        lifecycle=orchestrator,
+        database=database,
+        settings=settings,
+    )
+    app.state.orchestrator = orchestrator
+    app.state.scheduler = scheduler
     try:
         yield
     finally:
+        await scheduler.close()
         await database.dispose()
 
 

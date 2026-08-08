@@ -257,8 +257,10 @@ optional optimization.
 | UI state (open drawer, graph zoom, filter) | `useState` / local store | Never persist to the server |
 
 **A single WebSocket connection** for the whole app, multiplexed by topic
-(`session:<id>`, `run:<id>`, `metrics`). One connection per panel overloads the
-backend and produces divergent event ordering between components.
+(`session:<id>`, `run:<id>`, `graph:<session_id>`, `metrics`). One connection
+per panel overloads the backend and produces divergent event ordering between
+components. Graph topics carry persisted node-status transitions; harness
+events remain on session and run topics.
 
 Event frames carry a process-scoped `stream` and a monotonic `seq` per topic.
 The client reconnects with both values; the broker atomically replays its

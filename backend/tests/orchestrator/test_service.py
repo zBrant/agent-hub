@@ -24,12 +24,14 @@ from app.harnesses.events import (
 )
 from app.models.pricing import PriceTable, load_price_table
 from app.models.status import NodeStatus, RunState, SessionStatus
+from app.models.tables import Node
 from app.orchestrator.graph import RunBlockReason, session_status_for_node
 from app.orchestrator.service import (
+    InvalidGraphError,
     InvalidTransitionError,
+    NodeRunService,
     OrchestratorError,
     PlannedNode,
-    SingleRunService,
     session_status_for_nodes,
 )
 from app.orchestrator.worktree import CommitStatus, MergeStatus
@@ -215,7 +217,8 @@ def service_for(
     adapter: FakeAdapter,
     broadcasts: list[AgentEvent] | None = None,
     registrations: list[tuple[str, str]] | None = None,
-) -> SingleRunService:
+    transitions: list[NodeStatus] | None = None,
+) -> NodeRunService:
     async def broadcast(event: AgentEvent) -> None:
         if broadcasts is not None:
             assert registrations
@@ -225,17 +228,22 @@ def service_for(
         if registrations is not None:
             registrations.append((run_id, session_id))
 
+    async def on_transition(node: Node) -> None:
+        if transitions is not None:
+            transitions.append(node.status)
+
     def factory(name: str) -> FakeAdapter:
         assert name == adapter.name
         return adapter
 
-    return SingleRunService(
+    return NodeRunService(
         database=database,
         settings=settings,
         prices=prices,
         adapter_factory=factory,
         broadcast=broadcast,
         register_run=register_run,
+        on_transition=on_transition,
         environment={
             "PATH": "/usr/bin",
             "HOME": "/Users/test",
@@ -637,7 +645,7 @@ async def test_a_conflicting_parent_fold_blocks_the_child_without_an_agent(
         adapters.append(adapter)
         return adapter
 
-    service = SingleRunService(
+    service = NodeRunService(
         database=database,
         settings=settings,
         prices=prices,
@@ -689,7 +697,7 @@ async def test_an_invalid_adapter_does_not_leave_a_running_attempt(
     def invalid_factory(name: str) -> FakeAdapter:
         raise ValueError(f"unknown harness {name}")
 
-    service = SingleRunService(
+    service = NodeRunService(
         database=database,
         settings=settings,
         prices=prices,
@@ -706,3 +714,67 @@ async def test_an_invalid_adapter_does_not_leave_a_running_attempt(
     async with database.session() as db_session:
         repository = Repository(db_session)
         assert await repository.list_sessions() == []
+
+
+async def test_a_pending_proposal_can_be_edited_validated_and_approved(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    adapter = FakeAdapter(name="fake")
+    transitions: list[NodeStatus] = []
+    service = service_for(
+        database=database,
+        settings=settings,
+        prices=prices,
+        adapter=adapter,
+        transitions=transitions,
+    )
+    created = await service.create_graph(
+        repo_path=target_repo,
+        nodes=(
+            PlannedNode(name="a", prompt="do a", harness="fake", model=MODEL),
+            PlannedNode(name="b", prompt="do b", harness="fake", model=MODEL),
+        ),
+    )
+    a = created.ids_by_name["a"]
+    b = created.ids_by_name["b"]
+
+    updated = await service.update_node(
+        b,
+        name="renamed",
+        prompt="do the renamed activity",
+        harness="fake",
+        model=MODEL,
+        acceptance_criteria=("it works",),
+        touches=("backend/**",),
+        estimated_effort="small",
+    )
+    assert updated.name == "renamed"
+    assert updated.acceptance_criteria == ("it works",)
+
+    graph = await service.add_dependency(b, a)
+    assert graph.depends_on()[b] == frozenset({a})
+    assert (await service.get_graph(created.session.id)).edges == graph.edges
+
+    with pytest.raises(InvalidGraphError, match="cycle") as cycle:
+        await service.add_dependency(a, b)
+    assert set(cycle.value.errors[0].nodes) == {a, b}
+    assert len((await service.get_graph(created.session.id)).edges) == 1
+
+    approved = await service.approve_graph(created.session.id)
+    statuses = {node.id: node.status for node in approved.nodes}
+    assert statuses == {a: NodeStatus.READY, b: NodeStatus.PENDING}
+    assert transitions == [NodeStatus.READY]
+
+    with pytest.raises(InvalidTransitionError, match="no longer an editable"):
+        await service.update_node(
+            b,
+            name="too-late",
+            prompt="too late",
+            harness="fake",
+            model=MODEL,
+        )
+    with pytest.raises(InvalidTransitionError, match="no longer an editable"):
+        await service.remove_dependency(b, a)
