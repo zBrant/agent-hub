@@ -46,6 +46,16 @@ Exception`` is allowed — with structured logging and an explicit transition. A
 node left ``pending`` after its task raised would be re-selected on the next
 tick and raise again, forever.
 
+**C7 changed nothing here, and that is the result rather than an omission.**
+The human gate is entirely expressible in the states this loop already reads:
+a finished node under ``auto_merge`` off stops at ``awaiting_review``,
+:func:`~app.orchestrator.graph.evaluate_graph` does not count that as done, so
+its dependents are never in ``ready`` and the outcome is ``waiting_on_human``
+(invariant 6). Approving and rejecting are operations on one node — they merge
+or open a new attempt — and both leave the graph in a state the next tick reads
+normally. A scheduler that had to know what a review *is* would be a scheduler
+with a second readiness rule in it.
+
 **C6's two additions.** Per-node budgets and wall-clock timeouts are *not* in
 this file: they are enforced inside the service's ingest loop, where the events
 that measure them arrive, and they reach the loop as an ordinary

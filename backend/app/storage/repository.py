@@ -5,7 +5,7 @@ The whole surface for reading and writing ``session``, ``node``,
 writes SQL, and nothing here decides *when* something should happen — that is
 the orchestrator's job (`docs/architecture.md` §8).
 
-Five rules shape the API.
+Six rules shape the API.
 
 **The graph is loaded and stored here, and reasoned about elsewhere.** There is
 no cycle detection, no topological sort and no ready set in this module. Those
@@ -28,6 +28,13 @@ takes the :class:`~app.models.pricing.PriceTable` in effect *at that moment* and
 stores both the resulting ``cost_usd`` and the table's version. Aggregates
 (:meth:`usage_totals`) only ever ``SUM()`` the stored value.
 
+**A reviewer's verdict is authored, so replay must never reach it.**
+:class:`~app.models.tables.AcceptanceResult` and
+:class:`~app.models.tables.NodeReview` are keyed by ``(node_id, attempt)`` and
+hang off ``node``, not off ``run`` — :meth:`Repository.delete_run` is what
+replay uses to discard a projection, and a foreign key onto ``run`` would put a
+human's decision inside the thing invariant 4 says is derived and throwaway.
+
 **Timestamps are supplied, not defaulted.** Every mutation takes ``at_ms``.
 Live ingest passes :func:`app.models.clock.now_ms`; replay passes the event's
 own ``ts``, which is what lets a rebuilt row equal the original one.
@@ -35,7 +42,13 @@ own ``ts``, which is what lets a rebuilt row equal the original one.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Callable, Collection, Sequence
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Collection,
+    Mapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,7 +63,17 @@ from app.models.clock import now_ms
 from app.models.ids import NodeId, RunId, SessionId
 from app.models.pricing import PriceTable, TokenCounts
 from app.models.status import NodeStatus, RunState, SessionStatus, UsageSource
-from app.models.tables import Node, NodeDependency, Run, Session, UsageEvent
+from app.models.tables import (
+    AcceptanceResult,
+    CriterionOutcome,
+    Node,
+    NodeDependency,
+    NodeReview,
+    ReviewDecision,
+    Run,
+    Session,
+    UsageEvent,
+)
 from app.storage.db import Database
 
 
@@ -153,7 +176,14 @@ class Repository:
         return self._session
 
     async def _persist(
-        self, *rows: Session | Node | NodeDependency | Run | UsageEvent
+        self,
+        *rows: Session
+        | Node
+        | NodeDependency
+        | Run
+        | UsageEvent
+        | AcceptanceResult
+        | NodeReview,
     ) -> None:
         self._session.add_all(rows)
         await self._session.commit()
@@ -420,6 +450,150 @@ class Repository:
             nodes=tuple(await self.list_nodes(session_id)),
             edges=tuple(await self.list_dependencies(session_id)),
         )
+
+    # ------------------------------------------------------------------
+    # The human gate (C7)
+    # ------------------------------------------------------------------
+
+    async def record_acceptance_criteria(
+        self,
+        *,
+        node_id: NodeId,
+        attempt: int,
+        criteria: Sequence[str],
+        at_ms: int | None = None,
+    ) -> Sequence[AcceptanceResult]:
+        """Snapshot one attempt's criteria, each ``unevaluated``.
+
+        This is `design.md` §9's ``check_acceptance(node)``, and §9 is explicit
+        that it does not *evaluate* anything: it records what was claimed, so a
+        human can resolve it and so the record survives a later edit of
+        ``node.acceptance_criteria``.
+
+        Written once per attempt. A second call for the same ``(node, attempt)``
+        raises on the primary key, deliberately — the only way to reach it is to
+        finalize the same run twice, which is a bug and not a state
+        (`docs/architecture.md` §9). Replacing the rows instead would silently
+        discard whatever a reviewer had already written on them.
+        """
+        await self._require_node(node_id)
+        if not criteria:
+            return []
+        stamp = now_ms() if at_ms is None else at_ms
+        rows = [
+            AcceptanceResult(
+                node_id=node_id,
+                attempt=attempt,
+                position=position,
+                criterion=criterion,
+                outcome=CriterionOutcome.UNEVALUATED,
+                created_ms=stamp,
+                updated_ms=stamp,
+            )
+            for position, criterion in enumerate(criteria)
+        ]
+        await self._persist(*rows)
+        return rows
+
+    async def resolve_acceptance_results(
+        self,
+        *,
+        node_id: NodeId,
+        attempt: int,
+        outcomes: Mapping[int, CriterionOutcome],
+        at_ms: int | None = None,
+    ) -> Sequence[AcceptanceResult]:
+        """Apply a reviewer's per-criterion verdicts to one attempt.
+
+        Partial by design: a reviewer who resolved two of three criteria and
+        approved anyway leaves the third ``unevaluated``, and that is a fact
+        worth keeping rather than a form to complete. Positions not mentioned
+        keep whatever they had.
+
+        A position with no row is :class:`RepositoryError` — the caller is
+        judging a criterion this attempt never had.
+        """
+        if not outcomes:
+            return []
+        stamp = now_ms() if at_ms is None else at_ms
+        rows: list[AcceptanceResult] = []
+        for position, outcome in sorted(outcomes.items()):
+            row = await self._session.get(
+                AcceptanceResult, (node_id, attempt, position)
+            )
+            if row is None:
+                raise RepositoryError(
+                    f"node {node_id} attempt {attempt} has no acceptance criterion "
+                    f"at position {position}"
+                )
+            row.outcome = outcome
+            row.updated_ms = stamp
+            rows.append(row)
+        await self._persist(*rows)
+        return rows
+
+    async def list_acceptance_results(
+        self, node_id: NodeId, *, attempt: int | None = None
+    ) -> Sequence[AcceptanceResult]:
+        """Every criterion this node was judged on, oldest attempt first."""
+        statement = (
+            select(AcceptanceResult)
+            .where(col(AcceptanceResult.node_id) == node_id)
+            .order_by(col(AcceptanceResult.attempt), col(AcceptanceResult.position))
+        )
+        if attempt is not None:
+            statement = statement.where(col(AcceptanceResult.attempt) == attempt)
+        return (await self._session.exec(statement)).all()
+
+    async def record_review(
+        self,
+        *,
+        node_id: NodeId,
+        attempt: int,
+        decision: ReviewDecision,
+        feedback: str | None = None,
+        at_ms: int | None = None,
+    ) -> NodeReview:
+        """Persist the human gate's verdict on one attempt (invariant 6).
+
+        Upserts rather than inserting. One review per attempt is what the
+        orchestrator's transitions already enforce — ``approve_node`` demands
+        ``awaiting_review`` and ``reject_node`` leaves it — so reaching this
+        twice means a reviewer deliberately re-reviewed the same attempt, and
+        their newer answer is the one that counts. It does **not** affect the
+        accumulation across attempts: those are different rows.
+        """
+        await self._require_node(node_id)
+        stamp = now_ms() if at_ms is None else at_ms
+        row = await self._session.get(NodeReview, (node_id, attempt))
+        if row is None:
+            row = NodeReview(
+                node_id=node_id,
+                attempt=attempt,
+                decision=decision,
+                feedback=feedback,
+                reviewed_ms=stamp,
+            )
+        else:
+            row.decision = decision
+            row.feedback = feedback
+            row.reviewed_ms = stamp
+        await self._persist(row)
+        return row
+
+    async def list_reviews(self, node_id: NodeId) -> Sequence[NodeReview]:
+        """This node's review history, oldest attempt first.
+
+        The order is load-bearing: it is the order the rejections are replayed
+        into the next attempt's prompt
+        (:meth:`app.orchestrator.service.NodeRunService.retry_node`).
+        """
+        statement = (
+            select(NodeReview)
+            .where(col(NodeReview.node_id) == node_id)
+            .order_by(col(NodeReview.attempt))
+        )
+        return (await self._session.exec(statement)).all()
 
     async def next_attempt(self, node_id: NodeId) -> int:
         """1 for a node's first run, ``n+1`` after that. Never reuses a number."""
@@ -728,9 +902,17 @@ async def repository(database: Database) -> AsyncIterator[Repository]:
         yield Repository(session)
 
 
+# The four gate names are re-exported, not redefined: a caller that reads
+# review rows through this module should not have to import the table module
+# beside it to name what it just read. The vocabulary lives in
+# `app/models/tables.py` and only there.
 __all__ = [
+    "AcceptanceResult",
+    "CriterionOutcome",
+    "NodeReview",
     "Repository",
     "RepositoryError",
+    "ReviewDecision",
     "SessionGraph",
     "UsageTotals",
     "count_permission_denials",

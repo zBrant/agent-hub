@@ -39,7 +39,9 @@ from app.models.status import NodeStatus, RunState, SessionStatus
 from app.orchestrator.graph import DagErrorKind, GraphOutcome
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import (
+    REVIEW_FEEDBACK_HEADER,
     CreatedGraph,
+    CriterionOutcome,
     InvalidGraphError,
     InvalidTransitionError,
     NodeExecution,
@@ -51,6 +53,7 @@ from app.orchestrator.service import (
     ProcessLiveness,
     ProcessReaper,
     ResourceNotFoundError,
+    ReviewDecision,
 )
 from app.storage.db import Database, upgrade_database_sync
 from app.storage.repository import Repository
@@ -282,6 +285,12 @@ class FakeHarness:
     # `create_graph` each build one per node just to read `supported_models`,
     # so `adapters[0]` is a validation throwaway, not the one that streamed.
     launched: list[FakeAdapter] = field(default_factory=list)
+    # The `RunSpec` of every launch, in order. This is where the prompt the
+    # harness was actually given can be read: `meta.json` deliberately records
+    # argv and not the prompt, because argv is visible in `ps`
+    # (`docs/conventions.md` §6), so the spec is the only honest witness for
+    # C7's "the rejection reached the next attempt".
+    specs: list[RunSpec] = field(default_factory=list)
 
     def beats(self, node: str) -> Sequence[UsageBeat]:
         return self.usage.get(node, DEFAULT_BEATS)
@@ -310,8 +319,13 @@ class FakeAdapter:
         return [*spec.launcher, self.name, "--fake-json"]
 
     async def start(self, spec: RunSpec) -> RunHandle:
-        node = spec.prompt
+        # The node's name is the *first line* of the prompt, not all of it: a
+        # retry after a rejection is launched with the authored prompt plus the
+        # reviewer's feedback appended, and the script is still keyed on the
+        # node (`plan` writes the name as the first line and nothing else).
+        node = spec.prompt.split("\n", 1)[0]
         self._harness.launched.append(self)
+        self._harness.specs.append(spec)
         if node in self._harness.crashing:
             raise RuntimeError(f"launcher exploded for {node}")
         if self._harness.on_start is not None:
@@ -320,7 +334,15 @@ class FakeAdapter:
                 await result
         # One file per node, so two parallel nodes do not conflict by accident;
         # a test that wants a conflict writes the same name on purpose.
-        (spec.cwd / f"{node}.txt").write_text(f"{node}\n", encoding="utf-8")
+        #
+        # The run id is in the content because a *retry* must produce a
+        # different diff. An agent that rewrites the same bytes leaves the
+        # checkpoint with nothing to commit, and `evaluate_run` then blocks the
+        # node with `no_changes` — correct behaviour, and not what a test about
+        # the review gate is trying to observe.
+        (spec.cwd / f"{node}.txt").write_text(
+            f"{node}\n{spec.run_id}\n", encoding="utf-8"
+        )
         return cast(RunHandle, FakeHandle(spec=spec, node=node))
 
     async def send(self, handle: RunHandle, text: str) -> None:
@@ -452,11 +474,18 @@ def build_service(
     )
 
 
-def plan(*specs: str) -> tuple[PlannedNode, ...]:
+def plan(
+    *specs: str, criteria: Mapping[str, Sequence[str]] | None = None
+) -> tuple[PlannedNode, ...]:
     """``"d:b,c"`` is a node named ``d`` that depends on ``b`` and ``c``.
 
     The prompt is the node's name, which is what the fake adapter keys its
     script on and what the file it writes is called.
+
+    ``criteria`` gives a node the prose `design.md` §8's planner emits. It is
+    prose on purpose in every test below — "pytest tests/test_auth.py passes"
+    *describes* a command and is not one, which is the whole reason §9 hands
+    them to a human instead of running them.
     """
     planned: list[PlannedNode] = []
     for spec in specs:
@@ -468,6 +497,7 @@ def plan(*specs: str) -> tuple[PlannedNode, ...]:
                 harness=HARNESS,
                 model=MODEL,
                 depends_on=tuple(d for d in deps.split(",") if d),
+                acceptance_criteria=tuple((criteria or {}).get(name, ())),
             )
         )
     return tuple(planned)
@@ -512,6 +542,34 @@ async def usage_sources(database: Database, node_id: NodeId) -> list[str]:
             event for run in rows for event in await repository.list_usage(run.id)
         ]
     return [str(event.source) for event in events]
+
+
+async def merged_into_integration(
+    database: Database, graph: CreatedGraph, name: str
+) -> bool:
+    """Is this node's branch an ancestor of the integration branch?
+
+    The question invariant 6 is actually about. Asserting that a file the agent
+    wrote is absent from the integration worktree is weaker in two ways: a node
+    whose agent wrote nothing would pass it trivially, and a merge that landed
+    but was never checked out would sneak past it. ``merge-base --is-ancestor``
+    asks git whether the commit is in there.
+    """
+    async with database.session() as db_session:
+        node = await Repository(db_session).get_node(graph.ids_by_name[name])
+    assert node is not None and node.branch is not None
+    process = await asyncio.create_subprocess_exec(
+        "git",
+        "-C",
+        str(graph.session.workspace_root / "integration"),
+        "merge-base",
+        "--is-ancestor",
+        node.branch,
+        "HEAD",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    return await process.wait() == 0
 
 
 async def worktree_of(database: Database, node_id: str) -> Path:
@@ -968,12 +1026,16 @@ async def test_auto_merge_off_stops_at_awaiting_review_and_holds_dependents(
     assert await run_counts(database, graph) == {"a": 1, "b": 0}
     assert harness.probe.started == ["a"]
     assert not (graph.session.workspace_root / "integration" / "a.txt").exists()
+    # ...and not merely absent from the checkout: the commit is not in the
+    # integration branch's history at all.
+    assert await merged_into_integration(database, graph, "a") is False
     async with database.session() as db_session:
         session = await Repository(db_session).get_session(graph.session.id)
     assert session is not None and session.status is SessionStatus.PAUSED
 
     # The gate opens and the graph continues from where it stopped.
     await service.approve_node(graph.ids_by_name["a"])
+    assert await merged_into_integration(database, graph, "a") is True
     resumed = await scheduler_for(service, database, settings).run_graph(
         graph.session.id
     )
@@ -1670,3 +1732,394 @@ async def test_the_sweep_leaves_this_process_own_runs_alone(
 
     assert result.outcome is GraphOutcome.COMPLETE
     assert harness.launched[0].killed is False
+
+
+# ---------------------------------------------------------------------------
+# C7 — acceptance criteria and the human gate
+# ---------------------------------------------------------------------------
+
+
+async def checklist(
+    service: NodeRunService, node_id: NodeId
+) -> list[tuple[int, int, str, CriterionOutcome]]:
+    """``(attempt, position, criterion, outcome)`` for every judgement."""
+    return [
+        (row.attempt, row.position, row.criterion, row.outcome)
+        for row in await service.acceptance_results(node_id)
+    ]
+
+
+async def verdicts(
+    service: NodeRunService, node_id: NodeId
+) -> list[tuple[int, ReviewDecision, str | None]]:
+    return [
+        (row.attempt, row.decision, row.feedback)
+        for row in await service.reviews(node_id)
+    ]
+
+
+CRITERIA = (
+    "pytest tests/test_auth.py passes",
+    "the OpenAPI schema is regenerated",
+    "no new TODO comments",
+)
+
+
+async def test_each_criterion_carries_its_own_outcome(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """`docs/phase-2.md` C7: three criteria can be two-pass one-fail.
+
+    Which is the whole reason C1 made the column an array. A single joined
+    string could record "the reviewer was unhappy" and nothing about *which*
+    promise was broken, and `design.md` §8's panel shows results, plural.
+
+    Note what the run itself did: it recorded three ``unevaluated`` rows. It
+    did not try to run "pytest tests/test_auth.py passes", because that is
+    prose describing a command (`design.md` §9).
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo,
+        nodes=plan("a", criteria={"a": CRITERIA}),
+        auto_merge=False,
+    )
+    node_id = graph.ids_by_name["a"]
+
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    assert (await statuses(database, graph))["a"] is NodeStatus.AWAITING_REVIEW
+    assert await checklist(service, node_id) == [
+        (1, 0, CRITERIA[0], CriterionOutcome.UNEVALUATED),
+        (1, 1, CRITERIA[1], CriterionOutcome.UNEVALUATED),
+        (1, 2, CRITERIA[2], CriterionOutcome.UNEVALUATED),
+    ]
+    assert await verdicts(service, node_id) == []
+
+    await service.approve_node(
+        node_id,
+        outcomes={
+            0: CriterionOutcome.PASS,
+            1: CriterionOutcome.FAIL,
+            2: CriterionOutcome.PASS,
+        },
+    )
+
+    assert await checklist(service, node_id) == [
+        (1, 0, CRITERIA[0], CriterionOutcome.PASS),
+        (1, 1, CRITERIA[1], CriterionOutcome.FAIL),
+        (1, 2, CRITERIA[2], CriterionOutcome.PASS),
+    ]
+    # Approved anyway, with a criterion failing. The reviewer decides what is
+    # disqualifying; refusing here would teach them to leave the list blank.
+    assert await verdicts(service, node_id) == [(1, ReviewDecision.APPROVED, None)]
+    assert (await statuses(database, graph))["a"] is NodeStatus.DONE
+    assert await merged_into_integration(database, graph, "a") is True
+
+
+async def test_auto_merge_on_records_the_criteria_and_merges_anyway(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """`design.md` §9's stated limitation, asserted so nobody mistakes it for a bug.
+
+    With ``auto_merge`` on there is no reviewer, so nothing can resolve the
+    checklist. The criteria are still recorded — attempt 1 was merged with
+    *these* promises outstanding, and that stays true after someone edits the
+    node — and the merge happens on the harness's own verdict.
+
+    The rows read ``unevaluated`` forever, and the absence of a
+    :class:`NodeReview` row is what says no human was ever involved. That is
+    the whole shape of the limitation, in data.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo,
+        nodes=plan("a", "b:a", criteria={"a": CRITERIA[:2]}),
+        auto_merge=True,
+    )
+    node_id = graph.ids_by_name["a"]
+
+    result = await scheduler_for(service, database, settings).run_graph(
+        graph.session.id
+    )
+
+    assert result.outcome is GraphOutcome.COMPLETE
+    assert await statuses(database, graph) == dict.fromkeys("ab", NodeStatus.DONE)
+    assert await merged_into_integration(database, graph, "a") is True
+    assert await checklist(service, node_id) == [
+        (1, 0, CRITERIA[0], CriterionOutcome.UNEVALUATED),
+        (1, 1, CRITERIA[1], CriterionOutcome.UNEVALUATED),
+    ]
+    assert await verdicts(service, node_id) == []
+
+
+async def test_a_rejection_opens_a_new_run_carrying_the_feedback(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """C7's done-when: the rejection text reaches the retry's prompt.
+
+    Asserted on the ``RunSpec`` the adapter was handed, not on ``meta.json``.
+    ``meta.json`` records argv and deliberately not the prompt, because argv is
+    visible in ``ps`` (`docs/conventions.md` §6) — so for a real harness there
+    is nothing about the prompt in that file to assert on. C7's done-when says
+    "argv or prompt"; the prompt is the only one of the two that can be true.
+    """
+    feedback = "the endpoint still returns 500 for an expired token"
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo,
+        nodes=plan("a", criteria={"a": CRITERIA[:1]}),
+        auto_merge=False,
+    )
+    node_id = graph.ids_by_name["a"]
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+    first = (await service.acceptance_results(node_id))[0]
+    assert first.outcome is CriterionOutcome.UNEVALUATED
+    # The first attempt was launched with exactly what the operator authored.
+    assert harness.specs[0].prompt == "a"
+
+    outcome = await service.reject_node(
+        node_id, feedback=feedback, outcomes={0: CriterionOutcome.FAIL}
+    )
+
+    # A new Run, never a mutated one (B7).
+    assert [state for state, _ in await runs_of(database, node_id)] == [
+        RunState.SUCCESS,
+        RunState.SUCCESS,
+    ]
+    assert outcome.run_id != harness.specs[0].run_id
+    retried = harness.specs[-1]
+    assert retried.prompt.startswith("a\n")
+    assert feedback in retried.prompt
+    assert REVIEW_FEEDBACK_HEADER in retried.prompt
+    assert "### Attempt 1" in retried.prompt
+
+    # The verdict is attached to the attempt it judged, and the new attempt
+    # starts its own checklist rather than inheriting the old verdict.
+    assert await checklist(service, node_id) == [
+        (1, 0, CRITERIA[0], CriterionOutcome.FAIL),
+        (2, 0, CRITERIA[0], CriterionOutcome.UNEVALUATED),
+    ]
+    assert await verdicts(service, node_id) == [(1, ReviewDecision.REJECTED, feedback)]
+    # Rejected work is not merged, and the node is back at the gate.
+    assert (await statuses(database, graph))["a"] is NodeStatus.AWAITING_REVIEW
+    assert await merged_into_integration(database, graph, "a") is False
+
+
+async def test_a_rejection_never_edits_the_authored_prompt(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """``node.prompt`` is authored input, and a run may not rewrite it.
+
+    The feedback is composed on top at launch. Persisting the composition would
+    destroy what the operator wrote and make the third attempt's prompt a
+    function of how many times the second one was retried.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=False
+    )
+    node_id = graph.ids_by_name["a"]
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    await service.reject_node(node_id, feedback="not what I asked for")
+
+    async with database.session() as db_session:
+        node = await Repository(db_session).get_node(node_id)
+    assert node is not None and node.prompt == "a"
+
+
+async def test_rejecting_twice_accumulates_every_earlier_rejection(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """Pinned: attempt 3 sees attempt 1's objection *and* attempt 2's.
+
+    Accumulate rather than replace. An agent shown only the newest complaint
+    fixes it by undoing the fix for the oldest, and the reviewer would
+    otherwise have to restate every surviving objection every time — work the
+    record has already done.
+
+    The header appears once and the attempts appear in order, so the agent can
+    tell which objection came from which round.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=False
+    )
+    node_id = graph.ids_by_name["a"]
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    await service.reject_node(node_id, feedback="the tests are still skipped")
+    await service.reject_node(node_id, feedback="now the migration is missing")
+
+    third = harness.specs[-1].prompt
+    assert third.count(REVIEW_FEEDBACK_HEADER) == 1
+    assert third.index("the tests are still skipped") < third.index(
+        "now the migration is missing"
+    )
+    assert third.index("### Attempt 1") < third.index("### Attempt 2")
+    assert await verdicts(service, node_id) == [
+        (1, ReviewDecision.REJECTED, "the tests are still skipped"),
+        (2, ReviewDecision.REJECTED, "now the migration is missing"),
+    ]
+    assert [state for state, _ in await runs_of(database, node_id)] == [
+        RunState.SUCCESS
+    ] * 3
+
+
+async def test_rejecting_without_saying_why_is_refused(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """The retry's only new input is the reviewer's words.
+
+    An invalid argument, so an exception (`docs/architecture.md` §9) — and it
+    happens before anything is persisted or launched.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=False
+    )
+    node_id = graph.ids_by_name["a"]
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    with pytest.raises(ValueError, match="requires feedback"):
+        await service.reject_node(node_id, feedback="   ")
+
+    assert (await statuses(database, graph))["a"] is NodeStatus.AWAITING_REVIEW
+    assert await verdicts(service, node_id) == []
+    assert len(harness.specs) == 1
+
+
+async def test_a_node_awaiting_review_cannot_be_re_run_behind_the_gate(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """Invariant 6 again, from the other side.
+
+    ``retry_node`` is the "run it again" verb and it does not accept a node a
+    human is in the middle of reviewing: leaving ``awaiting_review`` is the
+    gate's decision, and a bare retry would silently replace the diff under the
+    reviewer without recording that anyone rejected anything.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=False
+    )
+    node_id = graph.ids_by_name["a"]
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    with pytest.raises(InvalidTransitionError, match="only failed or blocked"):
+        await service.retry_node(node_id)
+
+    assert (await statuses(database, graph))["a"] is NodeStatus.AWAITING_REVIEW
+    assert len(harness.specs) == 1
+
+
+async def test_a_retry_after_a_failure_can_carry_feedback_too(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """One path, two entry points.
+
+    A failed node never reached the gate, so nothing rejected it — but an
+    operator retrying it by hand has exactly the same thing to say, and it has
+    to reach the prompt by the same route. ``reject_node`` is
+    ``retry_node`` with the node state the gate produces.
+    """
+    harness = FakeHarness(failing=frozenset({"a"}))
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=False
+    )
+    node_id = graph.ids_by_name["a"]
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+    assert (await statuses(database, graph))["a"] is NodeStatus.FAILED
+
+    harness.failing = frozenset()
+    await service.retry_node(node_id, feedback="you deleted the wrong module")
+
+    assert "you deleted the wrong module" in harness.specs[-1].prompt
+    assert await verdicts(service, node_id) == [
+        (1, ReviewDecision.REJECTED, "you deleted the wrong module")
+    ]
+    assert (await statuses(database, graph))["a"] is NodeStatus.AWAITING_REVIEW
+
+
+async def test_the_gate_holds_the_dependents_of_a_rejected_node(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """A rejected node never satisfied anything, so nothing downstream moves.
+
+    The scheduler is run again after the rejection to make the point: the graph
+    is still ``waiting_on_human``, ``b`` is still ``pending``, and the only
+    thing that changed is that ``a`` has one more attempt behind it.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a", "b:a"), auto_merge=False
+    )
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    await service.reject_node(graph.ids_by_name["a"], feedback="wrong table name")
+    result = await scheduler_for(service, database, settings).run_graph(
+        graph.session.id
+    )
+
+    assert result.outcome is GraphOutcome.WAITING_ON_HUMAN
+    assert await statuses(database, graph) == {
+        "a": NodeStatus.AWAITING_REVIEW,
+        "b": NodeStatus.PENDING,
+    }
+    assert await run_counts(database, graph) == {"a": 2, "b": 0}
+    assert await merged_into_integration(database, graph, "a") is False

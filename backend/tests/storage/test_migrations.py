@@ -28,7 +28,15 @@ from app.storage.db import (
     upgrade_database_sync,
 )
 
-EXPECTED_TABLES = {"session", "node", "node_dependency", "run", "usage_event"}
+EXPECTED_TABLES = {
+    "session",
+    "node",
+    "node_dependency",
+    "run",
+    "usage_event",
+    "acceptance_result",
+    "node_review",
+}
 
 # The last revision of Phase 1. Databases at this revision exist on real
 # machines with accepted runs in them (`docs/acceptance-phase-1.md`).
@@ -367,3 +375,76 @@ def test_the_rebuild_of_node_keeps_its_foreign_keys_enforcing(
                 "INSERT INTO node_dependency (node_id, depends_on_id, session_id,"
                 " created_ms) VALUES ('node_1', 'node_missing', 'sess_1', 1)"
             )
+
+
+def test_the_gate_tables_arrive_on_a_populated_phase_1_database(
+    settings: Settings,
+) -> None:
+    """Revision e9f4b9cfa8c1 is additive, and the point is what it does *not* do.
+
+    ``node`` carries an accepted run in real databases. C7 needed somewhere to
+    put a reviewer's verdict, and the way to get that wrong is to hang it off
+    ``run`` and then reach for ``batch_alter_table`` — which rebuilds a table
+    and drops its triggers with it (a83db6150739). Two new tables and no ALTER
+    means nothing above them can move.
+    """
+    upgrade_database_sync(settings.database_url, revision=PHASE_1_REVISION)
+    seed_a_phase_1_database(settings.database_url)
+
+    upgrade_database_sync(settings.database_url)
+
+    assert {"acceptance_result", "node_review"} <= table_names(settings.database_url)
+    # The pre-existing node is untouched and can be reviewed as it stands.
+    assert rows(settings.database_url, "SELECT count(*) FROM acceptance_result") == [
+        (0,)
+    ]
+    with closing(sqlite3.connect(database_path(settings.database_url))) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            "INSERT INTO acceptance_result (node_id, attempt, position, criterion,"
+            " outcome, created_ms, updated_ms) VALUES"
+            " ('node_1', 1, 0, 'pytest passes', 'unevaluated', 1, 1)"
+        )
+        connection.execute(
+            "INSERT INTO node_review (node_id, attempt, decision, feedback,"
+            " reviewed_ms) VALUES ('node_1', 1, 'rejected', 'try again', 1)"
+        )
+
+        # The closed vocabularies are the database's, not Python's: a typo'd
+        # outcome renders as a state with no colour and no icon.
+        with pytest.raises(sqlite3.IntegrityError, match="criterion_outcome"):
+            connection.execute(
+                "INSERT INTO acceptance_result (node_id, attempt, position,"
+                " criterion, outcome, created_ms, updated_ms) VALUES"
+                " ('node_1', 1, 1, 'x', 'probably', 1, 1)"
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="review_decision"):
+            connection.execute(
+                "INSERT INTO node_review (node_id, attempt, decision, reviewed_ms)"
+                " VALUES ('node_1', 2, 'maybe', 1)"
+            )
+        # ...and neither table can outlive the node it judges.
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "INSERT INTO node_review (node_id, attempt, decision, reviewed_ms)"
+                " VALUES ('node_missing', 1, 'approved', 1)"
+            )
+
+
+def test_the_gate_tables_do_not_hang_off_run(settings: Settings) -> None:
+    """Invariant 4, enforced by where the foreign keys point.
+
+    ``app/storage/replay.py`` deletes the ``run`` row to rebuild it from the
+    log. A verdict that cascaded from ``run`` would be destroyed by an ordinary
+    replay, so the schema must make that impossible rather than rely on nobody
+    doing it.
+    """
+    upgrade_database_sync(settings.database_url)
+
+    with closing(sqlite3.connect(database_path(settings.database_url))) as connection:
+        for table in ("acceptance_result", "node_review"):
+            referenced = {
+                row[2]
+                for row in connection.execute(f"PRAGMA foreign_key_list({table})")
+            }
+            assert referenced == {"node"}, f"{table} must not reference {referenced}"

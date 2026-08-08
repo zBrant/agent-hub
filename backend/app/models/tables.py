@@ -5,6 +5,11 @@
 purpose: events live in ``runs/<run_id>/events.ndjson`` and only their
 *projection* is here.
 
+Two more tables hang off ``Node`` and off nothing else: :class:`AcceptanceResult`
+and :class:`NodeReview`, the human gate's record of what a reviewer decided
+about one attempt. They are keyed by ``(node_id, attempt)`` rather than by
+``run_id`` on purpose, and that class docstring is the place to read why.
+
 No ``Graph`` table either, and that is a deliberate departure from `design.md`
 §5's diagram. A ``Graph`` sitting 1:1 between ``Session`` and ``Node`` would
 carry no column of its own — the session already owns the objective, the
@@ -47,7 +52,7 @@ moment the projection happened to be rebuilt.
 
 import json
 from collections.abc import Sequence
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -415,6 +420,140 @@ class Run(SQLModel, table=True):
     # (see events.py:TurnFinished); nothing may merge such a run.
     permission_denial_count: int = Field(default=0)
     created_ms: int
+
+
+class CriterionOutcome(StrEnum):
+    """What a human decided about one acceptance criterion.
+
+    `design.md` §9 is explicit that ``check_acceptance`` does **not** evaluate
+    the criteria: §8 emits them as prose ("pytest tests/test_auth.py passes"
+    *describes* a command, it is not one) and guessing which strings are
+    runnable would be a heuristic that silently passes a criterion it failed to
+    understand.
+
+    ``UNEVALUATED`` is a member and not the absence of a row, which is the one
+    decision here worth arguing. An absent row cannot distinguish three
+    different things: the reviewer has not reached this criterion yet, the
+    criterion did not exist when the run happened (a node's criteria are
+    authored and editable), and nobody was ever going to look because
+    ``auto_merge`` was on. Recording the snapshot with an explicit
+    ``unevaluated`` makes `design.md` §9's stated limitation — an unattended
+    graph merges on the harness's own verdict — visible **in the data** instead
+    of inferable from a missing join.
+    """
+
+    UNEVALUATED = "unevaluated"
+    PASS = "pass"
+    FAIL = "fail"
+
+
+class ReviewDecision(StrEnum):
+    """The human gate's two answers (`design.md` §8's ``awaiting_review`` row).
+
+    Approve merges into integration; reject opens a new attempt carrying the
+    reviewer's feedback. There is no third answer: "not yet" is the absence of a
+    :class:`NodeReview` row, which is what ``awaiting_review`` already says.
+    """
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
+
+class AcceptanceResult(SQLModel, table=True):
+    """One acceptance criterion, as judged for one attempt at one node.
+
+    **Authored, in the sense the module docstring means it.** The reviewer's
+    verdict exists in no ``events.ndjson`` and no rebuild can invent it, so
+    replay must never delete these rows — exactly like ``session`` and ``node``,
+    and unlike everything hanging off ``run``.
+
+    That is also why the key is ``(node_id, attempt)`` and **not** ``run_id``,
+    which is the more obvious choice and is wrong.
+    :func:`app.storage.replay.replay_run` deletes the ``run`` row and rebuilds
+    it from the log; a foreign key onto ``run`` would either take the reviewer's
+    work with it through ``ON DELETE CASCADE`` or make replay fail on any node
+    anybody had reviewed. ``attempt`` survives that rebuild because ``meta.json``
+    pins it and replay re-creates the row with the same number
+    (`docs/architecture.md` §4). The cost is honest and small: ``attempt`` has no
+    foreign key, so nothing at the database level proves the run exists.
+    ``node_id`` does have one, so nothing here can outlive its node.
+
+    **Per attempt, not per node.** A retry produces a new ``Run`` against a
+    different diff (B7), so a verdict carried forward from the previous attempt
+    would be a claim about code that no longer exists. Keying by node alone
+    would force a choice between lying and overwriting a reviewer's work; keying
+    by attempt keeps every judgement attached to the diff it was about, which is
+    also the attempt history `design.md` §5 exists to preserve.
+
+    :attr:`criterion` is the text **as it stood when the run finished**, copied
+    rather than joined back to ``node.acceptance_criteria``. The node's criteria
+    are authored input a human may edit at any time, and a stored position into
+    a list that has since been re-ordered describes nothing. The duplication is
+    the record being self-describing, which is what an audit trail is.
+    """
+
+    __tablename__ = "acceptance_result"
+    __table_args__ = (
+        _status_check("outcome", CriterionOutcome, name="criterion_outcome"),
+    )
+
+    node_id: NodeId = Field(
+        sa_type=sa.String, foreign_key="node.id", ondelete="CASCADE", primary_key=True
+    )
+    # The run's ordinal among its node's attempts — `run.attempt`, and the same
+    # number `meta.json` pins. See the class docstring for why not `run_id`.
+    attempt: int = Field(primary_key=True)
+    # 0-based index into `node.acceptance_criteria` as it stood at run end. Part
+    # of the key so the criteria of one attempt keep their authored order; the
+    # composite primary key is also the index every read below uses.
+    position: int = Field(primary_key=True)
+    criterion: str
+    outcome: CriterionOutcome = Field(
+        default=CriterionOutcome.UNEVALUATED,
+        sa_column=_status("outcome", CriterionOutcome),
+    )
+    # When the run recorded the snapshot, and when a human last moved the
+    # outcome. Equal until someone reviews it.
+    created_ms: int
+    updated_ms: int
+
+
+class NodeReview(SQLModel, table=True):
+    """The human gate's verdict on one attempt (invariant 6).
+
+    Authored by the reviewer, keyed like :class:`AcceptanceResult` and for the
+    same reasons. One row per attempt: ``approve_node`` requires the node to be
+    ``awaiting_review`` and ``reject_node`` moves it out of that state, so a
+    second review of the same attempt is not reachable through the orchestrator
+    — the row is replaced rather than duplicated if it ever is.
+
+    **The absence of a row is meaningful.** A node merged under ``auto_merge``
+    has none, because there was no reviewer: `design.md` §9 says the criteria
+    are recorded but not enforced in that mode, and "no review row plus
+    ``unevaluated`` criteria plus a merge commit" is that sentence written in
+    data.
+
+    :attr:`feedback` is what makes a rejection actionable rather than merely
+    negative. It is durable because the retry it feeds may happen minutes later,
+    through a different process, and because attempt *n* composes its prompt
+    from **every** earlier rejection rather than only the last one — see
+    :meth:`app.orchestrator.service.NodeRunService.retry_node`.
+    """
+
+    __tablename__ = "node_review"
+    __table_args__ = (
+        _status_check("decision", ReviewDecision, name="review_decision"),
+    )
+
+    node_id: NodeId = Field(
+        sa_type=sa.String, foreign_key="node.id", ondelete="CASCADE", primary_key=True
+    )
+    attempt: int = Field(primary_key=True)
+    decision: ReviewDecision = Field(sa_column=_status("decision", ReviewDecision))
+    # None when the reviewer said nothing, which an approval usually does. An
+    # empty string would claim they wrote something and left it blank.
+    feedback: str | None = Field(default=None)
+    reviewed_ms: int
 
 
 class UsageEvent(SQLModel, table=True):

@@ -29,6 +29,17 @@ through the Phase 1 REST path (:meth:`NodeRunService.run_node`,
 quota. Restart recovery is here for the matching reason: it writes run rows and
 node rows, and those writes and the session projection have exactly one home.
 
+**What C7 added, and why here.** The human gate is three things that all live
+next to the run lifecycle because they all read or write it: the criteria
+snapshot taken when a run finishes (`design.md` §9's ``check_acceptance``, which
+records rather than evaluates), the two verdicts a reviewer can give
+(:meth:`NodeRunService.approve_node` and :meth:`NodeRunService.reject_node`), and
+the composition of the next attempt's prompt from the rejections that came
+before it (:meth:`NodeRunService._compose_prompt`). A rejection is not a separate
+mechanism from a retry — it *is* a retry with a reason attached — so it goes
+through :meth:`NodeRunService._retry_locked` with everything else, and there is
+one place where a new attempt is opened rather than two that must agree.
+
 The scheduler is not here. This module knows how to run *a* node; deciding
 *which* nodes and *when* is ``orchestrator/scheduler.py``, over the pure core in
 ``orchestrator/graph.py`` (`docs/architecture.md` §8). The seam between them is
@@ -94,7 +105,14 @@ from app.storage.db import Database
 from app.storage.ingest import Broadcast, ingest_run, no_broadcast
 from app.storage.meta import RunMeta, build_meta, meta_path, read_meta
 from app.storage.ndjson import events_path, read_events
-from app.storage.repository import Repository, UsageTotals
+from app.storage.repository import (
+    AcceptanceResult,
+    CriterionOutcome,
+    NodeReview,
+    Repository,
+    ReviewDecision,
+    UsageTotals,
+)
 
 log = structlog.get_logger()
 
@@ -108,6 +126,27 @@ RunRegistration = Callable[[RunId, SessionId], Awaitable[None]]
 _STARTABLE = frozenset({NodeStatus.PENDING, NodeStatus.READY})
 
 _TERMINAL = frozenset({NodeStatus.DONE, NodeStatus.FAILED, NodeStatus.SKIPPED})
+
+# A node an operator may open another attempt at without reviewing anything.
+# `awaiting_review` is deliberately absent: leaving that state is the gate's
+# decision (`approve_node`/`reject_node`), and a bare "run it again" there would
+# discard a diff a human was in the middle of reading.
+#
+# A tuple and not a frozenset, for one small reason: it is rendered into the
+# refusal message, and a set's iteration order would make that message move
+# between runs.
+_RETRYABLE = (NodeStatus.FAILED, NodeStatus.BLOCKED)
+
+# What separates the authored prompt from the reviewer's words in a retry. A
+# heading rather than a sentence: every harness receives this as ordinary prompt
+# text, and prose that could be mistaken for the operator's own instructions is
+# how an agent ends up implementing the feedback instead of acting on it.
+REVIEW_FEEDBACK_HEADER = (
+    "## Reviewer feedback on earlier attempts\n\n"
+    "A human reviewed the previous attempts at this same activity and rejected "
+    "them for the reasons below. Address all of them; an earlier point is not "
+    "superseded by a later one."
+)
 
 # How long a previous orchestrator's process gets to honour SIGTERM before this
 # one gives up on reaping it. Short: the point is not to wait out a long-running
@@ -893,36 +932,86 @@ class NodeRunService:
         node = await self.get_node(session_id)
         return await self.kill_node(node.id)
 
-    async def retry_node(self, node_id: NodeId) -> RunOutcome:
+    async def retry_node(
+        self, node_id: NodeId, *, feedback: str | None = None
+    ) -> RunOutcome:
         """Create a new attempt after a failed or safety-blocked run.
 
         B7's rule, unchanged by the graph: a retry is a **new** ``Run`` row and
         a new NDJSON directory. The previous attempt is history and is never
         edited.
+
+        ``feedback`` is what a human wants the next attempt to do differently.
+        It is recorded against the *previous* attempt as a rejection
+        (:class:`~app.models.tables.ReviewDecision`) and composed into the new
+        run's prompt by :meth:`_compose_prompt`. Passing it here is the
+        ``failed``/``blocked`` counterpart of :meth:`reject_node`; both end in
+        the same place, which is why there is one path and not two.
         """
         async with self._node_slot(node_id):
-            async with self._database.session() as db_session:
-                repository = Repository(db_session)
-                node = await self._require_node(repository, node_id)
-                if node.status not in (NodeStatus.FAILED, NodeStatus.BLOCKED):
-                    raise InvalidTransitionError(
-                        f"node {node.id} is {node.status.value}; "
-                        "only failed or blocked nodes can retry"
-                    )
-                runs = await repository.list_runs(node.id)
-                if not runs or not runs[-1].status.terminal:
-                    raise InvalidTransitionError(
-                        f"node {node.id} has no terminal run to retry"
-                    )
-                await self._set_node(repository, node, NodeStatus.READY)
-            return await self._run_locked(node_id)
+            return await self._retry_locked(
+                node_id, allowed=_RETRYABLE, feedback=feedback
+            )
 
     async def retry(self, session_id: SessionId) -> RunOutcome:
         node = await self.get_node(session_id)
         return await self.retry_node(node.id)
 
-    async def approve_node(self, node_id: NodeId) -> MergeResult:
-        """Apply the human gate for a safe run left awaiting review."""
+    async def reject_node(
+        self,
+        node_id: NodeId,
+        *,
+        feedback: str,
+        outcomes: Mapping[int, CriterionOutcome] | None = None,
+    ) -> RunOutcome:
+        """Reject a reviewed attempt and immediately open the next one.
+
+        The other half of the human gate (`design.md` §8's ``awaiting_review``
+        row, invariant 6). Nothing merges: the rejected attempt's commit stays
+        on the node's own branch, and the new run starts in the same worktree
+        with the reviewer's words appended to the authored prompt.
+
+        ``feedback`` is required and must not be blank. A rejection with no
+        reason produces an attempt that differs from the last one only by luck,
+        and the reviewer is the only party who knows what was wrong — this is an
+        invalid argument, not an agent failure, so it raises
+        (`docs/architecture.md` §9).
+
+        ``outcomes`` resolves the acceptance checklist by position, partially if
+        that is the truth. It is separate from ``feedback`` because a criterion
+        marked ``fail`` says *which* promise was broken and the feedback says
+        what to do about it; neither substitutes for the other.
+        """
+        if not feedback.strip():
+            raise ValueError(
+                f"rejecting node {node_id} requires feedback: the retry's only "
+                "input is what the reviewer says was wrong"
+            )
+        async with self._node_slot(node_id):
+            return await self._retry_locked(
+                node_id,
+                allowed=(NodeStatus.AWAITING_REVIEW,),
+                feedback=feedback,
+                outcomes=outcomes,
+            )
+
+    async def approve_node(
+        self,
+        node_id: NodeId,
+        *,
+        outcomes: Mapping[int, CriterionOutcome] | None = None,
+    ) -> MergeResult:
+        """Apply the human gate for a safe run left awaiting review.
+
+        Merges into integration — the one thing invariant 6 says may not happen
+        without a human while ``auto_merge`` is off.
+
+        ``outcomes`` is the reviewer's answer to the acceptance checklist. The
+        approval is recorded whatever it says, including with a criterion marked
+        ``fail``: the reviewer, not this method, decides whether a failed
+        criterion is disqualifying, and refusing here would only teach them to
+        leave the checklist blank.
+        """
         async with self._node_slot(node_id):
             async with self._database.session() as db_session:
                 repository = Repository(db_session)
@@ -956,6 +1045,17 @@ class NodeRunService:
                     raise InvalidTransitionError(
                         f"run {run.id} is not safe to merge: {disposition.reason}"
                     )
+                # Before the merge, not after. The approval is the human's act
+                # and it happened; whether git then managed to fold the branch
+                # in is a separate fact, and a conflict must not erase the
+                # record of who said yes.
+                await self._record_verdict(
+                    repository,
+                    node_id=node.id,
+                    attempt=run.attempt,
+                    decision=ReviewDecision.APPROVED,
+                    outcomes=outcomes,
+                )
                 workspace = self._workspace(session)
 
             merge = await workspace.merge_into_integration(node.id)
@@ -976,6 +1076,124 @@ class NodeRunService:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    async def _retry_locked(
+        self,
+        node_id: NodeId,
+        *,
+        allowed: Sequence[NodeStatus],
+        feedback: str | None = None,
+        outcomes: Mapping[int, CriterionOutcome] | None = None,
+    ) -> RunOutcome:
+        """Record the verdict on the last attempt, then open the next one.
+
+        The single retry path. :meth:`retry_node` and :meth:`reject_node` differ
+        only in which node states they accept and in whether feedback is
+        mandatory; everything after that — the terminal-run check, the verdict,
+        the transition to ``ready`` and the new run — is one sequence, in one
+        transaction up to the point the agent starts.
+
+        The verdict is written **before** the transition, so a process that dies
+        between them restarts into a ``ready`` node whose accumulated feedback is
+        already durable: the scheduler picks it up and the retry carries the
+        rejection anyway. The opposite order loses the reviewer's words and
+        re-runs the identical prompt, which is the worst of both.
+        """
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            node = await self._require_node(repository, node_id)
+            if node.status not in allowed:
+                expected = " or ".join(status.value for status in allowed)
+                raise InvalidTransitionError(
+                    f"node {node.id} is {node.status.value}; "
+                    f"only {expected} nodes can start a new attempt"
+                )
+            runs = await repository.list_runs(node.id)
+            if not runs or not runs[-1].status.terminal:
+                raise InvalidTransitionError(
+                    f"node {node.id} has no terminal run to retry"
+                )
+            if feedback is not None or outcomes:
+                await self._record_verdict(
+                    repository,
+                    node_id=node.id,
+                    attempt=runs[-1].attempt,
+                    decision=ReviewDecision.REJECTED,
+                    feedback=feedback,
+                    outcomes=outcomes,
+                )
+            await self._set_node(repository, node, NodeStatus.READY)
+        return await self._run_locked(node_id)
+
+    async def _record_verdict(
+        self,
+        repository: Repository,
+        *,
+        node_id: NodeId,
+        attempt: int,
+        decision: ReviewDecision,
+        feedback: str | None = None,
+        outcomes: Mapping[int, CriterionOutcome] | None = None,
+    ) -> None:
+        """Persist one human decision about one attempt.
+
+        Two rows' worth of authored input, written together: the overall
+        verdict and whichever acceptance criteria the reviewer resolved.
+        """
+        if outcomes:
+            await repository.resolve_acceptance_results(
+                node_id=node_id, attempt=attempt, outcomes=outcomes
+            )
+        await repository.record_review(
+            node_id=node_id,
+            attempt=attempt,
+            decision=decision,
+            feedback=feedback,
+        )
+        log.info(
+            "orchestrator.node_reviewed",
+            node_id=node_id,
+            attempt=attempt,
+            decision=decision.value,
+            outcomes={
+                position: outcome.value
+                for position, outcome in sorted((outcomes or {}).items())
+            },
+        )
+
+    async def _compose_prompt(self, repository: Repository, node: Node) -> str:
+        """The authored prompt, plus every rejection this node has collected.
+
+        **The node's ``prompt`` is never overwritten.** It is authored input —
+        what the operator or the planner actually asked for — and a run is not
+        allowed to edit it (``app/models/tables.py``). Feedback is *composed on
+        top* at launch, so the row still says what was asked and the transcript
+        still says what was asked *this time*.
+
+        **Every earlier rejection, not just the last one.** Attempt 3 sees
+        attempt 1's objection and attempt 2's. Dropping the older ones invites
+        the classic regression — the agent fixes the newest complaint by undoing
+        the fix for the oldest — and would make the reviewer restate every
+        surviving objection in every rejection, which is work the record has
+        already done. The growth is bounded by the number of attempts, which is
+        a human decision each time, and the token budget bounds it again
+        (:class:`NodeLimits`).
+
+        Nothing is composed for a node that was never rejected: its prompt is
+        byte-for-byte what was authored.
+        """
+        rejections = [
+            review
+            for review in await repository.list_reviews(node.id)
+            if review.decision is ReviewDecision.REJECTED and review.feedback
+        ]
+        if not rejections:
+            return node.prompt
+        parts = [node.prompt, "", REVIEW_FEEDBACK_HEADER]
+        for review in rejections:
+            parts.append(f"### Attempt {review.attempt}")
+            parts.append(str(review.feedback))
+        return "\n\n".join(parts)
 
     @asynccontextmanager
     async def _node_slot(self, node_id: NodeId) -> AsyncIterator[None]:
@@ -1079,7 +1297,10 @@ class NodeRunService:
             spec = RunSpec(
                 run_id=run_id,
                 cwd=node.worktree_path,
-                prompt=node.prompt,
+                # Authored prompt plus every rejection so far, composed here and
+                # nowhere else so that a run started by the scheduler, by the
+                # Phase 1 REST path or by a retry all carry the same history.
+                prompt=await self._compose_prompt(repository, node),
                 model=node.model,
                 env=self._environment,
                 launcher=tuple(build_launcher(self._policy_factory())),
@@ -1130,6 +1351,18 @@ class NodeRunService:
                     trusted=finalized.trusted,
                     permission_denials=projected.permission_denial_count,
                     changed=commit.committed,
+                )
+                # `design.md` §9's check_acceptance(node), in its place in the
+                # sketch — after execute, before the gate — and doing what §9
+                # says it does: recording each criterion against an outcome,
+                # never evaluating it. Unconditional, including for a run that
+                # failed: the value of the snapshot is that it says what was
+                # being asked of *this* attempt, and that is as true of an
+                # attempt nobody will review as of one somebody will.
+                await repository.record_acceptance_criteria(
+                    node_id=node.id,
+                    attempt=run.attempt,
+                    criteria=node.acceptance_criteria,
                 )
                 merge: MergeResult | None = None
                 next_status = disposition.node_status
@@ -1434,6 +1667,30 @@ class NodeRunService:
             await self.get_session(session_id)
             return tuple(await repository.list_nodes(session_id))
 
+    async def acceptance_results(
+        self, node_id: NodeId, *, attempt: int | None = None
+    ) -> tuple[AcceptanceResult, ...]:
+        """The acceptance checklist, per attempt (`design.md` §8's panel).
+
+        Every criterion the node has been judged on, oldest attempt first, with
+        the outcome a human gave it — or ``unevaluated``, which is the honest
+        answer both before anyone has looked and forever after under
+        ``auto_merge``.
+        """
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            await self._require_node(repository, node_id)
+            return tuple(
+                await repository.list_acceptance_results(node_id, attempt=attempt)
+            )
+
+    async def reviews(self, node_id: NodeId) -> tuple[NodeReview, ...]:
+        """This node's approvals and rejections, oldest attempt first."""
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            await self._require_node(repository, node_id)
+            return tuple(await repository.list_reviews(node_id))
+
     async def list_runs(self, session_id: SessionId) -> tuple[Run, ...]:
         async with self._database.session() as db_session:
             repository = Repository(db_session)
@@ -1516,14 +1773,18 @@ SingleRunService = NodeRunService
 
 __all__ = [
     "DEFAULT_REAPER",
+    "REVIEW_FEEDBACK_HEADER",
+    "AcceptanceResult",
     "CreatedGraph",
     "CreatedSession",
+    "CriterionOutcome",
     "InvalidGraphError",
     "InvalidTransitionError",
     "NodeExecution",
     "NodeLimit",
     "NodeLimits",
     "NodePreparation",
+    "NodeReview",
     "NodeRunService",
     "OrchestratorError",
     "OrphanResolution",
@@ -1531,6 +1792,7 @@ __all__ = [
     "ProcessLiveness",
     "ProcessReaper",
     "ResourceNotFoundError",
+    "ReviewDecision",
     "RunOutcome",
     "RunSummary",
     "SingleRunService",
