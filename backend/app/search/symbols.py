@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 from collections.abc import Sequence
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
@@ -99,55 +99,16 @@ class TreeSitterSymbolExtractor:
         return None
 
     def extract(self, language: str, source: bytes) -> tuple[ExtractedSymbol, ...]:
-        grammar, query = _grammar_and_query(language)
-        tree = Parser(grammar).parse(source)
-        matches = QueryCursor(query).matches(tree.root_node)
-        found: list[ExtractedSymbol] = []
-        seen: set[tuple[str, str, str, int, int, int, int]] = set()
-        for _, captures in matches:
-            names = captures.get("name", [])
-            if not names:
-                continue
-            name_node = names[0]
-            name = source[name_node.start_byte : name_node.end_byte].decode(
-                "utf-8", errors="replace"
-            )
-            for capture in captures:
-                if capture.startswith("definition."):
-                    role = "definition"
-                elif capture.startswith("reference."):
-                    role = "reference"
-                else:
-                    continue
-                kind = capture.split(".", 1)[1]
-                key = (
-                    name,
-                    kind,
-                    role,
-                    name_node.start_point.row,
-                    name_node.start_point.column,
-                    name_node.end_point.row,
-                    name_node.end_point.column,
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                found.append(
-                    ExtractedSymbol(
-                        name=name,
-                        kind=kind,
-                        role=role,
-                        start_line=name_node.start_point.row + 1,
-                        start_column=name_node.start_point.column + 1,
-                        end_line=name_node.end_point.row + 1,
-                        end_column=name_node.end_point.column + 1,
-                    )
-                )
-        return tuple(found)
+        # tree-sitter 0.26's native QueryCursor can segfault after several
+        # heterogeneous source files in one process. Each changed file is
+        # already indexed off the event loop; recycling a one-worker child after
+        # this single task contains a native crash instead of taking down the
+        # orchestrator and keeps unchanged files on the hash-reuse fast path.
+        with ProcessPoolExecutor(max_workers=1, max_tasks_per_child=1) as pool:
+            return pool.submit(_extract_native, language, source).result()
 
 
-@lru_cache(maxsize=4)
-def _grammar_and_query(language: str) -> tuple[Language, Query]:
+def _extract_native(language: str, source: bytes) -> tuple[ExtractedSymbol, ...]:
     if language == "python":
         grammar = Language(tree_sitter_python.language())
         query_name = "python"
@@ -163,7 +124,51 @@ def _grammar_and_query(language: str) -> tuple[Language, Query]:
     else:  # pragma: no cover - guarded by language_for_path
         raise ValueError(f"unsupported symbol language: {language}")
     query_path = Path(__file__).parent / "queries" / query_name / "tags.scm"
-    return grammar, Query(grammar, query_path.read_text(encoding="utf-8"))
+    query = Query(grammar, query_path.read_text(encoding="utf-8"))
+    tree = Parser(grammar).parse(source)
+    matches = QueryCursor(query).matches(tree.root_node)
+    found: list[ExtractedSymbol] = []
+    seen: set[tuple[str, str, str, int, int, int, int]] = set()
+    for _, captures in matches:
+        names = captures.get("name", [])
+        if not names:
+            continue
+        name_node = names[0]
+        name = source[name_node.start_byte : name_node.end_byte].decode(
+            "utf-8", errors="replace"
+        )
+        for capture in captures:
+            if capture.startswith("definition."):
+                role = "definition"
+            elif capture.startswith("reference."):
+                role = "reference"
+            else:
+                continue
+            kind = capture.split(".", 1)[1]
+            key = (
+                name,
+                kind,
+                role,
+                name_node.start_point.row,
+                name_node.start_point.column,
+                name_node.end_point.row,
+                name_node.end_point.column,
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append(
+                ExtractedSymbol(
+                    name=name,
+                    kind=kind,
+                    role=role,
+                    start_line=name_node.start_point.row + 1,
+                    start_column=name_node.start_point.column + 1,
+                    end_line=name_node.end_point.row + 1,
+                    end_column=name_node.end_point.column + 1,
+                )
+            )
+    return tuple(found)
 
 
 class SymbolIndexService:
