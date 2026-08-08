@@ -18,7 +18,7 @@ from app.search.agent import (
     SearchLimitReason,
 )
 from app.search.symbols import SymbolIndexService
-from app.search.tools import CodeSearchService
+from app.search.tools import CodeSearchService, FileLine, file_line_hash
 from app.storage.db import Database, upgrade_database_sync
 from app.storage.repository import Repository
 
@@ -189,6 +189,12 @@ async def test_multi_hop_answer_contains_only_read_citations(tmp_path: Path) -> 
         result = await agent.answer(session_id, "Explain the recurring discount rule")
         assert result.complete is True
         assert len(result.claims) == 2
+        assert result.claims[0].citations[0].content_hash == file_line_hash(
+            (
+                FileLine(2, "    if customer.is_recurring():"),
+                FileLine(3, "        return 0.10"),
+            )
+        )
         assert [(span.path, span.line, span.end_line) for span in result.evidence] == [
             ("customer.py", 1, 3),
             ("rules.py", 1, 4),

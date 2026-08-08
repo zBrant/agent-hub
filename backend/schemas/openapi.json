@@ -105,6 +105,10 @@
       },
       "AgentCitationResponse": {
         "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
           "end_line": {
             "title": "End Line",
             "type": "integer"
@@ -121,7 +125,8 @@
         "required": [
           "path",
           "line",
-          "end_line"
+          "end_line",
+          "content_hash"
         ],
         "title": "AgentCitationResponse",
         "type": "object"
@@ -145,6 +150,29 @@
           "citations"
         ],
         "title": "AgentClaimResponse",
+        "type": "object"
+      },
+      "AgentEvidenceResponse": {
+        "properties": {
+          "end_line": {
+            "title": "End Line",
+            "type": "integer"
+          },
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "line",
+          "end_line"
+        ],
+        "title": "AgentEvidenceResponse",
         "type": "object"
       },
       "AgentProcessMetricResponse": {
@@ -231,7 +259,7 @@
           },
           "evidence": {
             "items": {
-              "$ref": "#/components/schemas/AgentCitationResponse"
+              "$ref": "#/components/schemas/AgentEvidenceResponse"
             },
             "title": "Evidence",
             "type": "array"
@@ -717,6 +745,10 @@
       },
       "FileReadResponse": {
         "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
           "lines": {
             "items": {
               "$ref": "#/components/schemas/FileLineResponse"
@@ -736,7 +768,8 @@
         "required": [
           "path",
           "lines",
-          "truncated"
+          "truncated",
+          "content_hash"
         ],
         "title": "FileReadResponse",
         "type": "object"

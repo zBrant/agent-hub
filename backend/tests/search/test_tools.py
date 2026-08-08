@@ -206,6 +206,12 @@ async def test_file_and_directory_reads_cannot_escape_the_worktree(
             (2, "two"),
             (3, "three"),
         ]
+        original_hash = read.content_hash
+        (source / "rules.py").write_text("one\nchanged\nthree\n", encoding="utf-8")
+        changed = await service.read_file(
+            session_id, "src/rules.py", start_line=2, end_line=3
+        )
+        assert changed.content_hash != original_hash
         listing = await service.list_directory(session_id, "src")
         assert [(entry.path, entry.kind) for entry in listing.entries] == [
             ("src/rules.py", "file")

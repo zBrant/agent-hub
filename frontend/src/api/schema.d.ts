@@ -749,6 +749,8 @@ export interface components {
         };
         /** AgentCitationResponse */
         readonly AgentCitationResponse: {
+            /** Content Hash */
+            readonly content_hash: string;
             /** End Line */
             readonly end_line: number;
             /** Line */
@@ -762,6 +764,15 @@ export interface components {
             readonly citations: readonly components["schemas"]["AgentCitationResponse"][];
             /** Text */
             readonly text: string;
+        };
+        /** AgentEvidenceResponse */
+        readonly AgentEvidenceResponse: {
+            /** End Line */
+            readonly end_line: number;
+            /** Line */
+            readonly line: number;
+            /** Path */
+            readonly path: string;
         };
         /** AgentProcessMetricResponse */
         readonly AgentProcessMetricResponse: {
@@ -796,7 +807,7 @@ export interface components {
             /** Complete */
             readonly complete: boolean;
             /** Evidence */
-            readonly evidence: readonly components["schemas"]["AgentCitationResponse"][];
+            readonly evidence: readonly components["schemas"]["AgentEvidenceResponse"][];
             /** Limit Reason */
             readonly limit_reason: string | null;
             /** Message */
@@ -1002,6 +1013,8 @@ export interface components {
         };
         /** FileReadResponse */
         readonly FileReadResponse: {
+            /** Content Hash */
+            readonly content_hash: string;
             /** Lines */
             readonly lines: readonly components["schemas"]["FileLineResponse"][];
             /** Path */

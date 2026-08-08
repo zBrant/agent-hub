@@ -26,6 +26,8 @@ export type SymbolSearch = components["schemas"]["SymbolSearchResponse"];
 export type FileRead = components["schemas"]["FileReadResponse"];
 export type DirectoryList = components["schemas"]["DirectoryListResponse"];
 export type AgentSearch = components["schemas"]["AgentSearchResponse"];
+export type AgentCitation = components["schemas"]["AgentCitationResponse"];
+export type AgentEvidence = components["schemas"]["AgentEvidenceResponse"];
 
 export class ApiError extends Error {
   readonly status: number;

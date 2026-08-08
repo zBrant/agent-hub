@@ -101,6 +101,13 @@ class AgentCitationResponse(BaseModel):
     path: str
     line: int
     end_line: int
+    content_hash: str
+
+
+class AgentEvidenceResponse(BaseModel):
+    path: str
+    line: int
+    end_line: int
 
 
 class AgentClaimResponse(BaseModel):
@@ -122,7 +129,7 @@ class AgentSearchUsageResponse(BaseModel):
 
 class AgentSearchResponse(BaseModel):
     claims: tuple[AgentClaimResponse, ...]
-    evidence: tuple[AgentCitationResponse, ...]
+    evidence: tuple[AgentEvidenceResponse, ...]
     complete: bool
     limit_reason: str | None
     message: str
@@ -143,6 +150,7 @@ class AgentSearchResponse(BaseModel):
                             path=citation.path,
                             line=citation.line,
                             end_line=citation.end_line,
+                            content_hash=citation.content_hash,
                         )
                         for citation in claim.citations
                     ),
@@ -150,7 +158,7 @@ class AgentSearchResponse(BaseModel):
                 for claim in result.claims
             ),
             evidence=tuple(
-                AgentCitationResponse(
+                AgentEvidenceResponse(
                     path=span.path, line=span.line, end_line=span.end_line
                 )
                 for span in result.evidence
@@ -186,6 +194,7 @@ class FileReadResponse(BaseModel):
     path: str
     lines: tuple[FileLineResponse, ...]
     truncated: bool
+    content_hash: str
 
     @classmethod
     def from_result(cls, result: FileReadResult) -> FileReadResponse:
@@ -196,6 +205,7 @@ class FileReadResponse(BaseModel):
                 for line in result.lines
             ),
             truncated=result.truncated,
+            content_hash=result.content_hash,
         )
 
 

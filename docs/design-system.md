@@ -83,6 +83,12 @@ it's a bug.
   --color-token-input:       #4C8DFF;
   --color-token-output:      #7C6BF5;
 
+  /* code search syntax */
+  --color-syntax-keyword: #7C6BF5;
+  --color-syntax-string:  #3DD68C;
+  --color-syntax-number:  #F5A524;
+  --color-syntax-comment: #6B7280;
+
   /* typography */
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;

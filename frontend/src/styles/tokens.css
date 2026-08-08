@@ -49,6 +49,12 @@
   --color-token-input: #4c8dff;
   --color-token-output: #7c6bf5;
 
+  /* code search syntax roles */
+  --color-syntax-keyword: #7c6bf5;
+  --color-syntax-string: #3dd68c;
+  --color-syntax-number: #f5a524;
+  --color-syntax-comment: #6b7280;
+
   /* typography */
   --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono:

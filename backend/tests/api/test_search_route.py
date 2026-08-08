@@ -81,6 +81,7 @@ print(json.dumps({
         )
         assert read.status_code == 200
         assert read.json()["lines"] == [{"line": 1, "text": "original"}]
+        assert len(read.json()["content_hash"]) == 64
 
         listing = client.get(
             "/api/search/directory", params={"session_id": session_id, "path": "."}

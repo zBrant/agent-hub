@@ -16,7 +16,7 @@ from app.config import Settings
 from app.models.ids import SessionId
 from app.models.pricing import PriceTable, TokenCounts
 from app.search.symbols import SymbolIndexService
-from app.search.tools import CodeSearchService, SearchError
+from app.search.tools import CodeSearchService, FileLine, SearchError, file_line_hash
 
 SYSTEM_PROMPT = """\
 You answer questions about one repository by navigating it with the supplied
@@ -58,6 +58,20 @@ class SubmitAnswerInput(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class ValidatedCitation:
+    path: str
+    line: int
+    end_line: int
+    content_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedClaim:
+    text: str
+    citations: tuple[ValidatedCitation, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class EvidenceSpan:
     path: str
     line: int
@@ -85,7 +99,7 @@ class SearchUsage:
 
 @dataclass(frozen=True, slots=True)
 class SearchAnswer:
-    claims: tuple[AnswerClaim, ...]
+    claims: tuple[ValidatedClaim, ...]
     evidence: tuple[EvidenceSpan, ...]
     complete: bool
     limit_reason: SearchLimitReason | None
@@ -309,7 +323,7 @@ class SearchAgent:
             raise ValueError("search question must not be empty")
         await self._tools.validate_target(session_id)
         messages: list[MessageParam] = [{"role": "user", "content": question}]
-        evidence: dict[str, set[int]] = {}
+        evidence: dict[str, dict[int, str]] = {}
         usage = SearchUsage(
             model=self._settings.search_model,
             counts=TokenCounts(),
@@ -403,7 +417,7 @@ class SearchAgent:
                     answer, validation_error = _validate_answer(call.input, evidence)
                     if answer is not None:
                         return SearchAnswer(
-                            claims=tuple(answer.claims),
+                            claims=answer,
                             evidence=_evidence_spans(evidence),
                             complete=True,
                             limit_reason=None,
@@ -415,7 +429,7 @@ class SearchAgent:
                         )
                     payload = {"error": validation_error}
                     is_error = True
-                    read_lines: dict[str, set[int]] = {}
+                    read_lines: dict[str, dict[int, str]] = {}
                 else:
                     payload, is_error, read_lines = await self._execute(
                         session_id, call
@@ -434,7 +448,7 @@ class SearchAgent:
                     )
                 bytes_read += size
                 for path, lines in read_lines.items():
-                    evidence.setdefault(path, set()).update(lines)
+                    evidence.setdefault(path, {}).update(lines)
                 results.append(
                     {
                         "type": "tool_result",
@@ -457,9 +471,9 @@ class SearchAgent:
 
     async def _execute(
         self, session_id: SessionId, call: ModelToolCall
-    ) -> tuple[dict[str, Any], bool, dict[str, set[int]]]:
+    ) -> tuple[dict[str, Any], bool, dict[str, dict[int, str]]]:
         values = dict(call.input)
-        read: dict[str, set[int]] = {}
+        read: dict[str, dict[int, str]] = {}
         result: Any
         try:
             if call.name == "search_text":
@@ -472,7 +486,7 @@ class SearchAgent:
                 result = await self._symbols.find_references(session_id, **values)
             elif call.name == "read_file":
                 result = await self._tools.read_file(session_id, **values)
-                read[result.path] = {line.line for line in result.lines}
+                read[result.path] = {line.line: line.text for line in result.lines}
             elif call.name == "list_directory":
                 result = await self._tools.list_directory(session_id, **values)
             else:
@@ -485,7 +499,7 @@ class SearchAgent:
         self,
         reason: SearchLimitReason,
         message: str,
-        evidence: Mapping[str, set[int]],
+        evidence: Mapping[str, Mapping[int, str]],
         turns: int,
         tool_calls: int,
         bytes_read: int,
@@ -505,27 +519,43 @@ class SearchAgent:
 
 
 def _validate_answer(
-    raw: Mapping[str, Any], evidence: Mapping[str, set[int]]
-) -> tuple[SubmitAnswerInput | None, str | None]:
+    raw: Mapping[str, Any], evidence: Mapping[str, Mapping[int, str]]
+) -> tuple[tuple[ValidatedClaim, ...] | None, str | None]:
     try:
         answer = SubmitAnswerInput.model_validate(raw)
     except ValidationError as error:
         return None, f"answer schema is invalid: {error.errors(include_url=False)}"
+    claims: list[ValidatedClaim] = []
     for claim in answer.claims:
+        citations: list[ValidatedCitation] = []
         for citation in claim.citations:
             if citation.end_line < citation.line:
                 return None, f"citation range is reversed: {citation.path}"
-            available = evidence.get(citation.path, set())
+            available = evidence.get(citation.path, {})
             required = set(range(citation.line, citation.end_line + 1))
-            if not required.issubset(available):
+            if not required.issubset(available.keys()):
                 return None, (
                     "citation was not read with read_file: "
                     f"{citation.path}:{citation.line}-{citation.end_line}"
                 )
-    return answer, None
+            cited_lines = tuple(
+                FileLine(line=line, text=available[line]) for line in sorted(required)
+            )
+            citations.append(
+                ValidatedCitation(
+                    path=citation.path,
+                    line=citation.line,
+                    end_line=citation.end_line,
+                    content_hash=file_line_hash(cited_lines),
+                )
+            )
+        claims.append(ValidatedClaim(text=claim.text, citations=tuple(citations)))
+    return tuple(claims), None
 
 
-def _evidence_spans(evidence: Mapping[str, set[int]]) -> tuple[EvidenceSpan, ...]:
+def _evidence_spans(
+    evidence: Mapping[str, Mapping[int, str]],
+) -> tuple[EvidenceSpan, ...]:
     spans: list[EvidenceSpan] = []
     for path in sorted(evidence):
         lines = sorted(evidence[path])
@@ -585,5 +615,7 @@ __all__ = [
     "SearchAnswer",
     "SearchLimitReason",
     "SearchUsage",
+    "ValidatedCitation",
+    "ValidatedClaim",
     "create_search_agent",
 ]

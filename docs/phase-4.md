@@ -134,7 +134,7 @@ Deterministic tests exercise a multi-hop business rule, reject a citation that
 was never read, and independently exhaust every ceiling without contacting the
 model provider.
 
-### E5 — Cited search UI
+### E5 — Cited search UI ✅
 
 Replace the placeholder with session selection, streaming chat, citation chips,
 and a syntax-highlighted side panel. Clicking every claim opens the exact file
@@ -142,6 +142,23 @@ and line range; keyboard navigation and narrow-screen layout remain usable.
 
 **Done when:** a response cannot render an unlinked citation, stale files are
 identified, and route tests prove citation-to-snippet navigation.
+
+**Result:** completed on 2026-08-08. The search route now selects any persisted
+session, keeps a local question/answer conversation, renders a submitted turn
+immediately with active navigation status, and publishes answer claims
+atomically only after the backend validates them. Unvalidated model prose is
+deliberately never token-streamed into the claim surface. A second frontend
+guard suppresses any malformed claim that arrives without a citation.
+
+Every citation is a keyboard-focusable `path:line-range` chip. Opening one
+re-reads exactly that range and displays line numbers with token-colored syntax
+in a responsive side panel. The horizontal desktop split becomes vertical on
+narrow screens; both layouts are keyboard resizable and persist independently
+through `react-resizable-panels`. The agent fingerprints the exact numbered
+line content it cited, and the file endpoint fingerprints the later read, so a
+changed or missing source is explicitly marked stale instead of silently shown
+as supporting evidence. Route tests cover exact citation-to-snippet arguments,
+changed content, and rejection of an unlinked server claim.
 
 ### E6 — Semantic fallback and acceptance
 

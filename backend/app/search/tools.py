@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -81,6 +82,7 @@ class FileReadResult:
     path: str
     lines: tuple[FileLine, ...]
     truncated: bool
+    content_hash: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,7 +302,24 @@ def _read_file_sync(
                 break
             lines.append(FileLine(line=number, text=rendered))
             rendered_bytes += line_bytes
-    return FileReadResult(path=display, lines=tuple(lines), truncated=truncated)
+    result_lines = tuple(lines)
+    return FileReadResult(
+        path=display,
+        lines=result_lines,
+        truncated=truncated,
+        content_hash=file_line_hash(result_lines),
+    )
+
+
+def file_line_hash(lines: Sequence[FileLine]) -> str:
+    """Fingerprint an exact numbered line range for stale-citation detection."""
+    digest = hashlib.sha256()
+    for line in lines:
+        encoded = line.text.encode("utf-8")
+        digest.update(line.line.to_bytes(8, byteorder="big", signed=False))
+        digest.update(len(encoded).to_bytes(8, byteorder="big", signed=False))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 def _list_directory_sync(root: Path, value: str, limit: int) -> DirectoryListResult:
@@ -472,4 +491,5 @@ __all__ = [
     "SearchToolUnavailable",
     "TextMatch",
     "TextSearchResult",
+    "file_line_hash",
 ]
