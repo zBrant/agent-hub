@@ -12,7 +12,7 @@ database, run logs, or workspaces.
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,6 +20,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_ROOT = Path.home() / ".agenthub"
 # Local MVP source checkout: pricing.yaml is version-controlled beside design.md.
 DEFAULT_PRICING_PATH = Path(__file__).resolve().parents[2] / "pricing.yaml"
+
+#: `output_config.effort` — how much depth the planner's call is allowed. Spelled
+#: out here rather than imported from the SDK so nothing below `orchestrator/`
+#: has to know which vendor library the planner uses.
+type PlannerEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class Settings(BaseSettings):
@@ -71,6 +76,36 @@ class Settings(BaseSettings):
     # against it: a node whose base is a fold of five parents is doing git work,
     # not burning an agent. `None` disables the cutoff.
     node_timeout_s: Annotated[float, Field(gt=0)] | None = Field(default=3600.0)
+
+    # --- planner (`design.md` §8) --------------------------------------------
+    #
+    # The planner is the one component that calls a model API directly instead
+    # of driving a harness, so it is the one component whose model, depth and
+    # ceiling are ours to choose rather than the CLI's.
+    planner_model: str = Field(default="claude-opus-5")
+    # Depth, not length. `high` because a graph is decided once and executed for
+    # hours: the difference between a good decomposition and a mediocre one is
+    # worth more than the tokens, and a bad graph costs a human a merge conflict
+    # per wrong edge (`design.md` §12).
+    planner_effort: PlannerEffort = Field(default="high")
+    # Caps thinking *and* response text together, so this is not "how long may a
+    # plan be" — a ten-node plan is a few thousand tokens and the rest is
+    # headroom for adaptive thinking. The upper bound is the SDK's: a
+    # non-streaming request whose max_tokens implies more than ten minutes of
+    # generation raises rather than sending, and 21_333 is where that lands.
+    planner_max_tokens: Annotated[int, Field(ge=2048, le=21_000)] = Field(
+        default=16_000
+    )
+    # `design.md` §8's bounded correction loop, counted as total attempts: one
+    # plan plus two corrections. A model that cannot close a two-node cycle in
+    # three tries will not close it in thirty, and each try is real money.
+    planner_max_attempts: Annotated[int, Field(ge=1, le=5)] = Field(default=3)
+    # Which adapter a node gets when the planner suggests a harness that is not
+    # installed. A configured *value*, not a conditional: nothing branches on
+    # it (invariant 1), and `design.md` §8 makes the harness the operator's
+    # choice in the editable proposal anyway — so an unusable suggestion is
+    # worth a default, never a failed plan.
+    planner_fallback_harness: str = Field(default="claude-code")
 
     @property
     def db_path(self) -> Path:

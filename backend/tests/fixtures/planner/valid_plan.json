@@ -1,0 +1,30 @@
+{
+  "id": "msg_01PlannerFixture000000001",
+  "type": "message",
+  "role": "assistant",
+  "model": "claude-opus-5",
+  "content": [
+    {
+      "type": "thinking",
+      "thinking": "The objective needs a schema before the endpoints, and the UI after the endpoints. Tests touch their own files so they can be a separate activity.",
+      "signature": "fixture-signature-not-verified"
+    },
+    {
+      "type": "text",
+      "text": "{\"title\":\"JWT authentication for the backend API\",\"nodes\":[{\"id\":\"db_schema\",\"title\":\"Add the user and refresh-token tables\",\"description\":\"Create an Alembic revision adding `user` and `refresh_token`. `user` holds id, email (unique), password_hash and created_ms; `refresh_token` holds id, user_id, expires_ms and a revoked flag. Define the SQLModel classes in backend/app/models/tables.py. Do not touch anything under backend/app/api/.\",\"depends_on\":[],\"acceptance_criteria\":[\"alembic upgrade head applies cleanly on an empty database\",\"alembic downgrade -1 removes both tables\",\"uv run mypy app passes\"],\"suggested_harness\":\"claude-code\",\"suggested_model\":\"claude-sonnet-5\",\"estimated_effort\":\"small\",\"touches\":[\"backend/app/models/tables.py\",\"backend/migrations/versions/**\"]},{\"id\":\"auth_api\",\"title\":\"Implement the authentication endpoints\",\"description\":\"Add POST /api/auth/login, POST /api/auth/refresh and POST /api/auth/logout in a new backend/app/api/auth.py, registered on the app router. Issue a 15-minute access token and a 30-day refresh token persisted in the refresh_token table added by the schema activity. Passwords are verified against user.password_hash.\",\"depends_on\":[\"db_schema\"],\"acceptance_criteria\":[\"POST /api/auth/login with valid credentials returns 200 and both tokens\",\"POST /api/auth/login with a wrong password returns 401 and no token\",\"A revoked refresh token is rejected with 401\"],\"suggested_harness\":\"claude-code\",\"suggested_model\":\"claude-opus-5\",\"estimated_effort\":\"medium\",\"touches\":[\"backend/app/api/auth.py\",\"backend/app/api/__init__.py\"]},{\"id\":\"auth_ui\",\"title\":\"Add the login route to the frontend\",\"description\":\"Add frontend/src/routes/Login.tsx and register it at /login in the router. It posts to /api/auth/login, stores the access token in the auth store and redirects to /dashboard on success, showing the server's message on 401.\",\"depends_on\":[\"auth_api\"],\"acceptance_criteria\":[\"pnpm typecheck passes\",\"A failed login shows an error and does not navigate\"],\"suggested_harness\":\"codex\",\"suggested_model\":\"gpt-5.6-terra\",\"estimated_effort\":\"medium\",\"touches\":[\"frontend/src/routes/Login.tsx\",\"frontend/src/router.tsx\"]},{\"id\":\"auth_tests\",\"title\":\"Cover the authentication flow end to end\",\"description\":\"Add backend/tests/api/test_auth.py covering login, refresh, logout and revocation, and a Playwright spec at frontend/e2e/login.spec.ts covering a successful and a failed login. Only add files under those two paths.\",\"depends_on\":[\"auth_api\",\"auth_ui\"],\"acceptance_criteria\":[\"uv run pytest tests/api/test_auth.py passes\",\"The Playwright login spec passes against a running dev server\"],\"suggested_harness\":\"claude-code\",\"suggested_model\":\"claude-haiku-4-5\",\"estimated_effort\":\"small\",\"touches\":[\"backend/tests/api/test_auth.py\",\"frontend/e2e/login.spec.ts\"]}]}"
+    }
+  ],
+  "stop_reason": "end_turn",
+  "stop_sequence": null,
+  "usage": {
+    "input_tokens": 1842,
+    "output_tokens": 1507,
+    "cache_read_input_tokens": 24576,
+    "cache_creation_input_tokens": 3072,
+    "cache_creation": {
+      "ephemeral_5m_input_tokens": 3072,
+      "ephemeral_1h_input_tokens": 0
+    },
+    "service_tier": "standard"
+  }
+}

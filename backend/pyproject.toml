@@ -23,6 +23,11 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.19.0",
     "pydantic-settings>=2.14.2",
+    # The planner calls the Anthropic API directly (design.md §8): only the SDK
+    # offers `messages.parse(output_format=<pydantic model>)`, and no harness CLI
+    # has an equivalent of `output_config.format` — routing the planner through
+    # one would mean prompting for JSON and parsing prose.
+    "anthropic>=0.121.0",
 ]
 
 [project.scripts]
