@@ -313,7 +313,7 @@ difference. Every drop now raises `ReplayGapError` instead.
 
 ---
 
-### C7 — Acceptance checks and the human gate
+### C7 — Acceptance checks and the human gate ✅
 
 **A gap in this plan, found while building C1:** `design.md` §9's scheduler
 sketch calls `check_acceptance(node)` and §8's `awaiting_review` panel shows
@@ -321,9 +321,9 @@ sketch calls `check_acceptance(node)` and §8's `awaiting_review` panel shows
 running those checks. It belongs here, ahead of the gate, because the gate is
 what consumes the results.
 
-So C7 first closes the `acceptance_criteria` column (array, not a joined
-string — see C1's result), then runs each criterion and records a per-criterion
-outcome, then gates on it.
+So C7 runs each criterion and records a per-criterion outcome, then gates on
+it. (The `acceptance_criteria` column was closed separately, by revision
+`dab2c49d6ccb`, before this activity started.)
 
 `auto_merge` off means a finished node stops at `awaiting_review` (invariant 6:
 the planner's graph is a proposal, and nothing runs — or merges — before
@@ -335,7 +335,41 @@ new `Run`, never a mutated one.
 
 **Done when:** each acceptance criterion produces its own pass/fail; with
 `auto_merge` off, a completed node blocks its dependents until approved; and a
-rejection's feedback text is present in the retry's `meta.json` argv or prompt.
+rejection's feedback reaches the retry's prompt.
+
+**Result:** completed on 2026-08-07, 25 tests. Two tables keyed
+`(node_id, attempt)`, hanging off `node` and off nothing else.
+
+That key is the whole design. Replay calls `delete_run()` and rebuilds, so a
+foreign key onto `run` would take a human's verdict out with `ON DELETE
+CASCADE` — invariant 4 lets replay discard *derived* rows, and a judgement is
+authored input. Per attempt rather than per node because a retry is judged
+against a different diff.
+
+Outcomes are three states, not two-plus-absence: an absent row cannot
+distinguish "not looked at yet" from "the criterion did not exist at run time"
+from "nobody was ever going to look". Writing the snapshot for every run makes
+§9's stated limitation visible in the data — a merged commit with `unevaluated`
+rows and no review row *is* an unattended graph merging on the harness's own
+verdict.
+
+Rejection feedback accumulates across attempts and never touches
+`node.prompt`. An agent shown only the newest complaint fixes it by undoing the
+fix for the oldest.
+
+**This activity's done-when was half-impossible as written.** It asked for the
+feedback in the retry's `meta.json` "argv or prompt" — but `argv` deliberately
+never carries the prompt, because argv is visible in `ps`
+(`docs/conventions.md` §6), so for any real harness `meta.json` cannot hold it.
+The assertion is on the `RunSpec` the adapter was handed. If reproducibility
+wants the composed prompt durable, that is a new `meta.json` field and a
+`storage/` change.
+
+**Left for C9 to decide, not a bug:** `reject_node` runs the retry
+synchronously, so an HTTP reject would hold the request for a whole agent run.
+The persisted state is already correct if the process dies mid-way — the
+verdict is written before the transition to `ready` — so C9 can schedule it
+instead.
 
 ---
 

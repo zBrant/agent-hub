@@ -290,12 +290,24 @@ is no per-token billing. The dashboard must say "estimated equivalent cost", not
 
 ```
 Session ──1:N── Node ──1:N── Run ──1:N── Event
-   │              │  └─1:N── NodeDependency (the edges)
+   │              │  ├─1:N── NodeDependency   (the edges)
+   │              │  ├─1:N── AcceptanceResult (one per criterion per attempt)
+   │              │  └─1:N── NodeReview       (one per attempt)
    │              │
    └─ status: planning | running | paused | done | failed
                   └─ status: pending | ready | running |
                              awaiting_review | blocked | done | failed | skipped
 ```
+
+**The reviewer's record hangs off `Node`, keyed by `(node_id, attempt)` — never
+off `Run`.** Replay deletes and rebuilds the run projection, so a foreign key
+onto `Run` would take a human's verdict with it on `ON DELETE CASCADE`. Replay
+may discard *derived* rows; a judgement is authored input. `attempt` survives
+the rebuild because `meta.json` pins it.
+
+Keyed per attempt rather than per node because a retry is judged against a
+different diff: carrying the previous verdict forward would be a claim about
+code that no longer exists.
 
 **There is no `Graph` entity.** It would sit 1:1 with `Session`, carry no column
 of its own, and add a join to the query the scheduler runs most often. The
