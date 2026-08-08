@@ -107,6 +107,22 @@ class Settings(BaseSettings):
     # worth a default, never a failed plan.
     planner_fallback_harness: str = Field(default="claude-code")
 
+    # --- agentic code search (`design.md` §8, Phase 4 E4) -------------------
+    # These are independent ceilings: raising one must never disable another.
+    search_model: str = Field(default="claude-sonnet-5")
+    search_max_output_tokens: Annotated[int, Field(ge=256, le=16_000)] = Field(
+        default=4_096
+    )
+    search_max_turns: Annotated[int, Field(ge=1, le=32)] = Field(default=8)
+    search_max_tool_calls: Annotated[int, Field(ge=1, le=100)] = Field(default=24)
+    search_max_bytes: Annotated[int, Field(ge=1_024, le=8_388_608)] = Field(
+        default=262_144
+    )
+    # All four token fields, including cache reads and writes (invariant 3).
+    search_max_tokens: Annotated[int, Field(ge=1_024, le=10_000_000)] = Field(
+        default=250_000
+    )
+
     @property
     def db_path(self) -> Path:
         return self.database_path or self.root / "agenthub.db"

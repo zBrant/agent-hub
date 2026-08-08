@@ -25,6 +25,7 @@ export type StructuralSearch = components["schemas"]["TextSearchResponse"];
 export type SymbolSearch = components["schemas"]["SymbolSearchResponse"];
 export type FileRead = components["schemas"]["FileReadResponse"];
 export type DirectoryList = components["schemas"]["DirectoryListResponse"];
+export type AgentSearch = components["schemas"]["AgentSearchResponse"];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -109,6 +110,11 @@ function queryString(
 }
 
 export const api = {
+  answerSearchQuestion: (sessionId: string, question: string) =>
+    request<AgentSearch>("/api/search/answer", {
+      method: "POST",
+      ...jsonBody({ session_id: sessionId, question }),
+    }),
   searchText: (
     sessionId: string,
     pattern: string,

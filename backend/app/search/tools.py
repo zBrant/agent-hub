@@ -114,6 +114,10 @@ class CodeSearchService:
         self._sg_binary = sg_binary
         self._timeout_s = timeout_s
 
+    async def validate_target(self, session_id: SessionId) -> None:
+        """Fail before an agent spends a model turn on an invalid session."""
+        await self._integration_root(session_id)
+
     async def search_text(
         self,
         session_id: SessionId,

@@ -24,6 +24,7 @@ from app.models.tables import Node
 from app.orchestrator.planner import create_planner
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
+from app.search.agent import create_search_agent
 from app.search.symbols import SymbolIndexManager, SymbolIndexService
 from app.search.tools import CodeSearchService
 from app.storage.db import Database, upgrade_database
@@ -71,11 +72,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.planner = planner
     app.state.dashboard = DashboardService(database)
-    app.state.search = CodeSearchService(database)
+    code_search = CodeSearchService(database)
+    app.state.search = code_search
     symbols = SymbolIndexService(database)
     symbol_manager = SymbolIndexManager(database, symbols)
     app.state.symbols = symbols
     app.state.symbol_manager = symbol_manager
+    search_agent = create_search_agent(
+        tools=code_search, symbols=symbols, settings=settings, prices=prices
+    )
+    app.state.search_agent = search_agent
     minute_writer = SystemMinuteWriter(database)
 
     async def publish_system_snapshot(snapshot: SystemSnapshot) -> None:
@@ -105,6 +111,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # must not prevent scheduler/planner cleanup or database disposal.
             log.exception("metrics.minute_flush_failed")
         await scheduler.close()
+        await search_agent.close()
         await planner.close()
         await database.dispose()
 

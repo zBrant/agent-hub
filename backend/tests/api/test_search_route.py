@@ -103,3 +103,16 @@ print(json.dumps({
             ).status_code
             == 404
         )
+        unanswered = client.post(
+            "/api/search/answer",
+            json={
+                "session_id": "sess_missing",
+                "question": "Where is the business rule enforced?",
+            },
+        )
+        assert unanswered.status_code == 404
+        blank = client.post(
+            "/api/search/answer",
+            json={"session_id": session_id, "question": "   "},
+        )
+        assert blank.status_code == 422

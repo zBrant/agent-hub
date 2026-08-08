@@ -105,7 +105,7 @@ deletion file-local. `/api/search/symbols` and `/api/search/references` expose
 bounded, generated citation contracts, and duplicate definitions are returned
 as separate ordered matches.
 
-### E4 — Agentic search loop
+### E4 — Agentic search loop ✅
 
 Give a bounded model loop the text, structural, symbol, reference, file, and
 directory tools. The model decides which evidence to gather and must return
@@ -115,6 +115,24 @@ and model tokens all have independent ceilings.
 **Done when:** a multi-hop business-rule question is answered from tool evidence,
 an unsupported claim is rejected, and exhausting any ceiling ends with a useful
 partial result rather than an unbounded loop.
+
+**Result:** completed on 2026-08-08. A lifespan-owned Anthropic client drives a
+manual tool loop over all six repository-navigation primitives. A seventh,
+strict `submit_answer` tool is the only successful exit: each atomic claim must
+carry citations whose complete line ranges are present in an evidence ledger
+populated exclusively by successful `read_file` results. Search previews,
+symbol matches, ordinary assistant prose, malformed answers, and unread or
+reversed ranges can therefore guide another turn but cannot become an answer.
+
+Model turns, tool calls, UTF-8 tool-result bytes, and cumulative four-field
+model tokens have independent configurable ceilings. Every early exit returns
+its typed reason, counters, usage and the compact ranges already read, without
+promoting unsupported prose. Token cost is captured against the pinned price
+table during the request. The REST response and generated frontend client expose
+the validated claims, citations, partial evidence and all limit/usage metadata.
+Deterministic tests exercise a multi-hop business rule, reject a citation that
+was never read, and independently exhaust every ceiling without contacting the
+model provider.
 
 ### E5 — Cited search UI
 

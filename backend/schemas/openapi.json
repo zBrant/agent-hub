@@ -103,6 +103,50 @@
         "title": "ActiveSessionMetricResponse",
         "type": "object"
       },
+      "AgentCitationResponse": {
+        "properties": {
+          "end_line": {
+            "title": "End Line",
+            "type": "integer"
+          },
+          "line": {
+            "title": "Line",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "line",
+          "end_line"
+        ],
+        "title": "AgentCitationResponse",
+        "type": "object"
+      },
+      "AgentClaimResponse": {
+        "properties": {
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/AgentCitationResponse"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "citations"
+        ],
+        "title": "AgentClaimResponse",
+        "type": "object"
+      },
       "AgentProcessMetricResponse": {
         "properties": {
           "cpu_percent": {
@@ -144,6 +188,153 @@
           "process_count"
         ],
         "title": "AgentProcessMetricResponse",
+        "type": "object"
+      },
+      "AgentSearchRequest": {
+        "properties": {
+          "question": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Question",
+            "type": "string"
+          },
+          "session_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "question"
+        ],
+        "title": "AgentSearchRequest",
+        "type": "object"
+      },
+      "AgentSearchResponse": {
+        "properties": {
+          "bytes_read": {
+            "title": "Bytes Read",
+            "type": "integer"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/AgentClaimResponse"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/AgentCitationResponse"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "limit_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Limit Reason"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "tool_calls": {
+            "title": "Tool Calls",
+            "type": "integer"
+          },
+          "turns": {
+            "title": "Turns",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/AgentSearchUsageResponse"
+          }
+        },
+        "required": [
+          "claims",
+          "evidence",
+          "complete",
+          "limit_reason",
+          "message",
+          "turns",
+          "tool_calls",
+          "bytes_read",
+          "usage"
+        ],
+        "title": "AgentSearchResponse",
+        "type": "object"
+      },
+      "AgentSearchUsageResponse": {
+        "properties": {
+          "cache_read_tokens": {
+            "title": "Cache Read Tokens",
+            "type": "integer"
+          },
+          "cache_write_tokens": {
+            "title": "Cache Write Tokens",
+            "type": "integer"
+          },
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "price_table_version": {
+            "title": "Price Table Version",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "total_tokens": {
+            "title": "Total Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "cache_read_tokens",
+          "cache_write_tokens",
+          "total_tokens",
+          "cost_usd",
+          "price_table_version",
+          "requests"
+        ],
+        "title": "AgentSearchUsageResponse",
         "type": "object"
       },
       "CreateGraphRequest": {
@@ -2158,6 +2349,47 @@
         "summary": "Run Graph",
         "tags": [
           "graphs"
+        ]
+      }
+    },
+    "/api/search/answer": {
+      "post": {
+        "operationId": "answer_question_api_search_answer_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSearchResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Answer Question",
+        "tags": [
+          "search"
         ]
       }
     },

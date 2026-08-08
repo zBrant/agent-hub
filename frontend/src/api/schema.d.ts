@@ -133,6 +133,23 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/search/answer": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Answer Question */
+        readonly post: operations["answer_question_api_search_answer_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/search/directory": {
         readonly parameters: {
             readonly query?: never;
@@ -730,6 +747,22 @@ export interface components {
             readonly total_nodes: number;
             readonly usage: components["schemas"]["MetricUsageResponse"];
         };
+        /** AgentCitationResponse */
+        readonly AgentCitationResponse: {
+            /** End Line */
+            readonly end_line: number;
+            /** Line */
+            readonly line: number;
+            /** Path */
+            readonly path: string;
+        };
+        /** AgentClaimResponse */
+        readonly AgentClaimResponse: {
+            /** Citations */
+            readonly citations: readonly components["schemas"]["AgentCitationResponse"][];
+            /** Text */
+            readonly text: string;
+        };
         /** AgentProcessMetricResponse */
         readonly AgentProcessMetricResponse: {
             /** Cpu Percent */
@@ -746,6 +779,54 @@ export interface components {
             readonly rss_bytes: number;
             /** Uptime Ms */
             readonly uptime_ms: number;
+        };
+        /** AgentSearchRequest */
+        readonly AgentSearchRequest: {
+            /** Question */
+            readonly question: string;
+            /** Session Id */
+            readonly session_id: string;
+        };
+        /** AgentSearchResponse */
+        readonly AgentSearchResponse: {
+            /** Bytes Read */
+            readonly bytes_read: number;
+            /** Claims */
+            readonly claims: readonly components["schemas"]["AgentClaimResponse"][];
+            /** Complete */
+            readonly complete: boolean;
+            /** Evidence */
+            readonly evidence: readonly components["schemas"]["AgentCitationResponse"][];
+            /** Limit Reason */
+            readonly limit_reason: string | null;
+            /** Message */
+            readonly message: string;
+            /** Tool Calls */
+            readonly tool_calls: number;
+            /** Turns */
+            readonly turns: number;
+            readonly usage: components["schemas"]["AgentSearchUsageResponse"];
+        };
+        /** AgentSearchUsageResponse */
+        readonly AgentSearchUsageResponse: {
+            /** Cache Read Tokens */
+            readonly cache_read_tokens: number;
+            /** Cache Write Tokens */
+            readonly cache_write_tokens: number;
+            /** Cost Usd */
+            readonly cost_usd: number | null;
+            /** Input Tokens */
+            readonly input_tokens: number;
+            /** Model */
+            readonly model: string;
+            /** Output Tokens */
+            readonly output_tokens: number;
+            /** Price Table Version */
+            readonly price_table_version: number;
+            /** Requests */
+            readonly requests: number;
+            /** Total Tokens */
+            readonly total_tokens: number;
         };
         /**
          * CreateGraphRequest
@@ -1653,6 +1734,39 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["GraphRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly answer_question_api_search_answer_post: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["AgentSearchRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AgentSearchResponse"];
                 };
             };
             /** @description Validation Error */

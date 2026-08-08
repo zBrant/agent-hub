@@ -5,8 +5,9 @@ from __future__ import annotations
 from typing import Annotated, NoReturn, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, StringConstraints
 
+from app.search.agent import SearchAgent, SearchAnswer
 from app.search.symbols import SymbolIndexService, SymbolSearchResult
 from app.search.tools import (
     CodeSearchService,
@@ -89,6 +90,93 @@ class SymbolSearchResponse(BaseModel):
         )
 
 
+class AgentSearchRequest(BaseModel):
+    session_id: str = Field(min_length=1, max_length=128)
+    question: Annotated[
+        str, StringConstraints(strip_whitespace=True, min_length=1, max_length=8_000)
+    ]
+
+
+class AgentCitationResponse(BaseModel):
+    path: str
+    line: int
+    end_line: int
+
+
+class AgentClaimResponse(BaseModel):
+    text: str
+    citations: tuple[AgentCitationResponse, ...]
+
+
+class AgentSearchUsageResponse(BaseModel):
+    model: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_write_tokens: int
+    total_tokens: int
+    cost_usd: float | None
+    price_table_version: int
+    requests: int
+
+
+class AgentSearchResponse(BaseModel):
+    claims: tuple[AgentClaimResponse, ...]
+    evidence: tuple[AgentCitationResponse, ...]
+    complete: bool
+    limit_reason: str | None
+    message: str
+    turns: int
+    tool_calls: int
+    bytes_read: int
+    usage: AgentSearchUsageResponse
+
+    @classmethod
+    def from_result(cls, result: SearchAnswer) -> AgentSearchResponse:
+        counts = result.usage.counts
+        return cls(
+            claims=tuple(
+                AgentClaimResponse(
+                    text=claim.text,
+                    citations=tuple(
+                        AgentCitationResponse(
+                            path=citation.path,
+                            line=citation.line,
+                            end_line=citation.end_line,
+                        )
+                        for citation in claim.citations
+                    ),
+                )
+                for claim in result.claims
+            ),
+            evidence=tuple(
+                AgentCitationResponse(
+                    path=span.path, line=span.line, end_line=span.end_line
+                )
+                for span in result.evidence
+            ),
+            complete=result.complete,
+            limit_reason=(
+                None if result.limit_reason is None else result.limit_reason.value
+            ),
+            message=result.message,
+            turns=result.turns,
+            tool_calls=result.tool_calls,
+            bytes_read=result.bytes_read,
+            usage=AgentSearchUsageResponse(
+                model=result.usage.model,
+                input_tokens=counts.input_tokens,
+                output_tokens=counts.output_tokens,
+                cache_read_tokens=counts.cache_read_tokens,
+                cache_write_tokens=counts.cache_write_tokens,
+                total_tokens=counts.total,
+                cost_usd=result.usage.cost_usd,
+                price_table_version=result.usage.price_table_version,
+                requests=result.usage.requests,
+            ),
+        )
+
+
 class FileLineResponse(BaseModel):
     line: int
     text: str
@@ -141,6 +229,10 @@ def _symbols(request: Request) -> SymbolIndexService:
     return cast(SymbolIndexService, request.app.state.symbols)
 
 
+def _agent(request: Request) -> SearchAgent:
+    return cast(SearchAgent, request.app.state.search_agent)
+
+
 def _raise_http(error: Exception) -> NoReturn:
     if isinstance(error, SearchTargetNotFound):
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -155,6 +247,22 @@ def _raise_http(error: Exception) -> NoReturn:
     if isinstance(error, SearchTimedOut):
         raise HTTPException(status_code=504, detail=str(error)) from error
     raise error
+
+
+@router.post("/answer", response_model=AgentSearchResponse)
+async def answer_question(
+    request: Request, body: AgentSearchRequest
+) -> AgentSearchResponse:
+    try:
+        result = await _agent(request).answer(body.session_id, body.question)
+    except (
+        SearchTargetNotFound,
+        SearchPathError,
+        SearchToolUnavailable,
+        SearchTimedOut,
+    ) as error:
+        _raise_http(error)
+    return AgentSearchResponse.from_result(result)
 
 
 @router.get("/text", response_model=TextSearchResponse)

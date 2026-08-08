@@ -49,11 +49,11 @@ WebSocket, restart, and UI contracts agree; see
 [`acceptance-phase-3.md`](acceptance-phase-3.md) and
 [`phase-3.md`](phase-3.md).
 
-**Phase 4 is in progress.** E1 through E3 are complete: bounded ripgrep,
-file-read, directory-listing, optional ast-grep, and an incremental offline
-Tree-sitter symbol index are scoped to a session's integration worktree and
-exposed through generated REST/client contracts. E4's bounded agentic search
-loop is next; the cited UI and sqlite-vec fallback follow; see
+**Phase 4 is in progress.** E1 through E4 are complete: bounded ripgrep,
+file-read, directory-listing, optional ast-grep, an incremental offline
+Tree-sitter symbol index, and the evidence-gated agentic loop are scoped to a
+session's integration worktree and exposed through generated REST/client
+contracts. E5's cited search UI is next; the sqlite-vec fallback follows; see
 [`phase-4.md`](phase-4.md).
 
 ## Phases
