@@ -34,10 +34,12 @@ deliberate merge conflict, two NDJSON replays, and database/REST/UI agreement.
 See [`acceptance-phase-2.md`](acceptance-phase-2.md) for the evidence and
 [`phase-2.md`](phase-2.md) for the activity details.
 
-**Phase 3 is in progress.** D1 is complete: the read-only dashboard projection
+**Phase 3 is in progress.** D1–D2 are complete: the read-only dashboard projection
 aggregates four-field usage and ingest-time estimated-equivalent cost by period,
 harness and model, and returns active-session progress through generated REST
-types. D2 — the KPI and active-session UI — is next; see
+types; the dashboard UI renders the selectable KPIs, proportional token mix,
+honest empty/partial cost states, and deep-linked active sessions. D3 — the
+bounded system sampler — is next; see
 [`phase-3.md`](phase-3.md).
 
 ## Phases

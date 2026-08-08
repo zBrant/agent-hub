@@ -1,9 +1,11 @@
 # Design system
 
 **Base:** shadcn/ui on [Base UI](https://base-ui.com) + Tailwind v4.
-**Charts:** [Tremor Raw](https://www.tremor.so/), copied and adapted with its
-palette mapped to the tokens here. Do not install the legacy Tailwind 3
-`@tremor/react` package into this Tailwind 4 application.
+**Charts:** [Tremor Raw](https://www.tremor.so/) for charts with axes and
+tooltips, copied and adapted with its palette mapped to the tokens here. Compact
+one-row proportional bars stay native HTML/CSS; they do not justify shipping
+Recharts. Do not install the legacy Tailwind 3 `@tremor/react` package into this
+Tailwind 4 application.
 **Icons:** `lucide-react`.
 **Theme:** dark-only, high density.
 
@@ -74,6 +76,12 @@ it's a bug.
   --color-done:          #3DD68C;
   --color-failed:        #E5484D;
   --color-skipped:       #4B5563;
+
+  /* token-series charts */
+  --color-token-cache-read:  #3DD68C;
+  --color-token-cache-write: #F5A524;
+  --color-token-input:       #4C8DFF;
+  --color-token-output:      #7C6BF5;
 
   /* typography */
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;

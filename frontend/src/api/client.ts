@@ -17,6 +17,9 @@ export type NodeReview = components["schemas"]["NodeReviewResponse"];
 export type RunOutcome = components["schemas"]["RunOutcomeResponse"];
 export type PlanGraph = components["schemas"]["PlannedGraphResponse"];
 export type PlanGraphRequest = components["schemas"]["PlanGraphRequest"];
+export type Dashboard = components["schemas"]["DashboardResponse"];
+export type DashboardPeriod = components["schemas"]["DashboardPeriod"];
+export type MetricUsage = components["schemas"]["MetricUsageResponse"];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -91,6 +94,8 @@ function jsonBody(body: unknown): Pick<RequestInit, "body" | "headers"> {
 }
 
 export const api = {
+  getDashboard: (period: DashboardPeriod) =>
+    request<Dashboard>(`/api/dashboard?period=${encodeURIComponent(period)}`),
   listSessions: () => request<readonly Session[]>("/api/sessions"),
   planGraph: (body: PlanGraphRequest) =>
     request<PlanGraph>("/api/graphs/plan", {

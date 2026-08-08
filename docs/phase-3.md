@@ -46,7 +46,7 @@ cost `null`. Active-session usage is all-time while the KPI aggregate follows
 the selected period. Four focused tests cover grouping, UTC/rolling boundaries,
 progress, empty semantics, and transport validation.
 
-### D2 — KPI and active-session UI
+### D2 — KPI and active-session UI ✅
 
 Replace the dashboard placeholder with the period selector, KPI strip, token
 breakdowns, and active session list from `design.md` §8. Every active row deep
@@ -62,6 +62,22 @@ loose `any` types, and maps every colour to `tokens.css`.
 
 **Done when:** changing period refetches the snapshot, empty/partial-cost states
 are honest, and tests prove an active row navigates to its session.
+
+**Result:** completed on 2026-08-08. `/dashboard` now has the three-period
+selector, five KPI cards, harness/model token breakdowns, and the active-session
+list with progress, elapsed time, harnesses, tokens, blocked badge, and deep
+link. The exact “estimated equivalent” label remains visible; mixed pricing is
+marked partial, while an empty period renders unknown cost as an em dash rather
+than `$0`.
+
+The fixed-order token mix is a small accessible proportional bar plus numeric
+legend, using four semantic chart tokens. Tremor Raw's full BarChart would add
+Recharts for axes and tooltips this view does not have, and its published source
+explicitly suppresses `no-explicit-any`, conflicting with this repository's
+strict TypeScript rule. The native microbar is the documented narrow exception;
+future time-series charts still use an audited Tremor Raw adaptation. Three
+route tests cover real-shaped four-field data, partial and empty cost, period
+refetch, and session navigation.
 
 ### D3 — System sampler
 

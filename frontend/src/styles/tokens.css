@@ -43,6 +43,12 @@
   --color-harness-opencode: #7c6bf5;
   --color-graph-mask: #08090acc;
 
+  /* token-series charts — fixed order in design-system §9 */
+  --color-token-cache-read: #3dd68c;
+  --color-token-cache-write: #f5a524;
+  --color-token-input: #4c8dff;
+  --color-token-output: #7c6bf5;
+
   /* typography */
   --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono:
