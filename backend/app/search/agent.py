@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, ValidationError
 from app.config import Settings
 from app.models.ids import SessionId
 from app.models.pricing import PriceTable, TokenCounts
+from app.search.semantic import SemanticIndexService
 from app.search.symbols import SymbolIndexService
 from app.search.tools import CodeSearchService, FileLine, SearchError, file_line_hash
 
@@ -27,7 +28,9 @@ Finish only by calling submit_answer. Every claim needs at least one citation,
 and every cited line must have been returned by read_file in this conversation.
 Search previews and symbol matches help navigation but are not evidence. Keep
 claims atomic: if one sentence needs two locations, cite both. If the evidence
-is incomplete, submit only the claims you can support.
+is incomplete, submit only the claims you can support. Semantic search is an
+expensive last resort: use it only after lexical, structural, or symbol search
+failed to locate the concept.
 """
 
 
@@ -262,6 +265,15 @@ TOOLS: tuple[ToolParam, ...] = (
         ["path", "limit"],
     ),
     _tool(
+        "semantic_search",
+        "Last-resort concept search after other navigation tools miss.",
+        {
+            "query": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+        },
+        ["query", "limit"],
+    ),
+    _tool(
         "submit_answer",
         "Submit evidence-backed claims. Call only after reading every cited line.",
         {
@@ -306,12 +318,14 @@ class SearchAgent:
         client: SearchModelClient,
         tools: CodeSearchService,
         symbols: SymbolIndexService,
+        semantic: SemanticIndexService,
         settings: Settings,
         prices: PriceTable,
     ) -> None:
         self._client = client
         self._tools = tools
         self._symbols = symbols
+        self._semantic = semantic
         self._settings = settings
         self._prices = prices
 
@@ -331,6 +345,7 @@ class SearchAgent:
             price_table_version=self._prices.version,
         )
         turns = tool_calls = bytes_read = 0
+        navigation_attempted = False
 
         while turns < self._settings.search_max_turns:
             turns += 1
@@ -432,8 +447,17 @@ class SearchAgent:
                     read_lines: dict[str, dict[int, str]] = {}
                 else:
                     payload, is_error, read_lines = await self._execute(
-                        session_id, call
+                        session_id,
+                        call,
+                        allow_semantic=navigation_attempted,
                     )
+                    if call.name in {
+                        "search_text",
+                        "search_structural",
+                        "find_symbol",
+                        "find_references",
+                    }:
+                        navigation_attempted = True
                 encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
                 size = len(encoded.encode("utf-8"))
                 if bytes_read + size > self._settings.search_max_bytes:
@@ -470,7 +494,11 @@ class SearchAgent:
         )
 
     async def _execute(
-        self, session_id: SessionId, call: ModelToolCall
+        self,
+        session_id: SessionId,
+        call: ModelToolCall,
+        *,
+        allow_semantic: bool,
     ) -> tuple[dict[str, Any], bool, dict[str, dict[int, str]]]:
         values = dict(call.input)
         read: dict[str, dict[int, str]] = {}
@@ -489,6 +517,19 @@ class SearchAgent:
                 read[result.path] = {line.line: line.text for line in result.lines}
             elif call.name == "list_directory":
                 result = await self._tools.list_directory(session_id, **values)
+            elif call.name == "semantic_search":
+                if not allow_semantic:
+                    return (
+                        {
+                            "error": (
+                                "semantic_search is available only after a lexical, "
+                                "structural, symbol, or reference search"
+                            )
+                        },
+                        True,
+                        read,
+                    )
+                result = await self._semantic.search(session_id, **values)
             else:
                 return {"error": f"unknown tool: {call.name}"}, True, read
             return asdict(result), False, read
@@ -593,6 +634,7 @@ def create_search_agent(
     *,
     tools: CodeSearchService,
     symbols: SymbolIndexService,
+    semantic: SemanticIndexService,
     settings: Settings,
     prices: PriceTable,
 ) -> SearchAgent:
@@ -600,6 +642,7 @@ def create_search_agent(
         client=AnthropicSearchClient(),
         tools=tools,
         symbols=symbols,
+        semantic=semantic,
         settings=settings,
         prices=prices,
     )

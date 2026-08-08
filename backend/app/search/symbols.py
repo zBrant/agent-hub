@@ -77,6 +77,12 @@ class SymbolExtractor(Protocol):
     def extract(self, language: str, source: bytes) -> tuple[ExtractedSymbol, ...]: ...
 
 
+class SecondaryIndex(Protocol):
+    async def sync_session(self, session_id: SessionId, root: Path) -> int: ...
+
+    async def index_path(self, session_id: SessionId, root: Path, path: str) -> int: ...
+
+
 class TreeSitterSymbolExtractor:
     """Offline parsers for the Python and web languages used by AgentHub."""
 
@@ -363,10 +369,12 @@ class SymbolIndexManager:
         database: Database,
         service: SymbolIndexService,
         *,
+        secondary: SecondaryIndex | None = None,
         discovery_interval_s: float = DISCOVERY_INTERVAL_S,
     ) -> None:
         self._database = database
         self._service = service
+        self._secondary = secondary
         self._discovery_interval_s = discovery_interval_s
         self._coordinator: asyncio.Task[None] | None = None
         self._watchers: dict[SessionId, asyncio.Task[None]] = {}
@@ -423,6 +431,8 @@ class SymbolIndexManager:
 
     async def _watch(self, session_id: SessionId, root: Path) -> None:
         await self._service.sync_session(session_id, root)
+        if self._secondary is not None:
+            await self._secondary.sync_session(session_id, root)
         async for changes in awatch(root, watch_filter=DefaultFilter()):
             paths = {
                 Path(raw_path).relative_to(root).as_posix()
@@ -431,6 +441,8 @@ class SymbolIndexManager:
             }
             for path in sorted(paths):
                 await self._service.index_path(session_id, root, path)
+                if self._secondary is not None:
+                    await self._secondary.index_path(session_id, root, path)
 
 
 __all__ = [

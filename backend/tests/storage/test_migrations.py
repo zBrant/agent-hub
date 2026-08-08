@@ -40,6 +40,8 @@ EXPECTED_TABLES = {
     "system_metric_minute",
     "symbol_source",
     "code_symbol",
+    "semantic_source",
+    "semantic_chunk",
 }
 
 # The last revision of Phase 1. Databases at this revision exist on real

@@ -17,6 +17,7 @@ from app.search.agent import (
     SearchAgent,
     SearchLimitReason,
 )
+from app.search.semantic import SemanticIndexService
 from app.search.symbols import SymbolIndexService
 from app.search.tools import CodeSearchService, FileLine, file_line_hash
 from app.storage.db import Database, upgrade_database_sync
@@ -110,6 +111,7 @@ async def agent_target(
             client=model,
             tools=tools,
             symbols=symbols,
+            semantic=SemanticIndexService(database),
             settings=settings,
             prices=load_price_table(settings.pricing_path),
         ),
@@ -242,6 +244,25 @@ async def test_unread_citation_is_rejected_instead_of_rendered(tmp_path: Path) -
         assert result.limit_reason is SearchLimitReason.MODEL_ENDED
         last_tool_result = model.messages[2][-1]
         assert "citation was not read" in str(last_tool_result)
+    finally:
+        await agent.close()
+        await database.dispose()
+
+
+async def test_semantic_search_is_rejected_until_primary_navigation_runs(
+    tmp_path: Path,
+) -> None:
+    model = RecordedModel(
+        [
+            tool_turn(("semantic_search", {"query": "business rule", "limit": 5})),
+            end_turn(),
+        ]
+    )
+    agent, database, session_id, _integration = await agent_target(tmp_path, model)
+    try:
+        result = await agent.answer(session_id, "Find the business rule")
+        assert result.complete is False
+        assert "only after a lexical" in str(model.messages[1][-1])
     finally:
         await agent.close()
         await database.dispose()

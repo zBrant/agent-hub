@@ -39,6 +39,9 @@ dependencies = [
     # The index manager consumes filesystem changes instead of polling and
     # reparsing repositories on request paths.
     "watchfiles>=1.2.0",
+    # E6 keeps vector ranking inside the existing SQLite boundary; the bundled
+    # extension loads only in a worker thread on last-resort semantic queries.
+    "sqlite-vec>=0.1.7",
 ]
 
 [project.scripts]

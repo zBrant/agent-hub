@@ -748,3 +748,41 @@ class CodeSymbol(SQLModel, table=True):
     start_column: int
     end_line: int
     end_column: int
+
+
+class SemanticSource(SQLModel, table=True):
+    """One source hash already split and embedded for semantic fallback."""
+
+    __tablename__ = "semantic_source"
+
+    session_id: SessionId = Field(
+        sa_type=sa.String,
+        foreign_key="session.id",
+        ondelete="CASCADE",
+        primary_key=True,
+    )
+    path: str = Field(primary_key=True)
+    source_hash: str
+
+
+class SemanticChunk(SQLModel, table=True):
+    """One bounded line range and its sqlite-vec float32 embedding."""
+
+    __tablename__ = "semantic_chunk"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["session_id", "path"],
+            ["semantic_source.session_id", "semantic_source.path"],
+            ondelete="CASCADE",
+        ),
+        sa.Index("ix_semantic_chunk_session_path", "session_id", "path"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: SessionId = Field(sa_type=sa.String)
+    path: str
+    source_hash: str
+    start_line: int
+    end_line: int
+    text: str
+    embedding: bytes = Field(sa_type=sa.LargeBinary)

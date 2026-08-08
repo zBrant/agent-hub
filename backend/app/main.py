@@ -25,6 +25,7 @@ from app.orchestrator.planner import create_planner
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
 from app.search.agent import create_search_agent
+from app.search.semantic import SemanticIndexService
 from app.search.symbols import SymbolIndexManager, SymbolIndexService
 from app.search.tools import CodeSearchService
 from app.storage.db import Database, upgrade_database
@@ -75,11 +76,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     code_search = CodeSearchService(database)
     app.state.search = code_search
     symbols = SymbolIndexService(database)
-    symbol_manager = SymbolIndexManager(database, symbols)
+    semantic = SemanticIndexService(database)
+    symbol_manager = SymbolIndexManager(database, symbols, secondary=semantic)
     app.state.symbols = symbols
     app.state.symbol_manager = symbol_manager
+    app.state.semantic = semantic
     search_agent = create_search_agent(
-        tools=code_search, symbols=symbols, settings=settings, prices=prices
+        tools=code_search,
+        symbols=symbols,
+        semantic=semantic,
+        settings=settings,
+        prices=prices,
     )
     app.state.search_agent = search_agent
     minute_writer = SystemMinuteWriter(database)
