@@ -12,6 +12,8 @@ from app.search.tools import (
     DirectoryListResult,
     FileReadResult,
     InvalidSearchPattern,
+    InvalidStructuralPattern,
+    SearchOutputTooLarge,
     SearchPathError,
     SearchTargetNotFound,
     SearchTimedOut,
@@ -100,8 +102,12 @@ def _service(request: Request) -> CodeSearchService:
 def _raise_http(error: Exception) -> NoReturn:
     if isinstance(error, SearchTargetNotFound):
         raise HTTPException(status_code=404, detail=str(error)) from error
-    if isinstance(error, (SearchPathError, InvalidSearchPattern)):
+    if isinstance(
+        error, (SearchPathError, InvalidSearchPattern, InvalidStructuralPattern)
+    ):
         raise HTTPException(status_code=400, detail=str(error)) from error
+    if isinstance(error, SearchOutputTooLarge):
+        raise HTTPException(status_code=413, detail=str(error)) from error
     if isinstance(error, SearchToolUnavailable):
         raise HTTPException(status_code=503, detail=str(error)) from error
     if isinstance(error, SearchTimedOut):
@@ -132,6 +138,31 @@ async def search_text(
         SearchTargetNotFound,
         SearchPathError,
         InvalidSearchPattern,
+        SearchOutputTooLarge,
+        SearchToolUnavailable,
+        SearchTimedOut,
+    ) as error:
+        _raise_http(error)
+    return TextSearchResponse.from_result(result)
+
+
+@router.get("/structural", response_model=TextSearchResponse)
+async def search_structural(
+    request: Request,
+    session_id: Annotated[str, Query(min_length=1, max_length=128)],
+    pattern: Annotated[str, Query(min_length=1, max_length=1_000)],
+    language: Annotated[str, Query(min_length=1, max_length=64)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> TextSearchResponse:
+    try:
+        result = await _service(request).search_structural(
+            session_id, pattern, language=language, limit=limit
+        )
+    except (
+        SearchTargetNotFound,
+        SearchPathError,
+        InvalidStructuralPattern,
+        SearchOutputTooLarge,
         SearchToolUnavailable,
         SearchTimedOut,
     ) as error:

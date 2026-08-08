@@ -10,6 +10,7 @@ from app.models.ids import new_session_id
 from app.search.tools import (
     CodeSearchService,
     InvalidSearchPattern,
+    InvalidStructuralPattern,
     SearchPathError,
     SearchTimedOut,
     SearchToolUnavailable,
@@ -88,6 +89,87 @@ async def test_invalid_pattern_and_missing_binary_are_typed(tmp_path: Path) -> N
         missing = CodeSearchService(database, rg_binary="definitely-no-such-rg")
         with pytest.raises(SearchToolUnavailable):
             await missing.search_text(session_id, "value")
+    finally:
+        await database.dispose()
+
+
+async def test_structural_search_uses_streaming_json_citations_and_bounds(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "fake-sg"
+    script.write_text(
+        """#!/usr/bin/env python3
+import json
+import sys
+
+expected = [
+    "run",
+    "--pattern",
+    "logger.$METHOD($ARG)",
+    "--lang",
+    "python",
+    "--json=stream",
+    ".",
+]
+if sys.argv[1:] != expected:
+    print("unexpected argv", file=sys.stderr)
+    raise SystemExit(9)
+for line, column in ((3, 8), (7, 4)):
+    print(json.dumps({
+        "text": "logger.info(value)",
+        "range": {
+            "byteOffset": {"start": 0, "end": 18},
+            "start": {"line": line, "column": column},
+            "end": {"line": line, "column": column + 18},
+        },
+        "file": "./src/service.py",
+        "lines": "logger.info(value)",
+        "language": "Python",
+    }))
+""",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    service, database, session_id, _ = await search_service(
+        tmp_path / "runtime", sg_binary=str(script)
+    )
+    try:
+        result = await service.search_structural(
+            session_id,
+            "logger.$METHOD($ARG)",
+            language="python",
+            limit=1,
+        )
+        assert result.truncated is True
+        assert result.matches == (result.matches[0],)
+        assert result.matches[0].path == "src/service.py"
+        assert (result.matches[0].line, result.matches[0].column) == (4, 9)
+        assert result.matches[0].preview == "logger.info(value)"
+    finally:
+        await database.dispose()
+
+
+async def test_structural_errors_and_missing_capability_are_typed(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "invalid-sg"
+    script.write_text(
+        "#!/bin/sh\nprintf 'invalid language or pattern' >&2\nexit 2\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    service, database, session_id, _ = await search_service(
+        tmp_path / "runtime", sg_binary=str(script)
+    )
+    try:
+        with pytest.raises(
+            InvalidStructuralPattern, match="invalid language or pattern"
+        ):
+            await service.search_structural(session_id, "$A", language="unknown")
+
+        missing = CodeSearchService(database, sg_binary="definitely-no-such-sg")
+        with pytest.raises(SearchToolUnavailable, match="structural search"):
+            await missing.search_structural(session_id, "$A", language="python")
     finally:
         await database.dispose()
 

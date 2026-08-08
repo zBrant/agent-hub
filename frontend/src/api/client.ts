@@ -21,6 +21,7 @@ export type Dashboard = components["schemas"]["DashboardResponse"];
 export type DashboardPeriod = components["schemas"]["DashboardPeriod"];
 export type MetricUsage = components["schemas"]["MetricUsageResponse"];
 export type TextSearch = components["schemas"]["TextSearchResponse"];
+export type StructuralSearch = components["schemas"]["TextSearchResponse"];
 export type FileRead = components["schemas"]["FileReadResponse"];
 export type DirectoryList = components["schemas"]["DirectoryListResponse"];
 
@@ -125,6 +126,20 @@ export const api = {
         case_sensitive: options.caseSensitive,
         literal: options.literal,
         limit: options.limit,
+      })}`,
+    ),
+  searchStructural: (
+    sessionId: string,
+    pattern: string,
+    language: string,
+    limit?: number,
+  ) =>
+    request<StructuralSearch>(
+      `/api/search/structural?${queryString({
+        session_id: sessionId,
+        pattern,
+        language,
+        limit,
       })}`,
     ),
   readSearchFile: (

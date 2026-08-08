@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -15,6 +16,7 @@ from app.storage.db import Database
 
 MAX_RESULTS = 200
 MAX_STDERR_BYTES = 8_192
+MAX_PREVIEW_CHARS = 500
 MAX_FILE_LINES = 400
 MAX_FILE_BYTES = 128 * 1_024
 MAX_SCAN_BYTES = 2 * 1_024 * 1_024
@@ -42,8 +44,16 @@ class InvalidSearchPattern(SearchError):
     """ripgrep rejected the supplied regular expression or glob."""
 
 
+class InvalidStructuralPattern(SearchError):
+    """ast-grep rejected the supplied language or structural pattern."""
+
+
 class SearchTimedOut(SearchError):
     """A search exceeded its fixed wall-clock budget."""
+
+
+class SearchOutputTooLarge(SearchError):
+    """A search tool emitted one result larger than the stream bound."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,12 +104,14 @@ class CodeSearchService:
         database: Database,
         *,
         rg_binary: str = "rg",
+        sg_binary: str = "sg",
         timeout_s: float = DEFAULT_TIMEOUT_S,
     ) -> None:
         if timeout_s <= 0:
             raise ValueError("search timeout must be positive")
         self._database = database
         self._rg_binary = rg_binary
+        self._sg_binary = sg_binary
         self._timeout_s = timeout_s
 
     async def search_text(
@@ -130,53 +142,54 @@ class CodeSearchService:
             argv.extend(("--glob", glob))
         argv.extend(("--", pattern, "."))
 
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *argv,
-                cwd=root,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                limit=1_048_576,
-            )
-        except FileNotFoundError as error:
-            raise SearchToolUnavailable(
-                f"text search executable is unavailable: {self._rg_binary}"
-            ) from error
-
-        assert process.stdout is not None
-        assert process.stderr is not None
-        stderr_task = asyncio.create_task(_read_stderr(process.stderr))
-        matches: list[TextMatch] = []
-        truncated = False
-        try:
-            async with asyncio.timeout(self._timeout_s):
-                while line := await process.stdout.readline():
-                    match = _parse_rg_match(line)
-                    if match is None:
-                        continue
-                    matches.append(match)
-                    if len(matches) > limit:
-                        matches.pop()
-                        truncated = True
-                        with suppress(ProcessLookupError):
-                            process.terminate()
-                        break
-                return_code = await process.wait()
-        except TimeoutError as error:
-            await _stop(process)
-            raise SearchTimedOut(
-                f"text search exceeded {self._timeout_s:g} seconds"
-            ) from error
-        except BaseException:
-            await _stop(process)
-            raise
-        finally:
-            stderr = await stderr_task
+        matches, truncated, return_code, stderr = await _run_json_stream(
+            argv,
+            root=root,
+            limit=limit,
+            timeout_s=self._timeout_s,
+            parser=_parse_rg_match,
+            operation="text search",
+        )
 
         if not truncated and return_code not in (0, 1):
             detail = stderr.strip() or f"ripgrep exited with status {return_code}"
             raise InvalidSearchPattern(detail)
-        return TextSearchResult(matches=tuple(matches), truncated=truncated)
+        return TextSearchResult(matches=matches, truncated=truncated)
+
+    async def search_structural(
+        self,
+        session_id: SessionId,
+        pattern: str,
+        *,
+        language: str,
+        limit: int = 100,
+    ) -> TextSearchResult:
+        """Find ast-grep matches with the same citation shape as text search."""
+        if not 1 <= limit <= MAX_RESULTS:
+            raise ValueError(f"search limit must be between 1 and {MAX_RESULTS}")
+        root = await self._integration_root(session_id)
+        argv = [
+            self._sg_binary,
+            "run",
+            "--pattern",
+            pattern,
+            "--lang",
+            language,
+            "--json=stream",
+            ".",
+        ]
+        matches, truncated, return_code, stderr = await _run_json_stream(
+            argv,
+            root=root,
+            limit=limit,
+            timeout_s=self._timeout_s,
+            parser=_parse_sg_match,
+            operation="structural search",
+        )
+        if not truncated and return_code != 0:
+            detail = stderr.strip() or f"ast-grep exited with status {return_code}"
+            raise InvalidStructuralPattern(detail)
+        return TextSearchResult(matches=matches, truncated=truncated)
 
     async def read_file(
         self,
@@ -338,6 +351,90 @@ def _parse_rg_match(raw: bytes) -> TextMatch | None:
         return None
 
 
+def _parse_sg_match(raw: bytes) -> TextMatch | None:
+    try:
+        message: Any = json.loads(raw)
+        path = _safe_result_path(message["file"])
+        if path is None:
+            return None
+        start = message["range"]["start"]
+        preview = str(message.get("lines", message["text"])).rstrip("\r\n")
+        return TextMatch(
+            path=path,
+            line=int(start["line"]) + 1,
+            column=int(start["column"]) + 1,
+            preview=preview[:MAX_PREVIEW_CHARS],
+        )
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _safe_result_path(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        return None
+    return path.as_posix().removeprefix("./")
+
+
+async def _run_json_stream[T](
+    argv: list[str],
+    *,
+    root: Path,
+    limit: int,
+    timeout_s: float,
+    parser: Callable[[bytes], T | None],
+    operation: str,
+) -> tuple[tuple[T, ...], bool, int, str]:
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=root,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            limit=1_048_576,
+        )
+    except FileNotFoundError as error:
+        raise SearchToolUnavailable(
+            f"{operation} executable is unavailable: {argv[0]}"
+        ) from error
+
+    assert process.stdout is not None
+    assert process.stderr is not None
+    stderr_task = asyncio.create_task(_read_stderr(process.stderr))
+    matches: list[T] = []
+    truncated = False
+    try:
+        async with asyncio.timeout(timeout_s):
+            while line := await process.stdout.readline():
+                match = parser(line)
+                if match is None:
+                    continue
+                matches.append(match)
+                if len(matches) > limit:
+                    matches.pop()
+                    truncated = True
+                    with suppress(ProcessLookupError):
+                        process.terminate()
+                    break
+            return_code = await process.wait()
+    except TimeoutError as error:
+        await _stop(process)
+        raise SearchTimedOut(f"{operation} exceeded {timeout_s:g} seconds") from error
+    except ValueError as error:
+        await _stop(process)
+        raise SearchOutputTooLarge(
+            f"{operation} emitted a result larger than the stream limit"
+        ) from error
+    except BaseException:
+        await _stop(process)
+        raise
+    finally:
+        stderr = await stderr_task
+    return tuple(matches), truncated, return_code, stderr
+
+
 async def _read_stderr(stream: asyncio.StreamReader) -> str:
     captured = bytearray()
     while chunk := await stream.read(4_096):
@@ -362,7 +459,9 @@ __all__ = [
     "FileLine",
     "FileReadResult",
     "InvalidSearchPattern",
+    "InvalidStructuralPattern",
     "SearchError",
+    "SearchOutputTooLarge",
     "SearchPathError",
     "SearchTargetNotFound",
     "SearchTimedOut",

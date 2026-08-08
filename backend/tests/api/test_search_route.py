@@ -6,13 +6,15 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.search.tools import CodeSearchService
 from tests.api.conftest import MODEL
 
 
 def test_search_routes_are_typed_and_session_scoped(
     settings: Settings, target_repo: Path
 ) -> None:
-    with TestClient(create_app(settings)) as client:
+    app = create_app(settings)
+    with TestClient(app) as client:
         created = client.post(
             "/api/sessions",
             json={
@@ -41,6 +43,37 @@ def test_search_routes_are_typed_and_session_scoped(
             ],
             "truncated": False,
         }
+
+        script = target_repo.parent / "fake-sg"
+        script.write_text(
+            """#!/usr/bin/env python3
+import json
+
+print(json.dumps({
+    "text": "original",
+    "range": {
+        "start": {"line": 0, "column": 0},
+        "end": {"line": 0, "column": 8},
+    },
+    "file": "README.md",
+    "lines": "original",
+    "language": "Python",
+}))
+""",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        app.state.search = CodeSearchService(app.state.database, sg_binary=str(script))
+        structural = client.get(
+            "/api/search/structural",
+            params={
+                "session_id": session_id,
+                "pattern": "$VALUE",
+                "language": "python",
+            },
+        )
+        assert structural.status_code == 200, structural.text
+        assert structural.json() == found.json()
 
         read = client.get(
             "/api/search/file",

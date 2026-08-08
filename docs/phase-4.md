@@ -53,7 +53,7 @@ Focused tests use a real ripgrep process and a real Git integration worktree to
 cover matching, filters, no-match, malformed regex, missing binary, timeout,
 truncation, citations, file ranges, directory listing, and both escape forms.
 
-### E2 — Structural search
+### E2 — Structural search ✅
 
 Add an ast-grep adapter behind the same result vocabulary. Language and pattern
 are data passed as argv, never shell fragments. Missing `sg` is an explicit
@@ -61,6 +61,21 @@ capability response rather than a failed whole search service.
 
 **Done when:** structural matches carry the same clickable path/line contract as
 text matches and invalid language/pattern errors are bounded and typed.
+
+**Result:** completed on 2026-08-08. The optional ast-grep adapter invokes
+`sg run` with pattern and language as separate argv values and consumes
+`--json=stream` one result at a time. It shares text search's subprocess,
+timeout, stderr, result-count, preview-width, and stream-line bounds. Both tools
+return the same repository-relative path, one-based line and column, and preview
+contract, so citations require no structural-search-specific rendering.
+
+The REST boundary exposes `/api/search/structural` through the generated client.
+Invalid patterns or languages, oversized output, timeout, and missing `sg` remain
+distinct typed capability responses; the rest of the search service stays
+available when ast-grep is not installed. Deterministic fake-CLI tests verify the
+exact argv, streaming JSON conversion, truncation, error text, missing binary,
+and the HTTP citation shape without making ast-grep a Python or frontend
+dependency.
 
 ### E3 — Incremental symbol index
 
