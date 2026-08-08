@@ -580,7 +580,7 @@ editing and reload, criterion changes, and both review transports.
 
 ---
 
-### C12 — Acceptance
+### C12 — Acceptance ✅
 
 One real multi-node graph, planned from an objective, edited by hand, approved,
 executed with concurrency against a real repository, with at least one
@@ -589,6 +589,22 @@ verify the database, REST and UI agree on the totals.
 
 **Done when:** the acceptance record is committed and the roadmap marks Phase 2
 complete.
+
+**Result:** completed on 2026-08-08. A two-root graph entered through the
+objective-planning route, was edited and approved by the acceptance client, and
+ran two real Codex 0.146.0 processes in isolated worktrees with 16.73 seconds of
+measured overlap. Both safe runs stopped at the human gate. Approving the first
+merged it; approving the second reproduced the authored `shared.txt` conflict,
+aborted the merge, and persisted `blocked` without contaminating integration.
+
+Both NDJSON logs then independently rebuilt their run and usage projections.
+Direct SQLite aggregates, node-addressed REST summaries, generated TypeScript,
+and `TokenSummary` regression fixtures agree on all four token fields, totals,
+and estimated-equivalent costs. The paid planner boundary used C8's recorded
+structured response, so no unapproved Anthropic credential or spend was
+involved; every graph and harness operation after that boundary was production
+code. Full evidence is in
+[`acceptance-phase-2.md`](acceptance-phase-2.md).
 
 ## Explicitly out of scope
 

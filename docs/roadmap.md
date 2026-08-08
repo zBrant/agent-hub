@@ -24,12 +24,15 @@ WebSocket, including reconnect, kill, immutable retry, two NDJSON replays, and
 database/REST/UI total agreement. See [`acceptance-phase-1.md`](acceptance-phase-1.md)
 for the evidence and [`phase-1.md`](phase-1.md) for the activity details.
 
-**Phase 2 is in progress.** C1–C11 are complete: graph persistence and the pure
+**Phase 2 complete.** C1–C12 passed: graph persistence and the pure
 DAG core, concurrent worktrees and serialized merges, the scheduler with
 budgets/recovery, the acceptance gate, structured planner, and the complete
 graph REST/WebSocket orchestration surface, followed by the editable React Flow
-canvas with client-side DAG validation and the per-state node drawer. C12 — the
-real multi-node acceptance run — is next; see [`phase-2.md`](phase-2.md).
+canvas with client-side DAG validation and the per-state node drawer. C12 then
+ran a real concurrent Codex graph through proposal editing, approval, review,
+deliberate merge conflict, two NDJSON replays, and database/REST/UI agreement.
+See [`acceptance-phase-2.md`](acceptance-phase-2.md) for the evidence and
+[`phase-2.md`](phase-2.md) for the activity details.
 
 ## Phases
 
@@ -40,7 +43,7 @@ real multi-node acceptance run — is next; see [`phase-2.md`](phase-2.md).
 - [x] **Phase 1 — Single-node orchestrator.** FastAPI + SQLite + WebSocket, one
       session and one node streaming live in the browser, kill/retry,
       `agenthub replay <run_id>`. No graph yet.
-- [ ] **Phase 2 — The graph.** Planner with structured output, DAG validation,
+- [x] **Phase 2 — The graph.** Planner with structured output, DAG validation,
       editable canvas, concurrent scheduler, per-worktree merge. *The heart of
       the product.* Activity breakdown: [`phase-2.md`](phase-2.md).
 - [ ] **Phase 3 — Dashboards.** Token/cost KPIs and system metrics, once there is
