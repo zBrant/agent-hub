@@ -345,6 +345,15 @@ rejection's feedback text is present in the retry's `meta.json` argv or prompt.
 JSON Schema**, never markdown parsing. The node schema is specified in
 `design.md` §8.
 
+**Prerequisite settled ahead of time:** the planner calls the Anthropic API
+directly rather than reusing an authenticated `claude -p`, because the CLI
+structures the event envelope and not the assistant's content — there is no CLI
+equivalent of `output_config.format`, so a harness-routed planner is
+prompt-and-parse. That adds the `anthropic` SDK as a dependency and makes the
+planner the only component with **real** per-token billing (invariant 7's
+"estimated equivalent" framing does not apply to it). Reasoning in `design.md`
+§8.
+
 Validate before rendering. On a cycle or an orphan `depends_on`, **hand the
 error back to the planner to fix** — LLMs get this wrong regularly, and breaking
 the UI over it is a choice, not a necessity. Bound the correction loop; a

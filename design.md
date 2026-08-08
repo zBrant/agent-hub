@@ -421,7 +421,30 @@ completed); the Dashboard shows only active ones.
 
 1. You describe the goal in the chat.
 2. The planner emits a DAG using **structured output** (JSON Schema) — not
-   markdown parsing. Per-node schema:
+   markdown parsing.
+
+   **The planner calls the Anthropic API directly; it does not go through a
+   harness.** Reusing an already-authenticated `claude -p` would avoid a
+   dependency and a credential, and it is the wrong call: the CLI's
+   `--output-format stream-json` structures the *event envelope*, not the
+   assistant's content. There is no CLI equivalent of `output_config.format`,
+   so routing the planner through a harness means prompting for JSON and
+   parsing prose — exactly what this step rules out. `messages.parse()` with a
+   Pydantic model gives a schema-validated object instead.
+
+   Two consequences worth stating plainly:
+
+   - **The planner is the one component with real per-token billing.**
+     Invariant 7's "estimated equivalent cost" exists because the harnesses run
+     under a subscription. The planner does not: its tokens are spend. It needs
+     its own credential — an `ANTHROPIC_API_KEY`, or an `ant auth login`
+     profile, which a bare client picks up with no environment variable.
+   - **A valid schema is not a valid DAG.** Structured output guarantees
+     well-formed JSON with the right fields; it cannot express "no cycles". The
+     pure DAG core still validates, and the correction loop below is still
+     required.
+
+   Per-node schema:
 
 ```json
 {
