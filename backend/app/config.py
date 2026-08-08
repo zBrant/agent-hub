@@ -12,6 +12,7 @@ database, run logs, or workspaces.
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Annotated
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -45,6 +46,31 @@ class Settings(BaseSettings):
     # The ceiling is a guard against a typo in a `.env` turning into a fork
     # bomb, not a considered maximum — nothing here scales linearly past it.
     max_concurrency: int = Field(default=2, ge=1, le=16)
+
+    # --- per-node cutoffs (`design.md` §9 and §12's runaway-agent risk) ------
+    #
+    # Denominated in **tokens**, summing all four fields of invariant 3, over
+    # every `Usage` event of the run whatever its `source`. Not in estimated
+    # cost, for two reasons. First, `PriceTable.cost_usd` returns `None` for a
+    # model that is not in `pricing.yaml`, deliberately — so a cost-denominated
+    # budget silently never fires for an unpriced model, which is exactly the
+    # case a new release introduces and exactly when a loop goes unnoticed.
+    # Second, invariant 7: under a Max/Pro subscription there is no per-token
+    # billing at all, so a cost budget would be a limit on an estimate, while
+    # the token count is a measured fact either way.
+    #
+    # Fifty million is a ceiling, not a target. Cache reads are ~90% of a long
+    # session's four-field total (that is the ~100x of invariant 3), so a
+    # genuinely long node lands in the millions to low tens of millions; a
+    # looping agent passes this within the hour. Lower it per deployment — the
+    # default exists so the mitigation is on out of the box, not because this
+    # is the right number for every repository. `None` disables the cutoff.
+    node_token_budget: Annotated[int, Field(ge=1)] | None = Field(default=50_000_000)
+    # Wall clock for one *run*, measured from the moment the agent process is
+    # launched. Worktree materialization happens before that and does not count
+    # against it: a node whose base is a fold of five parents is doing git work,
+    # not burning an agent. `None` disables the cutoff.
+    node_timeout_s: Annotated[float, Field(gt=0)] | None = Field(default=3600.0)
 
     @property
     def db_path(self) -> Path:

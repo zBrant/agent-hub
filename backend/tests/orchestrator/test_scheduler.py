@@ -14,7 +14,7 @@ they never do, the test times out rather than quietly passing.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable, Collection, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import cast
@@ -30,7 +30,10 @@ from app.harnesses.events import (
     RunStarted,
     TurnFinished,
     Usage,
+    UsageSource,
 )
+from app.models.clock import now_ms
+from app.models.ids import NodeId, RunId, new_run_id
 from app.models.pricing import PriceTable, load_price_table
 from app.models.status import NodeStatus, RunState, SessionStatus
 from app.orchestrator.graph import DagErrorKind, GraphOutcome
@@ -40,8 +43,13 @@ from app.orchestrator.service import (
     InvalidGraphError,
     InvalidTransitionError,
     NodeExecution,
+    NodeLimit,
+    NodeLimits,
     NodeRunService,
+    OrphanResolution,
     PlannedNode,
+    ProcessLiveness,
+    ProcessReaper,
     ResourceNotFoundError,
 )
 from app.storage.db import Database, upgrade_database_sync
@@ -184,6 +192,72 @@ class FakeHandle:
     node: str
 
 
+@dataclass(frozen=True, slots=True)
+class UsageBeat:
+    """One ``Usage`` event in a node's script.
+
+    The four fields of invariant 3 are given separately rather than as a total,
+    so a test can put the tokens where the real world puts them — 90%+ in
+    ``cache_read`` — and a budget that counted only ``input_tokens`` would then
+    be short by two orders of magnitude and would not fire.
+    """
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+    source: UsageSource = "reported"
+
+    @property
+    def total(self) -> int:
+        return self.input + self.output + self.cache_read + self.cache_write
+
+    def event(self, spec: RunSpec, ts: int) -> Usage:
+        return Usage(
+            run_id=spec.run_id,
+            ts=ts,
+            model=spec.model or MODEL,
+            source=self.source,
+            input_tokens=self.input,
+            output_tokens=self.output,
+            cache_read_tokens=self.cache_read,
+            cache_write_tokens=self.cache_write,
+        )
+
+
+#: What every node emits unless a test scripts it otherwise.
+DEFAULT_BEATS: tuple[UsageBeat, ...] = (
+    UsageBeat(input=10, output=20, cache_read=30, cache_write=40),
+)
+
+
+def heavy(
+    count: int, *, each: int, source: UsageSource = "reported"
+) -> tuple[UsageBeat, ...]:
+    """``count`` beats of ``each`` four-field tokens, weighted like a real run.
+
+    1% input, 4% output, 5% cache write, the rest cache read. The exact split
+    does not matter; that ``input`` is a rounding error of the total does — it
+    is what makes a four-field budget and an ``input_tokens`` budget answer
+    differently on the same stream.
+    """
+    beats: list[UsageBeat] = []
+    for _ in range(count):
+        low = each // 100
+        out = each // 25
+        write = each // 20
+        beats.append(
+            UsageBeat(
+                input=low,
+                output=out,
+                cache_write=write,
+                cache_read=each - low - out - write,
+                source=source,
+            )
+        )
+    return tuple(beats)
+
+
 @dataclass
 class FakeHarness:
     """Adapter factory plus the per-node script the adapters follow.
@@ -196,9 +270,21 @@ class FakeHarness:
     probe: ConcurrencyProbe = field(default_factory=ConcurrencyProbe)
     failing: frozenset[str] = frozenset()
     crashing: frozenset[str] = frozenset()
+    # Nodes whose agent emits nothing after `RunStarted` and never exits on its
+    # own. Only a kill ends the stream, which is the shape a wall-clock timeout
+    # exists for and the one a token budget can never see.
+    hanging: frozenset[str] = frozenset()
+    usage: Mapping[str, Sequence[UsageBeat]] = field(default_factory=dict)
     on_start: Callable[[RunSpec], object] | None = None
     name: str = HARNESS
     adapters: list[FakeAdapter] = field(default_factory=list)
+    # Only the adapters that actually launched a run. `create_session` and
+    # `create_graph` each build one per node just to read `supported_models`,
+    # so `adapters[0]` is a validation throwaway, not the one that streamed.
+    launched: list[FakeAdapter] = field(default_factory=list)
+
+    def beats(self, node: str) -> Sequence[UsageBeat]:
+        return self.usage.get(node, DEFAULT_BEATS)
 
     def __call__(self, harness: str) -> FakeAdapter:
         assert harness == self.name
@@ -213,6 +299,11 @@ class FakeAdapter:
         self.supported_models = [MODEL]
         self.stats = ParseStats()
         self.killed = False
+        self.emitted: list[str] = []
+        # Stands in for the real adapters' SIGTERM → grace → SIGKILL on the
+        # process group: whatever the mechanism, its observable contract is that
+        # the stream stops and closes with an `interrupted` RunFinished.
+        self._killed = asyncio.Event()
         self._harness = harness
 
     def build_argv(self, spec: RunSpec) -> list[str]:
@@ -220,6 +311,7 @@ class FakeAdapter:
 
     async def start(self, spec: RunSpec) -> RunHandle:
         node = spec.prompt
+        self._harness.launched.append(self)
         if node in self._harness.crashing:
             raise RuntimeError(f"launcher exploded for {node}")
         if self._harness.on_start is not None:
@@ -239,6 +331,7 @@ class FakeAdapter:
 
     async def kill(self, handle: RunHandle) -> None:
         self.killed = True
+        self._killed.set()
 
     async def events(self, handle: RunHandle) -> AsyncIterator[AgentEvent]:
         fake = cast(FakeHandle, handle)
@@ -255,36 +348,77 @@ class FakeAdapter:
             session_id=f"fake-thread-{node}",
             harness_version="9.9.9",
         )
+        self.emitted.append("run_started")
         await self._harness.probe.enter(node)
         try:
-            yield Usage(
-                run_id=spec.run_id,
-                ts=1_010,
-                model=spec.model or MODEL,
-                input_tokens=10,
-                output_tokens=20,
-                cache_read_tokens=30,
-                cache_write_tokens=40,
-            )
+            if node in self._harness.hanging:
+                await self._killed.wait()
+                yield self._interrupted(spec, 1_030)
+                self.emitted.append("run_finished")
+                return
+            for index, beat in enumerate(self._harness.beats(node)):
+                yield beat.event(spec, 1_010 + index)
+                self.emitted.append("usage")
+                # The consumer ingests and decides between this line and the
+                # next, so a kill triggered by the event just yielded is
+                # visible here — same as a real process losing its stdout.
+                if self._killed.is_set():
+                    yield self._interrupted(spec, 1_030)
+                    self.emitted.append("run_finished")
+                    return
             yield TurnFinished(
                 run_id=spec.run_id,
                 ts=1_020,
                 turn=1,
                 status="failed" if failed else "success",
             )
+            self.emitted.append("turn_finished")
             yield RunFinished(
                 run_id=spec.run_id,
                 ts=1_030,
                 status="failed" if failed else "success",
                 exit_code=1 if failed else 0,
             )
+            self.emitted.append("run_finished")
         finally:
             self._harness.probe.leave(node)
+
+    @staticmethod
+    def _interrupted(spec: RunSpec, ts: int) -> RunFinished:
+        return RunFinished(
+            run_id=spec.run_id, ts=ts, status="interrupted", exit_code=None
+        )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def reaper_reporting(
+    liveness: ProcessLiveness, *, dies_on_sigterm: bool = True
+) -> ProcessReaper:
+    """A :class:`ProcessReaper` with the syscalls replaced by an answer.
+
+    ``probe_process`` and ``terminate_process_group`` are covered against real
+    processes further down; everything else needs to say "this pid was gone" or
+    "this pid would not die" without arranging either.
+    """
+    state = {"liveness": liveness}
+
+    def probe(pid: int) -> ProcessLiveness:
+        return state["liveness"]
+
+    def terminate(pid: int) -> None:
+        if dies_on_sigterm:
+            state["liveness"] = ProcessLiveness.GONE
+
+    return ProcessReaper(probe=probe, terminate=terminate, grace_s=0.05, poll_s=0.01)
+
+
+#: The overwhelmingly common case, and the default for tests that are not about
+#: recovery: whatever pid a previous process recorded, nothing is there now.
+GONE_REAPER = reaper_reporting(ProcessLiveness.GONE)
 
 
 def build_service(
@@ -294,6 +428,8 @@ def build_service(
     prices: PriceTable,
     harness: FakeHarness,
     broadcast: Callable[[AgentEvent], object] | None = None,
+    limits: NodeLimits | None = None,
+    reaper: ProcessReaper | None = None,
 ) -> NodeRunService:
     async def publish(event: AgentEvent) -> None:
         if broadcast is not None:
@@ -308,6 +444,11 @@ def build_service(
         adapter_factory=harness,
         broadcast=publish,
         environment={"PATH": "/usr/bin", "HOME": "/Users/test"},
+        # Off unless a test asks for them. A cutoff that fired in the middle of
+        # an unrelated assertion would be the worst kind of flake, and the tests
+        # that care set the exact number they mean.
+        limits=NodeLimits() if limits is None else limits,
+        reaper=GONE_REAPER if reaper is None else reaper,
     )
 
 
@@ -347,6 +488,30 @@ async def run_counts(database: Database, graph: CreatedGraph) -> dict[str, int]:
     for run in runs:
         counts[by_id[run.node_id]] += 1
     return counts
+
+
+async def runs_of(database: Database, node_id: NodeId) -> list[tuple[RunState, int]]:
+    """``(status, four-field token total)`` per attempt at ``node_id``."""
+    async with database.session() as db_session:
+        repository = Repository(db_session)
+        rows = await repository.list_runs(node_id)
+        return [
+            (
+                run.status,
+                (await repository.usage_totals(run_id=run.id)).counts.total,
+            )
+            for run in rows
+        ]
+
+
+async def usage_sources(database: Database, node_id: NodeId) -> list[str]:
+    async with database.session() as db_session:
+        repository = Repository(db_session)
+        rows = await repository.list_runs(node_id)
+        events = [
+            event for run in rows for event in await repository.list_usage(run.id)
+        ]
+    return [str(event.source) for event in events]
 
 
 async def worktree_of(database: Database, node_id: str) -> Path:
@@ -732,6 +897,9 @@ async def test_a_node_owned_by_someone_else_is_stood_down_from_not_failed(
         async def fail_node(self, node_id: str, *, reason: str) -> bool:
             raise AssertionError("a refused node must never be marked failed")
 
+        async def recover_orphans(self, session_id: str) -> Sequence[OrphanResolution]:
+            return ()
+
     service = build_service(
         database=database,
         settings=settings,
@@ -1024,3 +1192,481 @@ async def test_a_cycle_persisted_behind_the_authoring_path_is_a_typed_error(
         await scheduler_for(service, database, settings).run_graph(graph.session.id)
 
     assert [error.kind for error in raised.value.errors] == [DagErrorKind.CYCLE]
+
+
+# ---------------------------------------------------------------------------
+# C6 — per-node budgets and wall-clock timeouts
+# ---------------------------------------------------------------------------
+
+
+def test_the_per_node_cutoffs_are_on_by_default(tmp_path: Path) -> None:
+    """`design.md` §12 lists the runaway agent as a risk *mitigated*.
+
+    A mitigation that ships disabled is a comment. Both cutoffs are generous
+    enough that a real node does not meet them and finite enough that a loop
+    does.
+    """
+    defaults = Settings(root=tmp_path)
+    assert defaults.node_token_budget == 50_000_000
+    assert defaults.node_timeout_s == 3600.0
+    assert NodeLimits.from_settings(defaults) == NodeLimits(
+        token_budget=50_000_000, wall_clock_s=3600.0
+    )
+
+
+async def test_a_token_budget_kills_a_running_node_mid_stream(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """Killed, ``failed``, and the tokens it already burned are still recorded.
+
+    Ten beats of 1000 four-field tokens are scripted; the budget is 3500. The
+    kill has to land after the fourth beat — the first one that puts the total
+    over — and the stream has to stop there rather than run to completion, so
+    the assertion is on both the persisted usage and how much of the script the
+    adapter ever got to emit.
+    """
+    harness = FakeHarness(usage={"a": heavy(10, each=1_000)})
+    service = build_service(
+        database=database,
+        settings=settings,
+        prices=prices,
+        harness=harness,
+        limits=NodeLimits(token_budget=3_500),
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=True
+    )
+
+    result = await scheduler_for(service, database, settings).run_graph(
+        graph.session.id
+    )
+
+    node_id = graph.ids_by_name["a"]
+    assert await statuses(database, graph) == {"a": NodeStatus.FAILED}
+    # The run is `interrupted`, exactly as for an operator kill: that is what
+    # the log says, so that is what the projection may say (invariant 4).
+    assert await runs_of(database, node_id) == [(RunState.INTERRUPTED, 4_000)]
+
+    execution = result.executions[node_id]
+    assert execution.outcome is not None
+    assert execution.outcome.limit is NodeLimit.TOKEN_BUDGET
+    assert execution.outcome.merge is None
+
+    adapter = harness.launched[0]
+    assert adapter.killed
+    # Mid-stream, not after the fact: four of ten beats, and no `turn_finished`.
+    assert adapter.emitted == ["run_started", *["usage"] * 4, "run_finished"]
+    assert not (graph.session.workspace_root / "integration" / "a.txt").exists()
+
+
+async def test_the_budget_counts_all_four_fields_and_not_just_input(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """Invariant 3, as a cutoff rather than as a dashboard number.
+
+    ``heavy`` puts 1% of each beat in ``input_tokens``, which is roughly where
+    a real session puts it. Five beats of 10 000 tokens is 50 000 four-field
+    tokens and 500 input tokens. The budget is 20 000: over the four-field
+    total, and 40x over the input-only one. A check that summed
+    ``input_tokens`` would run the whole script to completion and merge the
+    node.
+    """
+    harness = FakeHarness(usage={"a": heavy(5, each=10_000)})
+    assert sum(beat.input for beat in harness.beats("a")) == 500
+    service = build_service(
+        database=database,
+        settings=settings,
+        prices=prices,
+        harness=harness,
+        limits=NodeLimits(token_budget=20_000),
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=True
+    )
+
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    assert await statuses(database, graph) == {"a": NodeStatus.FAILED}
+    assert await runs_of(database, graph.ids_by_name["a"]) == [
+        (RunState.INTERRUPTED, 30_000)
+    ]
+    assert harness.launched[0].emitted.count("usage") == 3
+
+
+async def test_the_budget_fires_on_reconstructed_usage(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """Phase 0's A3 shape, which is the one the real world produces.
+
+    A budget-exhausted Claude Code turn reports ``result.usage`` as all zeros
+    and B3 rebuilds the real numbers from the cumulative ``modelUsage``,
+    emitting them as ``source="reconstructed"``. So the stream here opens with a
+    zeroed ``reported`` beat and continues with reconstructed ones. An
+    implementation that trusted the harness's own total, or filtered on
+    ``source``, reads zero and never fires.
+    """
+    harness = FakeHarness(
+        usage={
+            "a": (
+                UsageBeat(source="reported"),
+                *heavy(4, each=5_000, source="reconstructed"),
+            )
+        }
+    )
+    service = build_service(
+        database=database,
+        settings=settings,
+        prices=prices,
+        harness=harness,
+        limits=NodeLimits(token_budget=9_000),
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=True
+    )
+
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    node_id = graph.ids_by_name["a"]
+    assert await statuses(database, graph) == {"a": NodeStatus.FAILED}
+    assert await runs_of(database, node_id) == [(RunState.INTERRUPTED, 10_000)]
+    # The zeroed self-report is kept alongside the reconstruction, and it is the
+    # reconstruction the cutoff read.
+    assert await usage_sources(database, node_id) == [
+        "reported",
+        "reconstructed",
+        "reconstructed",
+    ]
+
+
+async def test_a_wall_clock_timeout_kills_a_node_that_produces_no_usage(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """The case a token budget structurally cannot see.
+
+    The agent starts, emits nothing and never exits. No ``Usage`` event ever
+    arrives, so nothing accumulates and nothing crosses a threshold; only a
+    clock can end this. The test hangs rather than fails if the watchdog is
+    removed, which is the honest failure mode for a timeout.
+    """
+    harness = FakeHarness(hanging=frozenset({"a"}))
+    service = build_service(
+        database=database,
+        settings=settings,
+        prices=prices,
+        harness=harness,
+        limits=NodeLimits(token_budget=1_000_000, wall_clock_s=0.2),
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=True
+    )
+
+    result = await asyncio.wait_for(
+        scheduler_for(service, database, settings).run_graph(graph.session.id),
+        timeout=20,
+    )
+
+    node_id = graph.ids_by_name["a"]
+    assert await statuses(database, graph) == {"a": NodeStatus.FAILED}
+    assert await runs_of(database, node_id) == [(RunState.INTERRUPTED, 0)]
+    execution = result.executions[node_id]
+    assert execution.outcome is not None
+    assert execution.outcome.limit is NodeLimit.WALL_CLOCK
+    assert harness.launched[0].emitted == ["run_started", "run_finished"]
+
+
+async def test_neither_cutoff_fires_on_a_normal_run(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """The limit must not be accidentally always-on.
+
+    Both scenarios run the identical stream — one beat of exactly 100
+    four-field tokens. The first gives it a budget of exactly 100 and a wall
+    clock of an hour and must run to completion and merge; the second gives it
+    99 and must not. One token of difference is the whole experiment, so a
+    cutoff with an off-by-one, an inverted comparison or a hardcoded ``True``
+    fails one side or the other.
+    """
+    outcomes: dict[int, tuple[NodeStatus, list[str]]] = {}
+    for budget in (100, 99):
+        harness = FakeHarness()
+        service = build_service(
+            database=database,
+            settings=settings,
+            prices=prices,
+            harness=harness,
+            limits=NodeLimits(token_budget=budget, wall_clock_s=3600.0),
+        )
+        graph = await service.create_graph(
+            repo_path=target_repo, nodes=plan("a"), auto_merge=True
+        )
+        await scheduler_for(service, database, settings).run_graph(graph.session.id)
+        node_status = (await statuses(database, graph))["a"]
+        outcomes[budget] = (node_status, harness.launched[0].emitted)
+
+    assert outcomes[100] == (
+        NodeStatus.DONE,
+        ["run_started", "usage", "turn_finished", "run_finished"],
+    )
+    assert outcomes[99] == (
+        NodeStatus.FAILED,
+        ["run_started", "usage", "run_finished"],
+    )
+
+
+async def test_a_budget_killed_node_blocks_its_dependents_and_spares_a_sibling(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """A cutoff is an ordinary terminal outcome, so it propagates like one.
+
+    ``b`` never launches because ``a`` was cut off; ``c`` is on an unrelated
+    branch and lands in integration regardless. Nothing about being killed for a
+    budget travels further than the node it killed.
+    """
+    harness = FakeHarness(usage={"a": heavy(20, each=1_000)})
+    service = build_service(
+        database=database,
+        settings=settings,
+        prices=prices,
+        harness=harness,
+        limits=NodeLimits(token_budget=2_500),
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a", "b:a", "c"), auto_merge=True
+    )
+
+    result = await scheduler_for(service, database, settings).run_graph(
+        graph.session.id
+    )
+
+    ids = graph.ids_by_name
+    assert result.outcome is GraphOutcome.WAITING_ON_HUMAN
+    assert await statuses(database, graph) == {
+        "a": NodeStatus.FAILED,
+        "b": NodeStatus.BLOCKED,
+        "c": NodeStatus.DONE,
+    }
+    assert result.blocked_by(ids["b"]) == (ids["a"],)
+    assert await run_counts(database, graph) == {"a": 1, "b": 0, "c": 1}
+
+    integration = graph.session.workspace_root / "integration"
+    assert (integration / "c.txt").exists()
+    assert not (integration / "a.txt").exists()
+
+    # ...and the partial work is on the node's own branch, not thrown away: B7's
+    # retry has something to start from and a human has something to read.
+    committed = await git(
+        await worktree_of(database, ids["a"]), "log", "--oneline", "--", "a.txt"
+    )
+    assert committed.strip()
+
+
+# ---------------------------------------------------------------------------
+# Restart recovery
+# ---------------------------------------------------------------------------
+
+
+async def strand_a_running_run(
+    database: Database, node_id: NodeId, *, pid: int | None = 424_242
+) -> RunId:
+    """Leave behind exactly what a killed orchestrator leaves behind.
+
+    A ``run`` row still ``RUNNING`` with a pid, and its node still ``running``.
+    Written through the repository rather than raw SQL so the row is the shape
+    the projection really produces — including ``events_path``, which recovery
+    must not need to read.
+    """
+    async with database.session() as db_session:
+        repository = Repository(db_session)
+        run = await repository.create_run(
+            run_id=new_run_id(),
+            node_id=node_id,
+            events_path=Path("/nonexistent/events.ndjson"),
+        )
+        await repository.start_run(
+            run.id,
+            RunStarted(
+                run_id=run.id,
+                ts=now_ms(),
+                harness=HARNESS,
+                model=MODEL,
+                cwd=Path("/nonexistent"),
+                pid=pid,
+            ),
+        )
+        await repository.set_node_status(node_id, NodeStatus.RUNNING)
+    return run.id
+
+
+async def test_a_run_left_running_by_a_dead_process_is_resolved_on_the_next_tick(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """The restart case, end to end, with no human in it.
+
+    The previous orchestrator died mid-run: its row says ``running`` and its
+    node says ``running``, so nothing is startable and — without recovery — the
+    node is stuck there forever. The sweep closes the row and makes the node
+    actionable again.
+
+    It does **not** restart it. A recovered node lands in ``failed``, and the
+    scheduler drives past ``failed`` no more than it invents a retry anywhere
+    else: an attempt is an operator decision (B7), and a graph that silently
+    re-ran everything it found half-finished would spend tokens nobody asked
+    for. So the assertion is that a human now *can* act, not that the machine
+    already did.
+
+    Built on ``create_session``, which materializes eagerly and leaves the node
+    ``ready``. That is the reachable shape of a crash during a first attempt: a
+    ``running`` row cannot exist without a worktree, because ``_prepare``
+    persists ``attach_worktree`` before ``create_run`` opens the attempt.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    created = await service.create_session(
+        repo_path=target_repo, prompt="a", harness=HARNESS, model=MODEL
+    )
+    node_id = created.node.id
+    stranded = await strand_a_running_run(database, node_id)
+
+    (resolution,) = await service.recover_orphans(created.session.id)
+
+    assert resolution.run_id == stranded
+    assert resolution.liveness is ProcessLiveness.GONE
+    assert resolution.node_status is NodeStatus.FAILED
+    # Closed, not adopted: the pipes died with the parent that opened them, so
+    # no further AgentEvent can ever arrive on this run.
+    assert [state for state, _ in await runs_of(database, node_id)] == [
+        RunState.INTERRUPTED
+    ]
+
+    # Actionable: an explicit retry opens a *new* attempt and finishes it.
+    await service.retry_node(node_id)
+
+    assert [state for state, _ in await runs_of(database, node_id)] == [
+        RunState.INTERRUPTED,
+        RunState.SUCCESS,
+    ]
+
+
+async def test_recovery_keeps_the_worktree_of_a_half_finished_node(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """A partially completed node's diff is what a human needs to decide.
+
+    So the sweep may close the run, but it may not touch the worktree, the
+    branch, or anything already written.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=True
+    )
+    node_id = graph.ids_by_name["a"]
+    await scheduler_for(service, database, settings).run_graph(graph.session.id)
+
+    worktree = await worktree_of(database, node_id)
+    before = sorted(path.name for path in worktree.iterdir())
+    await strand_a_running_run(database, node_id)
+
+    await service.recover_orphans(graph.session.id)
+
+    assert worktree.is_dir()
+    assert sorted(path.name for path in worktree.iterdir()) == before
+
+
+async def test_a_leftover_process_that_survives_sigterm_blocks_instead_of_failing(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """Still-alive means ``blocked``, and blocked means the scheduler stops.
+
+    ``failed`` is retryable and the scheduler will drive past it on its own —
+    which would start a second agent in a worktree the first one is still
+    writing to, corrupting exactly the diff invariant 2 exists to protect.
+    """
+    harness = FakeHarness()
+    service = build_service(
+        database=database,
+        settings=settings,
+        prices=prices,
+        harness=harness,
+        reaper=reaper_reporting(ProcessLiveness.ALIVE, dies_on_sigterm=False),
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=True
+    )
+    node_id = graph.ids_by_name["a"]
+    stranded = await strand_a_running_run(database, node_id)
+
+    (resolution,) = await service.recover_orphans(graph.session.id)
+
+    assert resolution.run_id == stranded
+    assert resolution.liveness is ProcessLiveness.ALIVE
+    assert resolution.terminated is False
+    assert resolution.node_status is NodeStatus.BLOCKED
+    assert await statuses(database, graph) == {"a": NodeStatus.BLOCKED}
+
+
+async def test_the_sweep_leaves_this_process_own_runs_alone(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """The dangerous false positive: a sweep that reaps a live local run.
+
+    ``recover_orphans`` runs at startup, but nothing stops it running while a
+    node is streaming. A row this process owns is not an orphan, and mistaking
+    one for an orphan would kill a healthy agent.
+    """
+    harness = FakeHarness(probe=ConcurrencyProbe(hold=True))
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo, nodes=plan("a"), auto_merge=True
+    )
+
+    running = asyncio.create_task(
+        scheduler_for(service, database, settings).run_graph(graph.session.id)
+    )
+    try:
+        async with asyncio.timeout(20):
+            await harness.probe.wait_for_census(1)
+        assert await service.recover_orphans(graph.session.id) == ()
+    finally:
+        harness.probe.release()
+
+    result = await running
+
+    assert result.outcome is GraphOutcome.COMPLETE
+    assert harness.launched[0].killed is False

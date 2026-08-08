@@ -46,9 +46,15 @@ Exception`` is allowed — with structured logging and an explicit transition. A
 node left ``pending`` after its task raised would be re-selected on the next
 tick and raise again, forever.
 
-Budgets, wall-clock timeouts and restart recovery are **C6**. The seams they
-need are here — every transition goes through the node lifecycle service, and
-in-flight tasks are cancellable — and nothing else about them is.
+**C6's two additions.** Per-node budgets and wall-clock timeouts are *not* in
+this file: they are enforced inside the service's ingest loop, where the events
+that measure them arrive, and they reach the loop as an ordinary
+``NodeExecution`` whose run was interrupted and whose node is ``failed``. The
+loop cannot tell a budget kill from any other failure, which is the correct
+amount for it to know. What is here is the one thing recovery needs from the
+scheduler: resolving the ``running`` rows of a previous process *before* the
+first tick, so the loop never has to reason about a node it can neither start
+nor wait for.
 """
 
 from __future__ import annotations
@@ -78,6 +84,7 @@ from app.orchestrator.service import (
     NodeExecution,
     NodeRunService,
     OrchestratorError,
+    OrphanResolution,
     ResourceNotFoundError,
 )
 from app.storage.db import Database
@@ -90,11 +97,20 @@ class NodeLifecycle(Protocol):
     """What the scheduler needs from
     :class:`~app.orchestrator.service.NodeRunService`.
 
-    A protocol rather than the concrete class because these three calls are the
-    entire coupling, and C6 wraps them to add a budget and a wall clock without
-    the loop learning about either. It is also the list of transitions the
-    scheduler is allowed to cause: it never writes a node row itself, so the
-    session projection and the ordered write path stay in one place.
+    A protocol rather than the concrete class because these calls are the entire
+    coupling. It is also the list of transitions the scheduler is allowed to
+    cause: it never writes a node row itself, so the session projection and the
+    ordered write path stay in one place.
+
+    **C6 added a fourth call, and the list is deliberately closed, so it is
+    worth saying why.** C3 expected the budget and the wall clock to arrive as a
+    *wrapper* around the three below, and they did not: enforcing them means
+    reading the events of a live stream, which happens inside the service, so
+    the loop genuinely learns nothing about either and no method was needed for
+    them. What did need one is restart recovery. Resolving a ``running`` row
+    left by a dead process moves its node out of ``running`` — a transition, and
+    therefore something that has to be on this list rather than a database write
+    the scheduler performs behind it.
     """
 
     async def start_node(
@@ -106,6 +122,10 @@ class NodeLifecycle(Protocol):
     ) -> bool: ...
 
     async def fail_node(self, node_id: NodeId, *, reason: str) -> bool: ...
+
+    async def recover_orphans(
+        self, session_id: SessionId
+    ) -> Sequence[OrphanResolution]: ...
 
 
 def _protocol_conformance(service: NodeRunService) -> NodeLifecycle:
@@ -136,6 +156,9 @@ class GraphRunResult:
     executions: Mapping[NodeId, NodeExecution]
     blocked_causes: Mapping[NodeId, tuple[NodeId, ...]]
     unowned_running: tuple[NodeId, ...] = ()
+    #: ``running`` run rows left by a previous orchestrator, resolved before the
+    #: first tick. Non-empty means this process restarted into unfinished work.
+    recovered: tuple[OrphanResolution, ...] = ()
 
     @property
     def is_complete(self) -> bool:
@@ -180,6 +203,21 @@ class GraphScheduler:
         in_flight: dict[NodeId, asyncio.Task[None]] = {}
         refused: set[NodeId] = set()
         unowned: tuple[NodeId, ...] = ()
+
+        # Before the first tick, not during it. A `running` row from a previous
+        # process makes its node neither startable nor finishable, so a graph
+        # containing one evaluates to `active` with nothing to do — C3's
+        # "unowned running", which correctly refuses to spin. Clearing it first
+        # means the loop below only ever sees rows this process owns, and the
+        # break at the bottom keeps its original meaning: something is running
+        # that recovery decided not to touch.
+        recovered = tuple(await self._lifecycle.recover_orphans(session_id))
+        if recovered:
+            log.warning(
+                "scheduler.recovered_orphan_runs",
+                session_id=session_id,
+                runs={orphan.run_id: orphan.node_status.value for orphan in recovered},
+            )
 
         # `docs/conventions.md` §2 prefers `asyncio.TaskGroup`, and this is the
         # documented exception to it. A TaskGroup promises two things the
@@ -275,6 +313,7 @@ class GraphScheduler:
                 executions=executions,
                 blocked_causes=blocked_causes,
                 unowned_running=unowned,
+                recovered=recovered,
             )
         finally:
             await self._drain(in_flight)

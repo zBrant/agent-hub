@@ -18,6 +18,17 @@ session are *meant* to run at once. The unit of exclusion is therefore the
 one worktree and one live process), and the session-addressed methods Phase 1's
 REST surface calls survive as thin resolvers on top of the node-addressed ones.
 
+**What C6 added, and why here.** The per-node token budget and wall clock live
+in this module rather than in a wrapper around the scheduler's
+``NodeLifecycle``, for two reasons. The budget has to be evaluated *between two
+events of a live stream*, and only this class is in that loop — a wrapper would
+have to poll ``usage_totals`` out of SQLite, which is both slower and later.
+And a limit that only the scheduler applied would not protect a node started
+through the Phase 1 REST path (:meth:`NodeRunService.run_node`,
+:meth:`NodeRunService.retry_node`), which is the same agent burning the same
+quota. Restart recovery is here for the matching reason: it writes run rows and
+node rows, and those writes and the session projection have exactly one home.
+
 The scheduler is not here. This module knows how to run *a* node; deciding
 *which* nodes and *when* is ``orchestrator/scheduler.py``, over the pure core in
 ``orchestrator/graph.py`` (`docs/architecture.md` §8). The seam between them is
@@ -31,6 +42,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import signal
 from collections.abc import (
     AsyncIterator,
     Awaitable,
@@ -41,6 +53,7 @@ from collections.abc import (
 )
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 import structlog
@@ -48,7 +61,7 @@ import structlog
 from app.config import Settings
 from app.harnesses import create_adapter
 from app.harnesses.base import BaseHarnessAdapter, RunHandle, RunSpec
-from app.harnesses.events import AgentEvent, RunStarted
+from app.harnesses.events import AgentEvent, RunStarted, Usage
 from app.models.clock import now_ms
 from app.models.ids import (
     NodeId,
@@ -95,6 +108,13 @@ RunRegistration = Callable[[RunId, SessionId], Awaitable[None]]
 _STARTABLE = frozenset({NodeStatus.PENDING, NodeStatus.READY})
 
 _TERMINAL = frozenset({NodeStatus.DONE, NodeStatus.FAILED, NodeStatus.SKIPPED})
+
+# How long a previous orchestrator's process gets to honour SIGTERM before this
+# one gives up on reaping it. Short: the point is not to wait out a long-running
+# agent, it is to distinguish "it took the signal" from "it is ignoring us", and
+# the second answer changes the node's state rather than the waiting.
+ORPHAN_GRACE_S = 2.0
+ORPHAN_POLL_S = 0.1
 
 
 async def no_run_registration(run_id: RunId, session_id: SessionId) -> None:
@@ -169,6 +189,180 @@ def session_status_for_nodes(statuses: Iterable[NodeStatus]) -> SessionStatus:
     return SessionStatus.PLANNING
 
 
+class NodeLimit(StrEnum):
+    """Which per-node cutoff ended a run (`design.md` §9 and §12).
+
+    Being cut off is **data**, not an exception (`docs/architecture.md` §9): the
+    adapter is killed, synthesizes its ordinary
+    ``RunFinished(status="interrupted")``, that event is appended, projected and
+    broadcast like any other, and the node reaches ``failed`` through the same
+    :func:`~app.orchestrator.graph.evaluate_run` every other run goes through.
+    Nothing about the cutoff path is special-cased downstream.
+
+    It is deliberately **not persisted**. The run row says ``interrupted``,
+    which is what ``events.ndjson`` says and therefore what ``agenthub replay``
+    rebuilds (invariant 4); "the orchestrator cut it off, and why" is an
+    orchestration fact no harness reports, so its durable home is ``meta.json``
+    (`docs/architecture.md` §4) — and adding a field there edits ``storage/``,
+    which C6 may not. Until then the reason lives in the log line and in
+    :attr:`RunOutcome.limit`, and it is flagged in C6's report.
+    """
+
+    TOKEN_BUDGET = "token_budget"
+    WALL_CLOCK = "wall_clock"
+
+
+@dataclass(frozen=True, slots=True)
+class NodeLimits:
+    """The two cutoffs, resolved once per service rather than read per event.
+
+    ``token_budget`` counts **all four fields** of invariant 3 across every
+    :class:`~app.harnesses.events.Usage` event the adapter emits, regardless of
+    ``source``. Phase 0's A3 found that a budget-exhausted Claude Code turn
+    reports ``result.usage`` as all zeros and B3 reconstructs the real numbers
+    from the cumulative ``modelUsage``, marking them ``source="reconstructed"``.
+    A check that trusted the harness's own self-reported total, or that filtered
+    on ``source``, would read zero in precisely the runaway case. So the budget
+    reads the events, and it does not care where they came from.
+
+    Either limit may be ``None``, which disables it. Both being ``None`` removes
+    every cutoff, which is a supported configuration and not the default.
+    """
+
+    token_budget: int | None = None
+    wall_clock_s: float | None = None
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> NodeLimits:
+        return cls(
+            token_budget=settings.node_token_budget,
+            wall_clock_s=settings.node_timeout_s,
+        )
+
+
+class ProcessLiveness(StrEnum):
+    """What a ``pid`` recorded by a previous orchestrator turned out to be."""
+
+    #: No process with that pid. The run is over whatever the row says.
+    GONE = "gone"
+    #: A process exists but is provably not the run's — see :func:`probe_process`.
+    FOREIGN = "foreign"
+    #: A process exists that could be the run's. Could, not is.
+    ALIVE = "alive"
+
+
+ProcessProbe = Callable[[int], ProcessLiveness]
+ProcessTerminator = Callable[[int], None]
+
+
+def probe_process(pid: int) -> ProcessLiveness:
+    """Is this pid a plausible survivor of the previous orchestrator?
+
+    Blocking, by design — the caller runs it through
+    :func:`asyncio.to_thread` (invariant 5).
+
+    **Pids are reused, so this cannot be an identity check, and it does not
+    pretend to be one.** Two things narrow it:
+
+    - ``os.kill(pid, 0)`` sends nothing and only asks whether the pid exists.
+      ``PermissionError`` means it exists and belongs to another user, which our
+      own child never does — that is ``FOREIGN``.
+    - every adapter spawns with ``start_new_session=True``, so a run's process
+      is its own session and process-group leader. A pid that is *not* a group
+      leader therefore cannot be one of ours, and most recycled pids are not.
+
+    What survives is the narrow case where our process died and the kernel
+    handed its pid to a new group leader. That residue is handled by never
+    escalating past ``SIGTERM`` to a process group and by
+    :meth:`NodeRunService.recover_orphans` treating "alive" as a reason to stop
+    rather than as a process to adopt.
+    """
+    if pid <= 1:
+        # 0 and negative are process-group selectors for `kill(2)`, and 1 is
+        # launchd. Passing any of them through would signal something enormous.
+        return ProcessLiveness.FOREIGN
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return ProcessLiveness.GONE
+    except PermissionError:
+        return ProcessLiveness.FOREIGN
+    try:
+        if os.getpgid(pid) != pid:
+            return ProcessLiveness.FOREIGN
+    except (ProcessLookupError, PermissionError):
+        # It exited between the two calls, or it is not ours to inspect.
+        return ProcessLiveness.GONE
+    return ProcessLiveness.ALIVE
+
+
+def terminate_process_group(pid: int) -> None:
+    """SIGTERM the group ``pid`` leads. Best effort, never raises.
+
+    The group and not the pid: an agent CLI spawns children, and killing only
+    the leader leaves them holding the worktree. Callers must have established
+    that ``pid`` is the group leader first (:func:`probe_process` does), because
+    ``killpg`` on a pgid we did not verify is a much larger blast radius than a
+    single misdirected signal.
+
+    No SIGKILL escalation. The adapter escalates because it owns the process and
+    knows it is the right one; here we only believe it is, and a stale SIGKILL
+    to the wrong group is unrecoverable where a stale SIGTERM usually is not.
+    """
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(pid, signal.SIGTERM)
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessReaper:
+    """Probe and terminate a previous orchestrator's leftover process.
+
+    A value object so a test can drive both halves without spawning anything,
+    and so the grace period is a parameter rather than a sleep buried in a
+    method.
+    """
+
+    probe: ProcessProbe = probe_process
+    terminate: ProcessTerminator = terminate_process_group
+    grace_s: float = ORPHAN_GRACE_S
+    poll_s: float = ORPHAN_POLL_S
+
+    async def reap(self, pid: int) -> tuple[ProcessLiveness, bool]:
+        """``(what it was, whether it is gone now)``.
+
+        Both syscalls go through :func:`asyncio.to_thread`: several nodes are in
+        flight during a restart sweep and one blocking probe stalls every PTY
+        stream at once (invariant 5).
+        """
+        liveness = await asyncio.to_thread(self.probe, pid)
+        if liveness is not ProcessLiveness.ALIVE:
+            return liveness, False
+        await asyncio.to_thread(self.terminate, pid)
+        for _ in range(max(1, round(self.grace_s / self.poll_s))):
+            await asyncio.sleep(self.poll_s)
+            if await asyncio.to_thread(self.probe, pid) is not ProcessLiveness.ALIVE:
+                return liveness, True
+        return liveness, False
+
+
+DEFAULT_REAPER = ProcessReaper()
+
+
+@dataclass(frozen=True, slots=True)
+class OrphanResolution:
+    """One ``running`` run row left behind by a process that is not this one."""
+
+    node_id: NodeId
+    run_id: RunId
+    pid: int | None
+    liveness: ProcessLiveness
+    #: True when the leftover process was alive and took the SIGTERM.
+    terminated: bool
+    #: What the node was moved to. ``failed`` when nothing is left holding the
+    #: worktree; ``blocked`` when something still is.
+    node_status: NodeStatus
+
+
 @dataclass(frozen=True, slots=True)
 class CreatedSession:
     session: Session
@@ -217,6 +411,10 @@ class RunOutcome:
     commit: CommitResult
     merge: MergeResult | None
     block_reason: RunBlockReason | None = None
+    #: Set when a per-node cutoff killed this run. ``run_status`` is
+    #: ``interrupted`` and ``node_status`` ``failed`` in that case, exactly as
+    #: for an operator kill — the cutoff changes why, never how.
+    limit: NodeLimit | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +460,12 @@ class _ActiveRun:
     kill_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     kill_requested: bool = False
     kill_sent: bool = False
+    # Four-field token total so far, accumulated from the events as they are
+    # ingested rather than queried back out of SQLite: the budget has to be
+    # checked between two lines of a live stream, and a SELECT per event would
+    # put a database round trip in the middle of the PTY path.
+    tokens: int = 0
+    limit_hit: NodeLimit | None = None
 
 
 class NodeRunService:
@@ -283,10 +487,16 @@ class NodeRunService:
         broadcast: Broadcast = no_broadcast,
         register_run: RunRegistration = no_run_registration,
         environment: Mapping[str, str] | None = None,
+        limits: NodeLimits | None = None,
+        reaper: ProcessReaper = DEFAULT_REAPER,
     ) -> None:
         self._database = database
         self._settings = settings
         self._prices = prices
+        # Resolved from `Settings` unless a caller overrides them. C7's
+        # per-node override, if it happens, replaces this one value.
+        self._limits = NodeLimits.from_settings(settings) if limits is None else limits
+        self._reaper = reaper
         self._adapter_factory = adapter_factory
         self._policy_factory = policy_factory
         self._broadcast = broadcast
@@ -300,6 +510,11 @@ class NodeRunService:
         # session finishing together would otherwise both read the pre-write
         # node statuses and the loser would persist a stale projection.
         self._projection_locks: dict[SessionId, asyncio.Lock] = {}
+
+    @property
+    def limits(self) -> NodeLimits:
+        """The per-node cutoffs in force. Read-only; set at construction."""
+        return self._limits
 
     # ------------------------------------------------------------------
     # Authoring
@@ -548,6 +763,109 @@ class NodeRunService:
             await self._set_node(repository, node, NodeStatus.FAILED)
         log.warning("orchestrator.node_failed", node_id=node_id, reason=reason)
         return True
+
+    async def recover_orphans(
+        self, session_id: SessionId | None = None
+    ) -> tuple[OrphanResolution, ...]:
+        """Resolve every ``running`` run row this process does not own.
+
+        A row still ``RunState.RUNNING`` belongs to a process that is not this
+        one, and B2's ``RunState`` docstring already fixed the answer: it
+        resolves to ``INTERRUPTED``, not to a sixth state. C3 found the live
+        shape of this and named it *unowned running* — ``active`` outcome,
+        nothing startable, nothing in flight — and deliberately reported it
+        instead of spinning. This is the method that clears it.
+
+        **The run is never adopted, even when its process is still alive.** Not
+        because re-finding a pid is racy — it is, and :func:`probe_process` says
+        what it can and cannot prove — but because adoption is not implementable
+        at all: the adapter reads events off an
+        ``asyncio.subprocess.Process``'s pipes, and those pipes died with the
+        parent that opened them. A re-found process can emit no further
+        ``AgentEvent``, so its log can never reach a terminal event and its run
+        can never honestly finish. Adopting it would mean holding a row open
+        forever on the strength of a pid.
+
+        So the run is closed and the node is made actionable again. The two
+        cases differ only in *how* actionable:
+
+        - the process is gone, foreign, or took the SIGTERM → the node is
+          ``failed``, which ``retry_node`` accepts. Nothing holds the worktree.
+        - the process is alive and ignored the SIGTERM → the node is
+          ``blocked``, and this is logged at error level. ``blocked`` is also
+          retryable, but it is not a state the scheduler will drive past on its
+          own, which is the point: starting a second agent in a worktree a first
+          one is still writing to would corrupt the diff that invariant 2 exists
+          to protect.
+
+        Nothing is discarded either way. The worktree, its branch and every
+        event already written stay exactly as they are — a partially completed
+        node's diff is what a human needs in order to decide.
+
+        Not rebuilt here: ``event_count`` and ``permission_denial_count`` stay
+        as live ingest left them. Recomputing them means replaying the log,
+        ``agenthub replay`` already does that against the same
+        :class:`~app.storage.ingest.Projection`, and a second implementation of
+        it here would be the one that drifts.
+        """
+        async with self._database.session() as db_session:
+            unfinished = await Repository(db_session).list_unfinished_runs()
+
+        owned = {active.run_id for active in self._active.values()}
+        resolved: list[OrphanResolution] = []
+        for run in unfinished:
+            if session_id is not None and run.session_id != session_id:
+                continue
+            if run.id in owned:
+                continue
+            lock = self._locks.get(run.node_id)
+            if lock is not None and lock.locked():
+                # A run of this node is being set up or torn down in this very
+                # process; its row is legitimately `running` and it is not an
+                # orphan. `owned` misses the window between `create_run` and
+                # the `_active` assignment, and the slot lock covers it.
+                continue
+            resolved.append(await self._resolve_orphan(run))
+        return tuple(resolved)
+
+    async def _resolve_orphan(self, run: Run) -> OrphanResolution:
+        liveness = ProcessLiveness.GONE
+        terminated = False
+        if run.pid is not None:
+            liveness, terminated = await self._reaper.reap(run.pid)
+        holding = liveness is ProcessLiveness.ALIVE and not terminated
+        node_status = NodeStatus.BLOCKED if holding else NodeStatus.FAILED
+
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            await repository.mark_run_interrupted(
+                run.id,
+                at_ms=now_ms(),
+                summary="orchestrator restarted; this run had no owning process",
+            )
+            node = await repository.get_node(run.node_id)
+            if node is not None and node.status not in _TERMINAL:
+                await self._set_node(repository, node, node_status)
+
+        report = log.error if holding else log.warning
+        report(
+            "orchestrator.orphan_run_resolved",
+            session_id=run.session_id,
+            node_id=run.node_id,
+            run_id=run.id,
+            pid=run.pid,
+            liveness=liveness.value,
+            terminated=terminated,
+            node_status=node_status.value,
+        )
+        return OrphanResolution(
+            node_id=run.node_id,
+            run_id=run.id,
+            pid=run.pid,
+            liveness=liveness,
+            terminated=terminated,
+            node_status=node_status,
+        )
 
     async def run(self, session_id: SessionId) -> RunOutcome:
         """Execute the Phase 1 session's only node."""
@@ -840,6 +1158,7 @@ class NodeRunService:
                 status=projected.status.value,
                 trusted=finalized.trusted,
                 merged=merge is not None and merge.status is MergeStatus.MERGED,
+                limit=None if active.limit_hit is None else active.limit_hit.value,
             )
             return RunOutcome(
                 session_id=node.session_id,
@@ -853,6 +1172,7 @@ class NodeRunService:
                 commit=commit,
                 merge=merge,
                 block_reason=disposition.reason,
+                limit=active.limit_hit,
             )
 
     async def _drive(
@@ -883,10 +1203,16 @@ class NodeRunService:
                 active.ready.set()
                 if active.kill_requested:
                     await self._kill_active(active)
-                async for event in adapter.events(handle):
-                    if isinstance(event, RunStarted):
-                        harness_version = event.harness_version
-                    await ingest.ingest(event)
+                async with self._under_wall_clock(active, run):
+                    async for event in adapter.events(handle):
+                        if isinstance(event, RunStarted):
+                            harness_version = event.harness_version
+                        # Durable first, then decide. A budget kill must never
+                        # cost the tokens that triggered it: they were really
+                        # spent, and dropping the event that reports them is
+                        # how a dashboard ends up unable to explain a kill.
+                        await ingest.ingest(event)
+                        await self._check_token_budget(active, run, event)
                 finalized = await ingest.finalize(
                     at_ms=now_ms(),
                     stats=adapter.stats,
@@ -930,6 +1256,79 @@ class NodeRunService:
             raise
         finally:
             active.ready.set()
+
+    @asynccontextmanager
+    async def _under_wall_clock(
+        self, active: _ActiveRun, run: Run
+    ) -> AsyncIterator[None]:
+        """Kill the run if it outlives ``node_timeout_s``.
+
+        A background task rather than :func:`asyncio.timeout` around the event
+        loop, because a timeout raises and cancels, and being cut off is not an
+        exception (`docs/architecture.md` §9). Cancelling here would skip the
+        checkpoint commit and leave the partial work uncommitted; killing lets
+        the adapter close the stream with its ordinary
+        ``RunFinished(status="interrupted")`` and the run finishes down the same
+        path as every other run.
+
+        The clock starts here, after ``adapter.start`` returned — i.e. at
+        process launch, not at :class:`~app.harnesses.events.RunStarted`. They
+        are milliseconds apart when the harness is healthy and unboundedly apart
+        when it is not, and the unhealthy case is the one a timeout exists for.
+        """
+        seconds = self._limits.wall_clock_s
+        if seconds is None:
+            yield
+            return
+
+        async def expire() -> None:
+            await asyncio.sleep(seconds)
+            if active.limit_hit is None:
+                active.limit_hit = NodeLimit.WALL_CLOCK
+            log.warning(
+                "orchestrator.node_wall_clock_exceeded",
+                session_id=run.session_id,
+                node_id=run.node_id,
+                run_id=run.id,
+                seconds=seconds,
+            )
+            await self._kill_active(active)
+
+        watchdog = asyncio.create_task(expire(), name=f"wall-clock:{run.id}")
+        try:
+            yield
+        finally:
+            watchdog.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watchdog
+
+    async def _check_token_budget(
+        self, active: _ActiveRun, run: Run, event: AgentEvent
+    ) -> None:
+        """Kill the run once its four-field token total passes the budget.
+
+        Counted from the :class:`~app.harnesses.events.Usage` events themselves,
+        every one of them, ``reported`` and ``reconstructed`` alike — see
+        :class:`NodeLimits`. ``Usage.total_tokens`` is the four fields of
+        invariant 3; a check on ``input_tokens`` alone would be short by roughly
+        100x and would never fire on the session it exists to stop.
+        """
+        budget = self._limits.token_budget
+        if budget is None or not isinstance(event, Usage):
+            return
+        active.tokens += event.total_tokens
+        if active.tokens <= budget or active.limit_hit is not None:
+            return
+        active.limit_hit = NodeLimit.TOKEN_BUDGET
+        log.warning(
+            "orchestrator.node_token_budget_exceeded",
+            session_id=run.session_id,
+            node_id=run.node_id,
+            run_id=run.id,
+            tokens=active.tokens,
+            budget=budget,
+        )
+        await self._kill_active(active)
 
     async def _kill_active(self, active: _ActiveRun) -> None:
         async with active.kill_lock:
@@ -1116,18 +1515,26 @@ SingleRunService = NodeRunService
 
 
 __all__ = [
+    "DEFAULT_REAPER",
     "CreatedGraph",
     "CreatedSession",
     "InvalidGraphError",
     "InvalidTransitionError",
     "NodeExecution",
+    "NodeLimit",
+    "NodeLimits",
     "NodePreparation",
     "NodeRunService",
     "OrchestratorError",
+    "OrphanResolution",
     "PlannedNode",
+    "ProcessLiveness",
+    "ProcessReaper",
     "ResourceNotFoundError",
     "RunOutcome",
     "RunSummary",
     "SingleRunService",
+    "probe_process",
     "session_status_for_nodes",
+    "terminate_process_group",
 ]
