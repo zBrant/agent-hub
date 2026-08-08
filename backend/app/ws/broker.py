@@ -33,6 +33,13 @@ class _EventFrame:
     topic: str
     seq: int
     payload: dict[str, object]
+    #: The wire ``type`` this frame is delivered under. ``event`` carries an
+    #: :class:`~app.harnesses.events.AgentEvent`; ``node_status`` carries a
+    #: graph transition, which is orchestration state and not harness output.
+    #: They share the envelope — same ``stream``, same per-topic ``seq``, same
+    #: replay path — so a reconnect resumes a graph topic exactly the way it
+    #: resumes a run topic, and a client can discriminate on one field.
+    kind: str = "event"
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,17 +192,52 @@ class EventBroker:
                 topics.append(f"session:{session_id}")
 
             for topic in topics:
-                self._sequences[topic] += 1
-                frame = _EventFrame(
-                    topic=topic,
-                    seq=self._sequences[topic],
-                    payload=payload,
-                )
-                self._retain_locked(frame)
-                message = self._wire_event(frame)
-                for connection in tuple(self._connections):
-                    if topic in connection.topics:
-                        self._put_locked(connection, message)
+                self._fan_out_locked(topic, payload)
+
+    async def publish_node_status(
+        self, *, session_id: str, node_id: str, status: str, ts: int
+    ) -> None:
+        """Fan out one already-persisted node transition on ``graph:<session>``.
+
+        The graph topic is `docs/phase-2.md` C9's: a canvas needs to know that
+        node *b* went ``awaiting_review`` without subscribing to every run of
+        every node, and node status is not an ``AgentEvent`` — no harness emits
+        it, and inventing a variant for it would put orchestration state into
+        the union `docs/architecture.md` §2 reserves for harness output.
+
+        It goes through the same :meth:`_retain_locked` every other topic does,
+        which is the whole reason this is a method here rather than a second
+        broker: a graph topic outside the LRU bound would reintroduce exactly
+        the unbounded growth C6 removed, one entry per session forever.
+
+        Caller contract, from `docs/architecture.md` §4: the transition is
+        already in SQLite. This method broadcasts; it never decides and never
+        persists.
+        """
+        payload: dict[str, object] = {
+            "session_id": session_id,
+            "node_id": node_id,
+            "status": status,
+            "ts": ts,
+        }
+        async with self._lock:
+            self._fan_out_locked(f"graph:{session_id}", payload, kind="node_status")
+
+    def _fan_out_locked(
+        self, topic: str, payload: dict[str, object], *, kind: str = "event"
+    ) -> None:
+        self._sequences[topic] += 1
+        frame = _EventFrame(
+            topic=topic,
+            seq=self._sequences[topic],
+            payload=payload,
+            kind=kind,
+        )
+        self._retain_locked(frame)
+        message = self._wire_event(frame)
+        for connection in tuple(self._connections):
+            if topic in connection.topics:
+                self._put_locked(connection, message)
 
     def _retain_locked(self, frame: _EventFrame) -> None:
         """Append to the topic's window, evicting whole topics past the cap.
@@ -251,7 +293,7 @@ class EventBroker:
 
     def _wire_event(self, frame: _EventFrame) -> WireMessage:
         return {
-            "type": "event",
+            "type": frame.kind,
             "stream": self.stream_id,
             "topic": frame.topic,
             "seq": frame.seq,
@@ -260,10 +302,15 @@ class EventBroker:
 
     @staticmethod
     def _validate_topic(topic: str) -> None:
+        # The public topic vocabulary. Adding an entry is a **wire-format
+        # change**: `frontend/src/ws/protocol.ts` holds the matching union and
+        # B8 made it the single place the format is written down, so a prefix
+        # accepted here and unknown there is a frame the client drops as
+        # malformed. `graph:` was added by C9 alongside its frontend note.
         if topic == "metrics":
             return
         prefix, separator, identifier = topic.partition(":")
-        if separator and prefix in {"session", "run"} and identifier:
+        if separator and prefix in {"session", "run", "graph"} and identifier:
             return
         raise InvalidTopicError(f"invalid topic {topic!r}")
 

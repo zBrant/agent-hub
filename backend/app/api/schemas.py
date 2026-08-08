@@ -9,8 +9,22 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.status import NodeStatus, RunState, SessionStatus
-from app.models.tables import Node, Run, Session
-from app.orchestrator.service import CreatedSession, RunOutcome, RunSummary
+from app.models.tables import (
+    AcceptanceResult,
+    CriterionOutcome,
+    Node,
+    NodeReview,
+    ReviewDecision,
+    Run,
+    Session,
+)
+from app.orchestrator.service import (
+    CreatedGraph,
+    CreatedSession,
+    PlannedNode,
+    RunOutcome,
+    RunSummary,
+)
 
 
 class _StatusValue(Protocol):
@@ -66,6 +80,11 @@ class NodeResponse(BaseModel):
     acceptance_criteria: tuple[str, ...]
     harness: str
     model: str | None
+    # C1's two graph columns. They are authored planner output (`design.md` §8)
+    # and the canvas renders both, so a node read that omitted them would send
+    # C10 back to the database for a field the row already carries.
+    touches: tuple[str, ...]
+    estimated_effort: str | None
     worktree_path: Path | None
     branch: str | None
     base_ref: str | None
@@ -84,6 +103,142 @@ class CreatedSessionResponse(BaseModel):
             session=SessionResponse.model_validate(result.session),
             node=NodeResponse.model_validate(result.node),
         )
+
+
+class PlannedNodeRequest(BaseModel):
+    """One activity of a proposed graph, keyed by name.
+
+    This is `design.md` §8's planner node schema on the wire, and the field
+    names are deliberately the *stored* ones rather than the planner's:
+    ``suggested_harness``/``suggested_model`` are a suggestion the operator has
+    already answered by the time a graph is created, and §8 says the suggestion
+    is not retained. C8's ``orchestrator/planner.py`` therefore maps its
+    structured-output model onto this one, and a proposal reaches
+    :meth:`~app.orchestrator.service.NodeRunService.create_graph` through the
+    same call a hand-authored graph does.
+
+    ``depends_on`` names the *other nodes' ``name`` values*, not ids: the
+    planner cannot know the ULIDs the database will allocate, and resolving
+    slugs to ids happens in exactly one place (``create_graph``). An
+    unresolvable name comes back as a typed ``unknown_dependency`` defect naming
+    the slug, not as a 500.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    harness: str = Field(min_length=1)
+    model: str | None = None
+    depends_on: tuple[str, ...] = ()
+    acceptance_criteria: tuple[str, ...] = ()
+    touches: tuple[str, ...] = ()
+    estimated_effort: str | None = None
+
+    def to_planned(self) -> PlannedNode:
+        return PlannedNode(
+            name=self.name,
+            prompt=self.prompt,
+            harness=self.harness,
+            model=self.model,
+            depends_on=self.depends_on,
+            acceptance_criteria=self.acceptance_criteria,
+            touches=self.touches,
+            estimated_effort=self.estimated_effort,
+        )
+
+
+class CreateGraphRequest(BaseModel):
+    """A whole proposed graph, persisted in one call.
+
+    One call and not "create session, then POST each node": a half-written
+    graph is a graph, and a scheduler reading one would happily start the
+    fragment it can see. ``create_graph`` validates the DAG before the first row
+    (invariant 6 — this is a proposal, and persisting it starts nothing).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_path: Path
+    nodes: tuple[PlannedNodeRequest, ...] = Field(min_length=1)
+    title: str | None = None
+    auto_merge: bool = False
+    base_ref: str = "HEAD"
+
+
+class CreatedGraphResponse(BaseModel):
+    session: SessionResponse
+    nodes: tuple[NodeResponse, ...]
+    #: planner slug → allocated node id, so a caller that authored ``depends_on``
+    #: by name can address the result without re-deriving the mapping.
+    ids_by_name: dict[str, str]
+
+    @classmethod
+    def from_result(cls, result: CreatedGraph) -> CreatedGraphResponse:
+        return cls(
+            session=SessionResponse.model_validate(result.session),
+            nodes=tuple(NodeResponse.model_validate(node) for node in result.nodes),
+            ids_by_name=dict(result.ids_by_name),
+        )
+
+
+class AcceptanceResultResponse(BaseModel):
+    """One criterion of `design.md` §8's ``awaiting_review`` checklist."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    node_id: str
+    attempt: int
+    position: int
+    criterion: str
+    outcome: CriterionOutcome
+    created_ms: int
+    updated_ms: int
+
+
+class NodeReviewResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    node_id: str
+    attempt: int
+    decision: ReviewDecision
+    feedback: str | None
+    reviewed_ms: int
+
+
+class ReviewOutcomesRequest(BaseModel):
+    """The reviewer's answers to the acceptance checklist, by position.
+
+    Partial on purpose: a position left out keeps whatever it had, which is
+    ``unevaluated`` until somebody says otherwise. The orchestrator decides
+    whether a ``fail`` disqualifies an approval — it does not, deliberately
+    (see :meth:`~app.orchestrator.service.NodeRunService.approve_node`) — and
+    this transport does not second-guess it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    outcomes: dict[int, CriterionOutcome] = Field(default_factory=dict)
+
+
+class RejectRequest(ReviewOutcomesRequest):
+    #: Required and non-blank; the orchestrator raises on whitespace, which
+    #: surfaces as 422. A rejection with no reason produces an attempt that
+    #: differs from the last one only by luck.
+    feedback: str = Field(min_length=1)
+
+
+class RetryRequest(BaseModel):
+    """A new attempt at a ``failed`` or ``blocked`` node.
+
+    ``feedback`` is optional here and mandatory on reject, and that asymmetry is
+    the orchestrator's: retry is "try again", reject is a human overruling a
+    finished attempt.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    feedback: str | None = None
 
 
 class RunResponse(BaseModel):
@@ -212,3 +367,11 @@ def node_response(row: Node) -> NodeResponse:
 
 def run_response(row: Run) -> RunResponse:
     return RunResponse.model_validate(row)
+
+
+def acceptance_response(row: AcceptanceResult) -> AcceptanceResultResponse:
+    return AcceptanceResultResponse.model_validate(row)
+
+
+def review_response(row: NodeReview) -> NodeReviewResponse:
+    return NodeReviewResponse.model_validate(row)

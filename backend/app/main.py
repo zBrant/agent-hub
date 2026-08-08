@@ -8,12 +8,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.graph import router as graph_router
 from app.api.health import router as health_router
+from app.api.node import router as node_router
 from app.api.session import router as session_router
 from app.config import Settings, get_settings
 from app.models.clock import now_ms
 from app.models.pricing import load_price_table
-from app.orchestrator.service import SingleRunService
+from app.orchestrator.service import NodeRunService
 from app.storage.db import Database, upgrade_database
 from app.ws.broker import EventBroker
 from app.ws.router import router as websocket_router
@@ -30,7 +32,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     broker = EventBroker()
     app.state.database = database
     app.state.broker = broker
-    app.state.orchestrator = SingleRunService(
+    app.state.orchestrator = NodeRunService(
         database=database,
         settings=settings,
         prices=prices,
@@ -52,6 +54,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = settings or get_settings()
     application.include_router(health_router)
     application.include_router(session_router)
+    # Registered after the session router so that `/api/sessions/{session_id}`
+    # keeps matching before the node prefix that extends it; FastAPI resolves in
+    # declaration order and both are unambiguous, but the reading order matches
+    # the addressing hierarchy.
+    application.include_router(node_router)
+    application.include_router(graph_router)
     application.include_router(websocket_router)
     return application
 

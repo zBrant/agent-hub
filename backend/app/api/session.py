@@ -1,13 +1,35 @@
-"""Session REST transport. Validation and delegation only."""
+"""Session REST transport. Validation and delegation only.
+
+**Scope, after C9.** Everything below either addresses the *session* (create,
+list, read) or is a Phase 1 convenience that resolves a one-node session to its
+only node. The second group — ``/node``, ``/runs``, ``/kill``, ``/retry``,
+``/approve``, ``/diff`` — is kept rather than replaced by
+``/api/sessions/{id}/nodes/{node_id}/...``, for three reasons:
+
+1. ``docs/acceptance-phase-1.md`` records a real accepted end-to-end run
+   against these exact URLs. Deleting them invalidates an acceptance record
+   that a later phase is entitled to re-run.
+2. ``frontend/src/api/client.ts`` calls them, and C9 may not edit ``frontend/``.
+   Removing them here would ship a backend the committed frontend cannot talk
+   to, between two activities.
+3. Their 409 on a multi-node session was never the problem C3 reported. The
+   problem was that there was nothing else to call; ``api/node.py`` is that
+   something. Refusing to guess which of four nodes ``/diff`` meant remains the
+   right answer, and it is now a redirect instead of a dead end.
+
+Two of them — ``/runs/{run_id}/summary`` and ``/runs/{run_id}/events`` — have no
+node-addressed counterpart at all, because a run id already identifies its node
+and the service resolves it through the session. They are not conveniences and
+are not going anywhere.
+"""
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from typing import cast
-
-from fastapi import APIRouter, HTTPException, Query, Request, Response, status
+from fastapi import APIRouter, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
+from app.api.deps import call as _call
+from app.api.deps import service as _service
 from app.api.schemas import (
     CreatedSessionResponse,
     CreateSessionRequest,
@@ -23,28 +45,8 @@ from app.api.schemas import (
     session_response,
 )
 from app.harnesses.events import agent_event_adapter
-from app.orchestrator.service import (
-    InvalidTransitionError,
-    ResourceNotFoundError,
-    SingleRunService,
-)
 
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
-
-
-def _service(request: Request) -> SingleRunService:
-    return cast(SingleRunService, request.app.state.orchestrator)
-
-
-async def _call[T](operation: Awaitable[T]) -> T:
-    try:
-        return await operation
-    except ResourceNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except InvalidTransitionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @router.post(
