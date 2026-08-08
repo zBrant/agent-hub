@@ -20,6 +20,7 @@ from typing import cast
 from fastapi import HTTPException, Request
 
 from app.models.tables import Node
+from app.orchestrator.planner import Planner
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import (
     InvalidGraphError,
@@ -35,6 +36,10 @@ def service(request: Request) -> NodeRunService:
 
 def scheduler(request: Request) -> GraphScheduler:
     return cast(GraphScheduler, request.app.state.scheduler)
+
+
+def planner(request: Request) -> Planner:
+    return cast(Planner, request.app.state.planner)
 
 
 async def call[T](operation: Awaitable[T]) -> T:
@@ -101,6 +106,7 @@ async def resolve_node(request: Request, session_id: str, node_id: str) -> Node:
 
 __all__ = [
     "call",
+    "planner",
     "resolve_node",
     "scheduler",
     "service",

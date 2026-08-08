@@ -3,13 +3,92 @@
 from __future__ import annotations
 
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app.models.pricing import TokenCounts
+from app.orchestrator.graph import DagError, DagErrorKind
+from app.orchestrator.planner import (
+    PlanFailure,
+    PlanFailureKind,
+    PlannerUsage,
+    PlanProposal,
+)
+from app.orchestrator.service import PlannedNode
 from tests.api.conftest import MODEL, install_fake_service
+
+
+def planner_usage() -> PlannerUsage:
+    return PlannerUsage(
+        model="claude-sonnet-4-5",
+        counts=TokenCounts(
+            input_tokens=11,
+            output_tokens=7,
+            cache_read_tokens=5,
+            cache_write_tokens=3,
+        ),
+        cost_usd=0.00123,
+        price_table_version=1,
+        requests=1,
+    )
+
+
+@dataclass
+class FakePlanner:
+    failure: PlanFailure | None = None
+    objective: str | None = None
+    context: str | None = None
+
+    async def plan_graph(
+        self,
+        objective: str,
+        *,
+        repo_path: Path,
+        creator: Any,
+        context: str | None = None,
+        auto_merge: bool = False,
+        base_ref: str = "HEAD",
+    ) -> PlanProposal | PlanFailure:
+        self.objective = objective
+        self.context = context
+        if self.failure is not None:
+            return self.failure
+        nodes = (
+            PlannedNode(
+                name="backend",
+                prompt="implement the endpoint",
+                harness="fake",
+                model=MODEL,
+                acceptance_criteria=("endpoint is tested",),
+                touches=("backend/**",),
+            ),
+            PlannedNode(
+                name="frontend",
+                prompt="build the client",
+                harness="fake",
+                model=MODEL,
+                depends_on=("backend",),
+            ),
+        )
+        graph = await creator.create_graph(
+            repo_path=repo_path,
+            nodes=nodes,
+            title="Planner result",
+            auto_merge=auto_merge,
+            base_ref=base_ref,
+        )
+        return PlanProposal(
+            title="Planner result",
+            nodes=nodes,
+            usage=planner_usage(),
+            attempts=1,
+            graph=graph,
+        )
 
 
 def node_body(name: str, **overrides: object) -> dict[str, object]:
@@ -21,6 +100,87 @@ def node_body(name: str, **overrides: object) -> dict[str, object]:
     }
     body.update(overrides)
     return body
+
+
+def test_plan_endpoint_persists_a_gated_proposal_from_an_objective(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        fake = FakePlanner()
+        client.app.state.planner = fake
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={
+                "repo_path": str(target_repo),
+                "objective": "Build an endpoint and its client",
+                "context": "Keep the transport thin",
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        payload = response.json()
+        assert payload["status"] == "proposal"
+        assert payload["session"]["status"] == "planning"
+        assert payload["session"]["auto_merge"] is False
+        assert {node["status"] for node in payload["nodes"]} == {"pending"}
+        assert payload["ids_by_name"].keys() == {"backend", "frontend"}
+        assert payload["attempts"] == 1
+        assert payload["planner_usage"] == {
+            "model": "claude-sonnet-4-5",
+            "requests": 1,
+            "tokens": {
+                "input_tokens": 11,
+                "output_tokens": 7,
+                "cache_read_tokens": 5,
+                "cache_write_tokens": 3,
+                "total_tokens": 26,
+            },
+            "cost_usd": 0.00123,
+            "price_table_version": 1,
+        }
+        assert fake.objective == "Build an endpoint and its client"
+        assert fake.context == "Keep the transport thin"
+
+
+def test_plan_failure_is_typed_and_persists_nothing(
+    settings: Settings, target_repo: Path
+) -> None:
+    failure = PlanFailure(
+        kind=PlanFailureKind.INVALID_GRAPH,
+        message="the planner did not produce a valid graph",
+        usage=planner_usage(),
+        attempts=3,
+        errors=(
+            DagError(
+                kind=DagErrorKind.CYCLE,
+                nodes=("backend", "frontend"),
+                message="dependency cycle: backend -> frontend -> backend",
+            ),
+        ),
+    )
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        client.app.state.planner = FakePlanner(failure=failure)
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={"repo_path": str(target_repo), "objective": "Build it"},
+        )
+
+        assert response.status_code == 422
+        detail = response.json()["detail"]
+        assert detail["kind"] == "invalid_graph"
+        assert detail["attempts"] == 3
+        assert detail["errors"] == [
+            {
+                "kind": "cycle",
+                "nodes": ["backend", "frontend"],
+                "message": "dependency cycle: backend -> frontend -> backend",
+            }
+        ]
+        assert client.get("/api/sessions").json() == []
 
 
 def test_a_proposal_is_persisted_pending_and_addressable_by_node(

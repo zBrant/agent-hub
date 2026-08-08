@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,6 +18,7 @@ from app.models.tables import (
     Run,
     Session,
 )
+from app.orchestrator.planner import PlannerUsage, PlanProposal
 from app.orchestrator.service import (
     CreatedGraph,
     CreatedSession,
@@ -224,6 +225,62 @@ class CreatedGraphResponse(BaseModel):
             session=SessionResponse.model_validate(result.session),
             nodes=tuple(NodeResponse.model_validate(node) for node in result.nodes),
             ids_by_name=dict(result.ids_by_name),
+        )
+
+
+class PlanGraphRequest(BaseModel):
+    """An objective that the planner turns into a gated graph proposal."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    repo_path: Path
+    objective: str = Field(min_length=1)
+    context: str | None = None
+    auto_merge: bool = False
+    base_ref: str = "HEAD"
+
+
+class PlannerUsageResponse(BaseModel):
+    """Metered API usage, distinct from harness equivalent-cost estimates."""
+
+    model: str
+    requests: int
+    tokens: TokenCountsResponse
+    cost_usd: float | None
+    price_table_version: int
+
+    @classmethod
+    def from_result(cls, result: PlannerUsage) -> PlannerUsageResponse:
+        counts = result.counts
+        return cls(
+            model=result.model,
+            requests=result.requests,
+            tokens=TokenCountsResponse(
+                input_tokens=counts.input_tokens,
+                output_tokens=counts.output_tokens,
+                cache_read_tokens=counts.cache_read_tokens,
+                cache_write_tokens=counts.cache_write_tokens,
+                total_tokens=counts.total,
+            ),
+            cost_usd=result.cost_usd,
+            price_table_version=result.price_table_version,
+        )
+
+
+class PlannedGraphResponse(CreatedGraphResponse):
+    status: Literal["proposal"] = "proposal"
+    attempts: int
+    planner_usage: PlannerUsageResponse
+
+    @classmethod
+    def from_proposal(cls, result: PlanProposal) -> PlannedGraphResponse:
+        if result.graph is None:
+            raise ValueError("planner proposal was not persisted")
+        created = CreatedGraphResponse.from_result(result.graph)
+        return cls(
+            **created.model_dump(),
+            attempts=result.attempts,
+            planner_usage=PlannerUsageResponse.from_result(result.usage),
         )
 
 

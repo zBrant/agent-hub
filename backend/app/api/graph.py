@@ -6,40 +6,79 @@ same :class:`~app.models.tables.Session` Phase 1 creates, so it is read through
 *creation* needs a resource of its own, because creating a whole DAG in one
 transaction is not the same operation as creating a one-node session.
 
-**Shaped for a planner proposal, deliberately.** C8 is writing
-``orchestrator/planner.py`` in parallel and this activity does not wire HTTP to
-it. What it does is make sure that wiring is a route and not a redesign:
-:class:`~app.api.schemas.PlannedNodeRequest` is `design.md` §8's node schema
+**The planner and hand-authored paths converge here.**
+``POST /api/graphs/plan`` asks the planner for a validated proposal, while
+``POST /api/graphs`` accepts an already-authored one. Both use
+:class:`~app.api.schemas.PlannedNodeRequest`, `design.md` §8's node schema,
 with the two ``suggested_*`` fields already collapsed onto ``harness``/``model``
 (§8 says the suggestion is not retained once answered), ``depends_on`` is by
 planner slug, and the body carries ``auto_merge`` so a proposal is persisted
-gated. When the planner lands, ``POST /api/graphs/plan`` builds the same
+gated. The planner route builds the same
 ``PlannedNode`` sequence and calls the same
 :meth:`~app.orchestrator.service.NodeRunService.create_graph`; the correction
-loop stays inside the planner, and a graph that is still invalid after it fails
-with the same typed defects this route already returns as 422.
+loop stays inside the planner, and a graph that is still invalid fails with
+typed defects and no partial graph.
 
 **Invariant 6 holds by construction here.** ``create_graph`` writes every node
 ``pending`` and materializes nothing: persisting a proposal starts no worktree
-and no agent. What is *missing* — editing the proposal, approving it, and
-running it — is missing because ``orchestrator/`` exposes no use case for any
-of the three; see C9's report. There is no version of those routes that this
-module could hold without becoming the state machine itself.
+and no agent. Editing remains node-addressed, and approval plus scheduling call
+orchestrator use cases below; the transport never owns the state machine.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 
-from app.api.deps import call, scheduler, service
+from app.api.deps import call, planner, scheduler, service
 from app.api.schemas import (
     CreatedGraphResponse,
     CreateGraphRequest,
     GraphResponse,
     GraphRunResponse,
+    PlanGraphRequest,
+    PlannedGraphResponse,
+    PlannerUsageResponse,
 )
+from app.orchestrator.planner import PlanFailure
 
 router = APIRouter(prefix="/api/graphs", tags=["graphs"])
+
+
+@router.post(
+    "/plan",
+    response_model=PlannedGraphResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def plan_graph(body: PlanGraphRequest, request: Request) -> PlannedGraphResponse:
+    """Plan and persist an objective as a proposal; never approve or run it."""
+    result = await planner(request).plan_graph(
+        body.objective,
+        repo_path=body.repo_path,
+        creator=service(request),
+        context=body.context,
+        auto_merge=body.auto_merge,
+        base_ref=body.base_ref,
+    )
+    if isinstance(result, PlanFailure):
+        detail = {
+            "kind": result.kind.value,
+            "message": result.message,
+            "attempts": result.attempts,
+            "planner_usage": PlannerUsageResponse.from_result(
+                result.usage
+            ).model_dump(),
+            "errors": [
+                {
+                    "kind": error.kind.value,
+                    "nodes": list(error.nodes),
+                    "message": error.message,
+                }
+                for error in result.errors
+            ],
+        }
+        code = 502 if result.kind.value == "api_error" else 422
+        raise HTTPException(status_code=code, detail=detail)
+    return PlannedGraphResponse.from_proposal(result)
 
 
 @router.post(

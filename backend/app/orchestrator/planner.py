@@ -550,6 +550,10 @@ class Planner:
     def catalog(self) -> Mapping[str, Sequence[str]]:
         return self._catalog
 
+    async def close(self) -> None:
+        """Release the HTTP client owned by the application composition root."""
+        await self._client.close()
+
     async def propose(
         self, objective: str, *, context: str | None = None
     ) -> PlanResult:

@@ -16,6 +16,7 @@ from app.config import Settings, get_settings
 from app.models.clock import now_ms
 from app.models.pricing import load_price_table
 from app.models.tables import Node
+from app.orchestrator.planner import create_planner
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
 from app.storage.db import Database, upgrade_database
@@ -56,12 +57,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         database=database,
         settings=settings,
     )
+    planner = create_planner(settings, prices)
     app.state.orchestrator = orchestrator
     app.state.scheduler = scheduler
+    app.state.planner = planner
     try:
         yield
     finally:
         await scheduler.close()
+        await planner.close()
         await database.dispose()
 
 

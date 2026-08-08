@@ -28,6 +28,26 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/graphs/plan": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /**
+         * Plan Graph
+         * @description Plan and persist an objective as a proposal; never approve or run it.
+         */
+        readonly post: operations["plan_graph_api_graphs_plan_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/graphs/{session_id}": {
         readonly parameters: {
             readonly query?: never;
@@ -762,6 +782,50 @@ export interface components {
          */
         readonly NodeStatus: "pending" | "ready" | "running" | "awaiting_review" | "blocked" | "done" | "failed" | "skipped";
         /**
+         * PlanGraphRequest
+         * @description An objective that the planner turns into a gated graph proposal.
+         */
+        readonly PlanGraphRequest: {
+            /**
+             * Auto Merge
+             * @default false
+             */
+            readonly auto_merge: boolean;
+            /**
+             * Base Ref
+             * @default HEAD
+             */
+            readonly base_ref: string;
+            /** Context */
+            readonly context?: string | null;
+            /** Objective */
+            readonly objective: string;
+            /**
+             * Repo Path
+             * Format: path
+             */
+            readonly repo_path: string;
+        };
+        /** PlannedGraphResponse */
+        readonly PlannedGraphResponse: {
+            /** Attempts */
+            readonly attempts: number;
+            /** Ids By Name */
+            readonly ids_by_name: {
+                readonly [key: string]: string;
+            };
+            /** Nodes */
+            readonly nodes: readonly components["schemas"]["NodeResponse"][];
+            readonly planner_usage: components["schemas"]["PlannerUsageResponse"];
+            readonly session: components["schemas"]["SessionResponse"];
+            /**
+             * Status
+             * @default proposal
+             * @constant
+             */
+            readonly status: "proposal";
+        };
+        /**
          * PlannedNodeRequest
          * @description One activity of a proposed graph, keyed by name.
          *
@@ -806,6 +870,21 @@ export interface components {
              * @default []
              */
             readonly touches: readonly string[];
+        };
+        /**
+         * PlannerUsageResponse
+         * @description Metered API usage, distinct from harness equivalent-cost estimates.
+         */
+        readonly PlannerUsageResponse: {
+            /** Cost Usd */
+            readonly cost_usd: number | null;
+            /** Model */
+            readonly model: string;
+            /** Price Table Version */
+            readonly price_table_version: number;
+            /** Requests */
+            readonly requests: number;
+            readonly tokens: components["schemas"]["TokenCountsResponse"];
         };
         /** RejectRequest */
         readonly RejectRequest: {
@@ -1054,6 +1133,39 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["CreatedGraphResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly plan_graph_api_graphs_plan_post: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["PlanGraphRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 201: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PlannedGraphResponse"];
                 };
             };
             /** @description Validation Error */

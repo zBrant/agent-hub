@@ -535,6 +535,92 @@
         "title": "NodeStatus",
         "type": "string"
       },
+      "PlanGraphRequest": {
+        "additionalProperties": false,
+        "description": "An objective that the planner turns into a gated graph proposal.",
+        "properties": {
+          "auto_merge": {
+            "default": false,
+            "title": "Auto Merge",
+            "type": "boolean"
+          },
+          "base_ref": {
+            "default": "HEAD",
+            "title": "Base Ref",
+            "type": "string"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "objective": {
+            "minLength": 1,
+            "title": "Objective",
+            "type": "string"
+          },
+          "repo_path": {
+            "format": "path",
+            "title": "Repo Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repo_path",
+          "objective"
+        ],
+        "title": "PlanGraphRequest",
+        "type": "object"
+      },
+      "PlannedGraphResponse": {
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "ids_by_name": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Ids By Name",
+            "type": "object"
+          },
+          "nodes": {
+            "items": {
+              "$ref": "#/components/schemas/NodeResponse"
+            },
+            "title": "Nodes",
+            "type": "array"
+          },
+          "planner_usage": {
+            "$ref": "#/components/schemas/PlannerUsageResponse"
+          },
+          "session": {
+            "$ref": "#/components/schemas/SessionResponse"
+          },
+          "status": {
+            "const": "proposal",
+            "default": "proposal",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "nodes",
+          "ids_by_name",
+          "attempts",
+          "planner_usage"
+        ],
+        "title": "PlannedGraphResponse",
+        "type": "object"
+      },
       "PlannedNodeRequest": {
         "additionalProperties": false,
         "description": "One activity of a proposed graph, keyed by name.\n\nThis is `design.md` \u00a78's planner node schema on the wire, and the field\nnames are deliberately the *stored* ones rather than the planner's:\n``suggested_harness``/``suggested_model`` are a suggestion the operator has\nalready answered by the time a graph is created, and \u00a78 says the suggestion\nis not retained. C8's ``orchestrator/planner.py`` therefore maps its\nstructured-output model onto this one, and a proposal reaches\n:meth:`~app.orchestrator.service.NodeRunService.create_graph` through the\nsame call a hand-authored graph does.\n\n``depends_on`` names the *other nodes' ``name`` values*, not ids: the\nplanner cannot know the ULIDs the database will allocate, and resolving\nslugs to ids happens in exactly one place (``create_graph``). An\nunresolvable name comes back as a typed ``unknown_dependency`` defect naming\nthe slug, not as a 500.",
@@ -607,6 +693,46 @@
           "harness"
         ],
         "title": "PlannedNodeRequest",
+        "type": "object"
+      },
+      "PlannerUsageResponse": {
+        "description": "Metered API usage, distinct from harness equivalent-cost estimates.",
+        "properties": {
+          "cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Usd"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "price_table_version": {
+            "title": "Price Table Version",
+            "type": "integer"
+          },
+          "requests": {
+            "title": "Requests",
+            "type": "integer"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/TokenCountsResponse"
+          }
+        },
+        "required": [
+          "model",
+          "requests",
+          "tokens",
+          "cost_usd",
+          "price_table_version"
+        ],
+        "title": "PlannerUsageResponse",
         "type": "object"
       },
       "RejectRequest": {
@@ -1214,6 +1340,48 @@
           }
         },
         "summary": "Create Graph",
+        "tags": [
+          "graphs"
+        ]
+      }
+    },
+    "/api/graphs/plan": {
+      "post": {
+        "description": "Plan and persist an objective as a proposal; never approve or run it.",
+        "operationId": "plan_graph_api_graphs_plan_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlanGraphRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannedGraphResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Plan Graph",
         "tags": [
           "graphs"
         ]

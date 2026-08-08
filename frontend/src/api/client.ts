@@ -15,6 +15,8 @@ export type CriterionOutcome = components["schemas"]["CriterionOutcome"];
 export type Merge = components["schemas"]["MergeResponse"];
 export type NodeReview = components["schemas"]["NodeReviewResponse"];
 export type RunOutcome = components["schemas"]["RunOutcomeResponse"];
+export type PlanGraph = components["schemas"]["PlannedGraphResponse"];
+export type PlanGraphRequest = components["schemas"]["PlanGraphRequest"];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -42,6 +44,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         typeof payload.detail === "string"
       ) {
         message = payload.detail;
+      } else if (
+        typeof payload === "object" &&
+        payload !== null &&
+        "detail" in payload &&
+        typeof payload.detail === "object" &&
+        payload.detail !== null &&
+        "message" in payload.detail &&
+        typeof payload.detail.message === "string"
+      ) {
+        message = payload.detail.message;
       }
     } catch {
       // The status remains actionable when the error body is not JSON.
@@ -80,6 +92,11 @@ function jsonBody(body: unknown): Pick<RequestInit, "body" | "headers"> {
 
 export const api = {
   listSessions: () => request<readonly Session[]>("/api/sessions"),
+  planGraph: (body: PlanGraphRequest) =>
+    request<PlanGraph>("/api/graphs/plan", {
+      method: "POST",
+      ...jsonBody(body),
+    }),
   getSession: (sessionId: string) => request<Session>(sessionPath(sessionId)),
   getGraph: (sessionId: string) => request<Graph>(graphPath(sessionId)),
   approveGraph: (sessionId: string) =>
