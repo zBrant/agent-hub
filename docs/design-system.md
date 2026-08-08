@@ -1,7 +1,9 @@
 # Design system
 
 **Base:** shadcn/ui on [Base UI](https://base-ui.com) + Tailwind v4.
-**Charts:** [Tremor](https://www.tremor.so/), with its palette overridden by the tokens here.
+**Charts:** [Tremor Raw](https://www.tremor.so/), copied and adapted with its
+palette mapped to the tokens here. Do not install the legacy Tailwind 3
+`@tremor/react` package into this Tailwind 4 application.
 **Icons:** `lucide-react`.
 **Theme:** dark-only, high density.
 
@@ -238,7 +240,7 @@ time. Before that it's inline composition in the route.
 
 ---
 
-## 9. Charts (Tremor)
+## 9. Charts (Tremor Raw)
 
 Override Tremor's default palette with the tokens. Rules:
 

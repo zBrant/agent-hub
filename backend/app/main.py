@@ -8,11 +8,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app.api.dashboard import router as dashboard_router
 from app.api.graph import router as graph_router
 from app.api.health import router as health_router
 from app.api.node import router as node_router
 from app.api.session import router as session_router
 from app.config import Settings, get_settings
+from app.metrics.dashboard import DashboardService
 from app.models.clock import now_ms
 from app.models.pricing import load_price_table
 from app.models.tables import Node
@@ -61,6 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.orchestrator = orchestrator
     app.state.scheduler = scheduler
     app.state.planner = planner
+    app.state.dashboard = DashboardService(database)
     try:
         yield
     finally:
@@ -77,6 +80,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = settings or get_settings()
     application.include_router(health_router)
+    application.include_router(dashboard_router)
     application.include_router(session_router)
     # Registered after the session router so that `/api/sessions/{session_id}`
     # keeps matching before the node prefix that extends it; FastAPI resolves in

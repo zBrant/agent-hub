@@ -44,6 +44,65 @@
         "title": "AcceptanceResultResponse",
         "type": "object"
       },
+      "ActiveSessionMetricResponse": {
+        "properties": {
+          "blocked_nodes": {
+            "title": "Blocked Nodes",
+            "type": "integer"
+          },
+          "completed_nodes": {
+            "title": "Completed Nodes",
+            "type": "integer"
+          },
+          "created_ms": {
+            "title": "Created Ms",
+            "type": "integer"
+          },
+          "elapsed_ms": {
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "harnesses": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Harnesses",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "total_nodes": {
+            "title": "Total Nodes",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/MetricUsageResponse"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "created_ms",
+          "elapsed_ms",
+          "total_nodes",
+          "completed_nodes",
+          "blocked_nodes",
+          "harnesses",
+          "usage"
+        ],
+        "title": "ActiveSessionMetricResponse",
+        "type": "object"
+      },
       "CreateGraphRequest": {
         "additionalProperties": false,
         "description": "A whole proposed graph, persisted in one call.\n\nOne call and not \"create session, then POST each node\": a half-written\ngraph is a graph, and a scheduler reading one would happily start the\nfragment it can see. ``create_graph`` validates the DAG before the first row\n(invariant 6 \u2014 this is a proposal, and persisting it starts nothing).",
@@ -211,6 +270,92 @@
         "title": "CriterionOutcome",
         "type": "string"
       },
+      "DashboardPeriod": {
+        "enum": [
+          "today",
+          "7d",
+          "30d"
+        ],
+        "title": "DashboardPeriod",
+        "type": "string"
+      },
+      "DashboardResponse": {
+        "properties": {
+          "active_session_count": {
+            "title": "Active Session Count",
+            "type": "integer"
+          },
+          "active_sessions": {
+            "items": {
+              "$ref": "#/components/schemas/ActiveSessionMetricResponse"
+            },
+            "title": "Active Sessions",
+            "type": "array"
+          },
+          "blocked_node_count": {
+            "title": "Blocked Node Count",
+            "type": "integer"
+          },
+          "by_harness": {
+            "items": {
+              "$ref": "#/components/schemas/MetricUsageResponse"
+            },
+            "title": "By Harness",
+            "type": "array"
+          },
+          "by_model": {
+            "items": {
+              "$ref": "#/components/schemas/MetricUsageResponse"
+            },
+            "title": "By Model",
+            "type": "array"
+          },
+          "generated_ms": {
+            "title": "Generated Ms",
+            "type": "integer"
+          },
+          "node_completion_rate": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node Completion Rate"
+          },
+          "period": {
+            "$ref": "#/components/schemas/DashboardPeriod"
+          },
+          "running_node_count": {
+            "title": "Running Node Count",
+            "type": "integer"
+          },
+          "since_ms": {
+            "title": "Since Ms",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/MetricUsageResponse"
+          }
+        },
+        "required": [
+          "period",
+          "since_ms",
+          "generated_ms",
+          "usage",
+          "by_harness",
+          "by_model",
+          "active_sessions",
+          "active_session_count",
+          "running_node_count",
+          "blocked_node_count",
+          "node_completion_rate"
+        ],
+        "title": "DashboardResponse",
+        "type": "object"
+      },
       "DiffResponse": {
         "properties": {
           "patch": {
@@ -327,6 +472,40 @@
           "conflicts"
         ],
         "title": "MergeResponse",
+        "type": "object"
+      },
+      "MetricUsageResponse": {
+        "properties": {
+          "cost_complete": {
+            "title": "Cost Complete",
+            "type": "boolean"
+          },
+          "estimated_equivalent_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Equivalent Cost Usd"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "tokens": {
+            "$ref": "#/components/schemas/TokenCountsResponse"
+          }
+        },
+        "required": [
+          "key",
+          "tokens",
+          "estimated_equivalent_cost_usd",
+          "cost_complete"
+        ],
+        "title": "MetricUsageResponse",
         "type": "object"
       },
       "NodeDependencyResponse": {
@@ -1303,6 +1482,48 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/dashboard": {
+      "get": {
+        "operationId": "get_dashboard_api_dashboard_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DashboardPeriod",
+              "default": "today"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DashboardResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Dashboard",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
     "/api/graphs": {
       "post": {
         "description": "Persist a proposed DAG: one session, its nodes, and its edges.\n\n422 with the typed defects when the proposal is not a DAG \u2014 a cycle, a\n``depends_on`` naming a slug that is not in the body, a duplicate name. The\nvalidation happens before the first row, so a rejected proposal leaves\nnothing behind (the alternative, half a graph on disk, is worse than none).",

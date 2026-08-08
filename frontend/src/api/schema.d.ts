@@ -3,6 +3,23 @@
  * Run `pnpm gen:api`. See src/api/README.md and docs/architecture.md §7.
  */
 export interface paths {
+    readonly "/api/dashboard": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get Dashboard */
+        readonly get: operations["get_dashboard_api_dashboard_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/graphs": {
         readonly parameters: {
             readonly query?: never;
@@ -573,6 +590,27 @@ export interface components {
             /** Updated Ms */
             readonly updated_ms: number;
         };
+        /** ActiveSessionMetricResponse */
+        readonly ActiveSessionMetricResponse: {
+            /** Blocked Nodes */
+            readonly blocked_nodes: number;
+            /** Completed Nodes */
+            readonly completed_nodes: number;
+            /** Created Ms */
+            readonly created_ms: number;
+            /** Elapsed Ms */
+            readonly elapsed_ms: number;
+            /** Harnesses */
+            readonly harnesses: readonly string[];
+            /** Id */
+            readonly id: string;
+            readonly status: components["schemas"]["SessionStatus"];
+            /** Title */
+            readonly title: string;
+            /** Total Nodes */
+            readonly total_nodes: number;
+            readonly usage: components["schemas"]["MetricUsageResponse"];
+        };
         /**
          * CreateGraphRequest
          * @description A whole proposed graph, persisted in one call.
@@ -671,6 +709,34 @@ export interface components {
          * @enum {string}
          */
         readonly CriterionOutcome: "unevaluated" | "pass" | "fail";
+        /**
+         * DashboardPeriod
+         * @enum {string}
+         */
+        readonly DashboardPeriod: "today" | "7d" | "30d";
+        /** DashboardResponse */
+        readonly DashboardResponse: {
+            /** Active Session Count */
+            readonly active_session_count: number;
+            /** Active Sessions */
+            readonly active_sessions: readonly components["schemas"]["ActiveSessionMetricResponse"][];
+            /** Blocked Node Count */
+            readonly blocked_node_count: number;
+            /** By Harness */
+            readonly by_harness: readonly components["schemas"]["MetricUsageResponse"][];
+            /** By Model */
+            readonly by_model: readonly components["schemas"]["MetricUsageResponse"][];
+            /** Generated Ms */
+            readonly generated_ms: number;
+            /** Node Completion Rate */
+            readonly node_completion_rate: number | null;
+            readonly period: components["schemas"]["DashboardPeriod"];
+            /** Running Node Count */
+            readonly running_node_count: number;
+            /** Since Ms */
+            readonly since_ms: number;
+            readonly usage: components["schemas"]["MetricUsageResponse"];
+        };
         /** DiffResponse */
         readonly DiffResponse: {
             /** Patch */
@@ -713,6 +779,16 @@ export interface components {
             readonly conflicts: readonly string[];
             /** Status */
             readonly status: string;
+        };
+        /** MetricUsageResponse */
+        readonly MetricUsageResponse: {
+            /** Cost Complete */
+            readonly cost_complete: boolean;
+            /** Estimated Equivalent Cost Usd */
+            readonly estimated_equivalent_cost_usd: number | null;
+            /** Key */
+            readonly key: string;
+            readonly tokens: components["schemas"]["TokenCountsResponse"];
         };
         /** NodeDependencyResponse */
         readonly NodeDependencyResponse: {
@@ -1113,6 +1189,37 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    readonly get_dashboard_api_dashboard_get: {
+        readonly parameters: {
+            readonly query?: {
+                readonly period?: components["schemas"]["DashboardPeriod"];
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["DashboardResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     readonly create_graph_api_graphs_post: {
         readonly parameters: {
             readonly query?: never;

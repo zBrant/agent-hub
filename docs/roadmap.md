@@ -34,6 +34,12 @@ deliberate merge conflict, two NDJSON replays, and database/REST/UI agreement.
 See [`acceptance-phase-2.md`](acceptance-phase-2.md) for the evidence and
 [`phase-2.md`](phase-2.md) for the activity details.
 
+**Phase 3 is in progress.** D1 is complete: the read-only dashboard projection
+aggregates four-field usage and ingest-time estimated-equivalent cost by period,
+harness and model, and returns active-session progress through generated REST
+types. D2 — the KPI and active-session UI — is next; see
+[`phase-3.md`](phase-3.md).
+
 ## Phases
 
 - [x] **Phase 0 — Vertical spike.** No UI. A script that creates a worktree,
