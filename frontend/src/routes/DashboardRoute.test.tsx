@@ -47,6 +47,7 @@ function snapshot(period: DashboardPeriod): Dashboard {
     running_node_count: 2,
     blocked_node_count: 1,
     node_completion_rate: 0.5,
+    event_feed: [],
     active_sessions: [
       {
         id: "sess_phase_two",
@@ -153,6 +154,31 @@ describe("dashboard route", () => {
     expect(screen.getByText("node_live")).toBeTruthy();
     expect(screen.getByText("256.0 MiB")).toBeTruthy();
     expect(screen.getByText("1h 5m")).toBeTruthy();
+  });
+
+  it("deep-links a meaningful transition to its graph node", async () => {
+    const data = snapshot("today");
+    harness.getDashboard.mockResolvedValue({
+      ...data,
+      event_feed: [
+        {
+          id: 7,
+          session_id: "sess_phase_two",
+          session_title: "Accepted graph",
+          node_id: "node_failed",
+          node_name: "Run verification",
+          status: "failed",
+          ts: 20,
+        },
+      ],
+    });
+    render(<DashboardRoute />, { wrapper });
+
+    const link = await screen.findByRole("link", { name: /Run verification/ });
+    expect(link.getAttribute("href")).toBe(
+      "/sessions/sess_phase_two?node=node_failed",
+    );
+    expect(screen.getByText("Failed")).toBeTruthy();
   });
 
   it("renders empty usage without inventing cost", async () => {

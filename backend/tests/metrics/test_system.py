@@ -11,12 +11,15 @@ from typing import Any
 
 from app.harnesses.events import RunStarted
 from app.metrics.system import (
+    AgentProcessMetric,
     ProcessCandidate,
+    SystemMinuteWriter,
     SystemProbe,
     SystemSampler,
     SystemSnapshot,
 )
 from app.models.ids import new_node_id, new_run_id, new_session_id
+from app.models.tables import SystemMetricMinute
 from app.storage.db import Database, upgrade_database_sync
 from app.storage.repository import Repository
 
@@ -157,6 +160,81 @@ class ThreadProbe:
             disk_percent=0,
             processes=(),
         )
+
+
+def minute_snapshot(ts: int, cpu: float) -> SystemSnapshot:
+    return SystemSnapshot(
+        ts=ts,
+        cpu_percent=cpu,
+        cpu_per_core=(cpu,),
+        memory_total_bytes=1_000,
+        memory_used_bytes=500,
+        memory_available_bytes=500,
+        memory_percent=cpu + 1,
+        swap_total_bytes=100,
+        swap_used_bytes=10,
+        swap_free_bytes=90,
+        swap_percent=cpu + 2,
+        disk_total_bytes=2_000,
+        disk_used_bytes=500,
+        disk_free_bytes=1_500,
+        disk_percent=cpu + 3,
+        processes=(
+            AgentProcessMetric(
+                node_id="node_live",
+                pid=42,
+                harness="codex",
+                rss_bytes=int(cpu * 100),
+                cpu_percent=cpu / 2,
+                uptime_ms=ts,
+                process_count=2,
+            ),
+        ),
+    )
+
+
+async def test_minute_writer_merges_partial_bucket_across_restart(
+    tmp_path: Path,
+) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'agenthub.db'}"
+    upgrade_database_sync(database_url)
+    database = Database(database_url)
+
+    first = SystemMinuteWriter(database)
+    second = SystemMinuteWriter(database)
+    try:
+        await first.observe(minute_snapshot(1_000, 10))
+        await first.observe(minute_snapshot(2_000, 30))
+        # Crossing the boundary persists the completed first minute.
+        await first.observe(minute_snapshot(61_000, 40))
+        await first.close()
+
+        # A restarted process contributes to the already persisted minute.
+        await second.observe(minute_snapshot(62_000, 60))
+        await second.close()
+
+        async with database.session() as db_session:
+            minute_zero = await db_session.get(SystemMetricMinute, 0)
+            minute_one = await db_session.get(SystemMetricMinute, 60_000)
+    finally:
+        await first.close()
+        await second.close()
+        await database.dispose()
+
+    assert minute_zero is not None
+    assert minute_zero.sample_count == 2
+    assert minute_zero.cpu_avg_percent == 20
+    assert minute_zero.cpu_peak_percent == 30
+    assert minute_zero.agent_rss_avg_bytes == 2_000
+    assert minute_zero.agent_rss_peak_bytes == 3_000
+    assert minute_zero.agent_process_count_peak == 2
+
+    assert minute_one is not None
+    assert minute_one.sample_count == 2
+    assert minute_one.cpu_avg_percent == 50
+    assert minute_one.cpu_peak_percent == 60
+    assert minute_one.memory_avg_percent == 51
+    assert minute_one.disk_peak_percent == 63
 
 
 async def test_sampler_runs_off_loop_evicts_ring_and_cancels(tmp_path: Path) -> None:

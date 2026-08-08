@@ -17,7 +17,7 @@ from sqlmodel import col, select
 from app.models.clock import now_ms
 from app.models.pricing import TokenCounts
 from app.models.status import NodeStatus, SessionStatus
-from app.models.tables import Node, Session, UsageEvent
+from app.models.tables import Node, NodeTransition, Session, UsageEvent
 from app.storage.db import Database
 
 DAY_MS = 86_400_000
@@ -65,6 +65,17 @@ class ActiveSessionMetric:
 
 
 @dataclass(frozen=True, slots=True)
+class DashboardTransition:
+    id: int
+    session_id: str
+    session_title: str
+    node_id: str
+    node_name: str
+    status: NodeStatus
+    ts: int
+
+
+@dataclass(frozen=True, slots=True)
 class DashboardSnapshot:
     period: DashboardPeriod
     since_ms: int
@@ -77,6 +88,7 @@ class DashboardSnapshot:
     running_node_count: int
     blocked_node_count: int
     node_completion_rate: float | None
+    event_feed: tuple[DashboardTransition, ...]
 
 
 _ACTIVE_SESSION_STATUSES = (
@@ -86,6 +98,14 @@ _ACTIVE_SESSION_STATUSES = (
 )
 _COMPLETED_NODE_STATUSES = (NodeStatus.DONE, NodeStatus.SKIPPED)
 _DECIDED_NODE_STATUSES = (*_COMPLETED_NODE_STATUSES, NodeStatus.FAILED)
+_MEANINGFUL_NODE_STATUSES = (
+    NodeStatus.AWAITING_REVIEW,
+    NodeStatus.BLOCKED,
+    NodeStatus.DONE,
+    NodeStatus.FAILED,
+    NodeStatus.SKIPPED,
+)
+EVENT_FEED_LIMIT = 20
 
 
 def _usage_columns() -> tuple[Any, ...]:
@@ -159,6 +179,7 @@ class DashboardService:
             running = await self._node_count(db_session, NodeStatus.RUNNING)
             blocked = await self._node_count(db_session, NodeStatus.BLOCKED)
             completion = await self._completion_rate(db_session, since)
+            event_feed = await self._event_feed(db_session)
 
         return DashboardSnapshot(
             period=period,
@@ -172,6 +193,7 @@ class DashboardService:
             running_node_count=running,
             blocked_node_count=blocked,
             node_completion_rate=completion,
+            event_feed=event_feed,
         )
 
     @staticmethod
@@ -282,11 +304,38 @@ class DashboardService:
         completed = sum(counts.get(status, 0) for status in _COMPLETED_NODE_STATUSES)
         return completed / decided
 
+    @staticmethod
+    async def _event_feed(db_session: Any) -> tuple[DashboardTransition, ...]:
+        rows = (
+            await db_session.exec(
+                select(NodeTransition, col(Session.title), col(Node.name))
+                .join(Session, col(Session.id) == col(NodeTransition.session_id))
+                .join(Node, col(Node.id) == col(NodeTransition.node_id))
+                .where(col(NodeTransition.status).in_(_MEANINGFUL_NODE_STATUSES))
+                .order_by(col(NodeTransition.ts).desc(), col(NodeTransition.id).desc())
+                .limit(EVENT_FEED_LIMIT)
+            )
+        ).all()
+        return tuple(
+            DashboardTransition(
+                id=int(transition.id),
+                session_id=transition.session_id,
+                session_title=str(session_title),
+                node_id=transition.node_id,
+                node_name=str(node_name),
+                status=transition.status,
+                ts=transition.ts,
+            )
+            for transition, session_title, node_name in rows
+            if transition.id is not None
+        )
+
 
 __all__ = [
     "ActiveSessionMetric",
     "DashboardPeriod",
     "DashboardService",
     "DashboardSnapshot",
+    "DashboardTransition",
     "MetricUsage",
 ]

@@ -16,7 +16,7 @@ from sqlmodel import col, select
 
 from app.models.clock import now_ms
 from app.models.status import RunState
-from app.models.tables import Run
+from app.models.tables import Run, SystemMetricMinute
 from app.storage.db import Database
 
 log = structlog.get_logger()
@@ -93,6 +93,152 @@ class SystemSnapshot:
 
 async def _discard_snapshot(_: SystemSnapshot) -> None:
     return None
+
+
+MINUTE_MS = 60_000
+
+
+@dataclass(slots=True)
+class _MinuteAccumulator:
+    minute_ms: int
+    sample_count: int = 0
+    cpu_sum: float = 0
+    cpu_peak: float = 0
+    memory_sum: float = 0
+    memory_peak: float = 0
+    swap_sum: float = 0
+    swap_peak: float = 0
+    disk_sum: float = 0
+    disk_peak: float = 0
+    agent_rss_sum: int = 0
+    agent_rss_peak: int = 0
+    agent_cpu_sum: float = 0
+    agent_cpu_peak: float = 0
+    agent_process_count_peak: int = 0
+
+    @classmethod
+    def from_snapshot(cls, snapshot: SystemSnapshot) -> _MinuteAccumulator:
+        accumulator = cls(minute_ms=snapshot.ts - snapshot.ts % MINUTE_MS)
+        accumulator.add(snapshot)
+        return accumulator
+
+    def add(self, snapshot: SystemSnapshot) -> None:
+        agent_rss = sum(process.rss_bytes for process in snapshot.processes)
+        agent_cpu = sum(process.cpu_percent for process in snapshot.processes)
+        process_count = sum(process.process_count for process in snapshot.processes)
+        self.sample_count += 1
+        self.cpu_sum += snapshot.cpu_percent
+        self.cpu_peak = max(self.cpu_peak, snapshot.cpu_percent)
+        self.memory_sum += snapshot.memory_percent
+        self.memory_peak = max(self.memory_peak, snapshot.memory_percent)
+        self.swap_sum += snapshot.swap_percent
+        self.swap_peak = max(self.swap_peak, snapshot.swap_percent)
+        self.disk_sum += snapshot.disk_percent
+        self.disk_peak = max(self.disk_peak, snapshot.disk_percent)
+        self.agent_rss_sum += agent_rss
+        self.agent_rss_peak = max(self.agent_rss_peak, agent_rss)
+        self.agent_cpu_sum += agent_cpu
+        self.agent_cpu_peak = max(self.agent_cpu_peak, agent_cpu)
+        self.agent_process_count_peak = max(
+            self.agent_process_count_peak, process_count
+        )
+
+
+class SystemMinuteWriter:
+    """Fold one-second snapshots into restart-safe UTC minute rows."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+        self._current: _MinuteAccumulator | None = None
+
+    async def observe(self, snapshot: SystemSnapshot) -> None:
+        minute = snapshot.ts - snapshot.ts % MINUTE_MS
+        if self._current is None:
+            self._current = _MinuteAccumulator.from_snapshot(snapshot)
+            return
+        if minute == self._current.minute_ms:
+            self._current.add(snapshot)
+            return
+        if minute < self._current.minute_ms:
+            # Wall clocks can move backwards. Mixing an old sample into the
+            # current bucket would mislabel it; dropping one observation is
+            # safer than reopening and writing an older bucket every second.
+            log.warning(
+                "metrics.out_of_order_sample",
+                sample_ms=snapshot.ts,
+                current_minute_ms=self._current.minute_ms,
+            )
+            return
+        await self._persist(self._current)
+        self._current = _MinuteAccumulator.from_snapshot(snapshot)
+
+    async def close(self) -> None:
+        current = self._current
+        if current is None:
+            return
+        await self._persist(current)
+        self._current = None
+
+    async def _persist(self, bucket: _MinuteAccumulator) -> None:
+        count = bucket.sample_count
+        async with self._database.session() as db_session:
+            row = await db_session.get(SystemMetricMinute, bucket.minute_ms)
+            if row is None:
+                row = SystemMetricMinute(
+                    minute_ms=bucket.minute_ms,
+                    sample_count=count,
+                    cpu_avg_percent=bucket.cpu_sum / count,
+                    cpu_peak_percent=bucket.cpu_peak,
+                    memory_avg_percent=bucket.memory_sum / count,
+                    memory_peak_percent=bucket.memory_peak,
+                    swap_avg_percent=bucket.swap_sum / count,
+                    swap_peak_percent=bucket.swap_peak,
+                    disk_avg_percent=bucket.disk_sum / count,
+                    disk_peak_percent=bucket.disk_peak,
+                    agent_rss_avg_bytes=bucket.agent_rss_sum / count,
+                    agent_rss_peak_bytes=bucket.agent_rss_peak,
+                    agent_cpu_avg_percent=bucket.agent_cpu_sum / count,
+                    agent_cpu_peak_percent=bucket.agent_cpu_peak,
+                    agent_process_count_peak=bucket.agent_process_count_peak,
+                )
+            else:
+                total = row.sample_count + count
+                row.cpu_avg_percent = (
+                    row.cpu_avg_percent * row.sample_count + bucket.cpu_sum
+                ) / total
+                row.cpu_peak_percent = max(row.cpu_peak_percent, bucket.cpu_peak)
+                row.memory_avg_percent = (
+                    row.memory_avg_percent * row.sample_count + bucket.memory_sum
+                ) / total
+                row.memory_peak_percent = max(
+                    row.memory_peak_percent, bucket.memory_peak
+                )
+                row.swap_avg_percent = (
+                    row.swap_avg_percent * row.sample_count + bucket.swap_sum
+                ) / total
+                row.swap_peak_percent = max(row.swap_peak_percent, bucket.swap_peak)
+                row.disk_avg_percent = (
+                    row.disk_avg_percent * row.sample_count + bucket.disk_sum
+                ) / total
+                row.disk_peak_percent = max(row.disk_peak_percent, bucket.disk_peak)
+                row.agent_rss_avg_bytes = (
+                    row.agent_rss_avg_bytes * row.sample_count + bucket.agent_rss_sum
+                ) / total
+                row.agent_rss_peak_bytes = max(
+                    row.agent_rss_peak_bytes, bucket.agent_rss_peak
+                )
+                row.agent_cpu_avg_percent = (
+                    row.agent_cpu_avg_percent * row.sample_count + bucket.agent_cpu_sum
+                ) / total
+                row.agent_cpu_peak_percent = max(
+                    row.agent_cpu_peak_percent, bucket.agent_cpu_peak
+                )
+                row.agent_process_count_peak = max(
+                    row.agent_process_count_peak, bucket.agent_process_count_peak
+                )
+                row.sample_count = total
+            db_session.add(row)
+            await db_session.commit()
 
 
 class SystemProbe:
@@ -277,6 +423,7 @@ class SystemSampler:
 __all__ = [
     "AgentProcessMetric",
     "ProcessCandidate",
+    "SystemMinuteWriter",
     "SystemProbe",
     "SystemSampler",
     "SystemSnapshot",

@@ -69,6 +69,7 @@ from app.models.tables import (
     Node,
     NodeDependency,
     NodeReview,
+    NodeTransition,
     ReviewDecision,
     Run,
     Session,
@@ -183,7 +184,8 @@ class Repository:
         | Run
         | UsageEvent
         | AcceptanceResult
-        | NodeReview,
+        | NodeReview
+        | NodeTransition,
     ) -> None:
         self._session.add_all(rows)
         await self._session.commit()
@@ -368,9 +370,22 @@ class Repository:
         duplicating the rule here is how the two start disagreeing.
         """
         row = await self._require_node(node_id)
+        stamp = now_ms() if at_ms is None else at_ms
+        if row.status is status:
+            # A caller may reassert a projection while recovering. Preserve the
+            # old timestamp behavior without inventing an activity-feed event.
+            row.updated_ms = stamp
+            await self._persist(row)
+            return row
         row.status = status
-        row.updated_ms = now_ms() if at_ms is None else at_ms
-        await self._persist(row)
+        row.updated_ms = stamp
+        transition = NodeTransition(
+            session_id=row.session_id,
+            node_id=row.id,
+            status=status,
+            ts=stamp,
+        )
+        await self._persist(row, transition)
         return row
 
     async def attach_worktree(

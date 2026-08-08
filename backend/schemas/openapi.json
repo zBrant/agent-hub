@@ -353,6 +353,13 @@
             "title": "By Model",
             "type": "array"
           },
+          "event_feed": {
+            "items": {
+              "$ref": "#/components/schemas/DashboardTransitionResponse"
+            },
+            "title": "Event Feed",
+            "type": "array"
+          },
           "generated_ms": {
             "title": "Generated Ms",
             "type": "integer"
@@ -394,9 +401,52 @@
           "active_session_count",
           "running_node_count",
           "blocked_node_count",
-          "node_completion_rate"
+          "node_completion_rate",
+          "event_feed"
         ],
         "title": "DashboardResponse",
+        "type": "object"
+      },
+      "DashboardTransitionResponse": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "node_name": {
+            "title": "Node Name",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "session_title": {
+            "title": "Session Title",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NodeStatus"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "session_id",
+          "session_title",
+          "node_id",
+          "node_name",
+          "status",
+          "ts"
+        ],
+        "title": "DashboardTransitionResponse",
         "type": "object"
       },
       "DiffResponse": {

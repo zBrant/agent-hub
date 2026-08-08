@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Loader } from "lucide-react";
 import { lazy, Suspense, useEffect } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useParams, useSearchParams } from "react-router";
 import {
   ApiError,
   api,
@@ -47,6 +47,8 @@ function message(error: unknown): string {
 
 export function SessionRoute() {
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const linkedNodeId = searchParams.get("node");
   const queryClient = useQueryClient();
   const websocket = useWebSocketClient();
   const append = useSessionFeedStore((state) => state.append);
@@ -212,6 +214,7 @@ export function SessionRoute() {
         >
           <GraphWorkspace
             graph={graph.data}
+            initialSelectedNodeId={linkedNodeId}
             onAddDependency={async (nodeId, dependsOnId) => {
               await graphAction.mutateAsync({
                 kind: "add_dependency",

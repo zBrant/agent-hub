@@ -13,10 +13,11 @@ from app.metrics.dashboard import (
     DashboardPeriod,
     DashboardService,
     DashboardSnapshot,
+    DashboardTransition,
     MetricUsage,
 )
 from app.metrics.system import AgentProcessMetric, SystemSampler, SystemSnapshot
-from app.models.status import SessionStatus
+from app.models.status import NodeStatus, SessionStatus
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
 
@@ -72,6 +73,28 @@ class ActiveSessionMetricResponse(BaseModel):
         )
 
 
+class DashboardTransitionResponse(BaseModel):
+    id: int
+    session_id: str
+    session_title: str
+    node_id: str
+    node_name: str
+    status: NodeStatus
+    ts: int
+
+    @classmethod
+    def from_result(cls, result: DashboardTransition) -> DashboardTransitionResponse:
+        return cls(
+            id=result.id,
+            session_id=result.session_id,
+            session_title=result.session_title,
+            node_id=result.node_id,
+            node_name=result.node_name,
+            status=result.status,
+            ts=result.ts,
+        )
+
+
 class DashboardResponse(BaseModel):
     period: DashboardPeriod
     since_ms: int
@@ -84,6 +107,7 @@ class DashboardResponse(BaseModel):
     running_node_count: int
     blocked_node_count: int
     node_completion_rate: float | None
+    event_feed: tuple[DashboardTransitionResponse, ...]
 
     @classmethod
     def from_result(cls, result: DashboardSnapshot) -> DashboardResponse:
@@ -106,6 +130,10 @@ class DashboardResponse(BaseModel):
             running_node_count=result.running_node_count,
             blocked_node_count=result.blocked_node_count,
             node_completion_rate=result.node_completion_rate,
+            event_feed=tuple(
+                DashboardTransitionResponse.from_result(row)
+                for row in result.event_feed
+            ),
         )
 
 

@@ -116,6 +116,20 @@ describe("editable graph workspace", () => {
     expect((approve as HTMLButtonElement).disabled).toBe(false);
   });
 
+  it("opens a node drawer from a dashboard deep link", () => {
+    render(
+      <GraphWorkspace
+        graph={graph()}
+        initialSelectedNodeId="node_b"
+        renderNodeDrawer={(selected) => <aside>{selected.name} drawer</aside>}
+        {...actions()}
+      />,
+      { wrapper },
+    );
+
+    expect(screen.getByText("Second drawer")).toBeTruthy();
+  });
+
   it("persists a complete node replacement and reloads the saved values", async () => {
     const callbacks = actions();
     const first = render(<GraphWorkspace graph={graph()} {...callbacks} />, {

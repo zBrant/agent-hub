@@ -28,6 +28,7 @@ def test_empty_dashboard_is_typed_and_zero_not_invented_cost(
     assert payload["usage"]["estimated_equivalent_cost_usd"] is None
     assert payload["active_sessions"] == []
     assert payload["node_completion_rate"] is None
+    assert payload["event_feed"] == []
 
 
 def test_unknown_dashboard_period_is_rejected(settings: Settings) -> None:

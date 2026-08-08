@@ -36,6 +36,8 @@ EXPECTED_TABLES = {
     "usage_event",
     "acceptance_result",
     "node_review",
+    "node_transition",
+    "system_metric_minute",
 }
 
 # The last revision of Phase 1. Databases at this revision exist on real
@@ -238,6 +240,19 @@ def test_a_populated_phase_1_database_migrates_forward(settings: Settings) -> No
     assert rows(
         settings.database_url, "SELECT id, attempt, status, event_count FROM run"
     ) == [("run_1", 1, "success", 11)]
+    assert rows(
+        settings.database_url,
+        "SELECT node_id, status, ts FROM node_transition",
+    ) == [("node_1", "done", 1700000000002)]
+    engine = sa.create_engine(sync_url(settings.database_url))
+    try:
+        with engine.begin() as connection:
+            with pytest.raises(sa.exc.DatabaseError, match="append-only"):
+                connection.execute(
+                    sa.text("UPDATE node_transition SET status = 'failed'")
+                )
+    finally:
+        engine.dispose()
     assert rows(
         settings.database_url,
         "SELECT count(*), sum(input_tokens), sum(cost_usd) FROM usage_event",

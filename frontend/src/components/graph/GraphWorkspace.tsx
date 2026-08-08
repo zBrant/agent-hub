@@ -23,6 +23,7 @@ type Props = {
     node: Graph["nodes"][number],
     onClose: () => void,
   ) => ReactNode;
+  initialSelectedNodeId?: string | null;
 };
 
 function errorMessage(error: unknown): string {
@@ -37,8 +38,11 @@ export function GraphWorkspace({
   onRemoveDependency,
   onApprove,
   renderNodeDrawer,
+  initialSelectedNodeId = null,
 }: Props) {
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
+    initialSelectedNodeId,
+  );
   const [draftEdges, setDraftEdges] = useState<readonly GraphEdge[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);

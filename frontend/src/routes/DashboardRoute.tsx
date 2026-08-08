@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowRight, Workflow } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api, type DashboardPeriod } from "@/api/client";
+import { DashboardEventFeed } from "@/components/dashboard/DashboardEventFeed";
 import { SystemHealth } from "@/components/dashboard/SystemHealth";
 import { TokenBreakdown } from "@/components/dashboard/TokenBreakdown";
 import { useSystemMetricsStore } from "@/stores/system-metrics-store";
@@ -176,6 +177,10 @@ export function DashboardRoute() {
           </div>
         )}
       </section>
+
+      <div className="mt-4">
+        <DashboardEventFeed events={data.event_feed} />
+      </div>
     </div>
   );
 }

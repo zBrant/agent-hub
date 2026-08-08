@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 
 from app.api.dashboard import router as dashboard_router
@@ -15,7 +16,7 @@ from app.api.node import router as node_router
 from app.api.session import router as session_router
 from app.config import Settings, get_settings
 from app.metrics.dashboard import DashboardService
-from app.metrics.system import SystemSampler
+from app.metrics.system import SystemMinuteWriter, SystemSampler, SystemSnapshot
 from app.models.clock import now_ms
 from app.models.pricing import load_price_table
 from app.models.tables import Node
@@ -25,6 +26,8 @@ from app.orchestrator.service import NodeRunService
 from app.storage.db import Database, upgrade_database
 from app.ws.broker import EventBroker
 from app.ws.router import router as websocket_router
+
+log = structlog.get_logger()
 
 
 @asynccontextmanager
@@ -65,17 +68,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.planner = planner
     app.state.dashboard = DashboardService(database)
+    minute_writer = SystemMinuteWriter(database)
+
+    async def publish_system_snapshot(snapshot: SystemSnapshot) -> None:
+        # The current-state transport goes first; a minute rollover write must
+        # not delay the live gauge that triggered it.
+        await broker.publish_metrics(snapshot)
+        await minute_writer.observe(snapshot)
+
     system_sampler = SystemSampler(
         database=database,
         disk_path=settings.root,
-        publish=broker.publish_metrics,
+        publish=publish_system_snapshot,
     )
     app.state.system_sampler = system_sampler
+    app.state.system_minute_writer = minute_writer
     system_sampler.start()
     try:
         yield
     finally:
         await system_sampler.close()
+        try:
+            await minute_writer.close()
+        except Exception:
+            # Telemetry is observation, never authority. A failed final bucket
+            # must not prevent scheduler/planner cleanup or database disposal.
+            log.exception("metrics.minute_flush_failed")
         await scheduler.close()
         await planner.close()
         await database.dispose()

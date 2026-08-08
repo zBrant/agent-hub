@@ -120,11 +120,27 @@ async def test_an_unknown_status_is_rejected_by_the_database(
             await connection.execute(sa.text("UPDATE node SET status = 'almost_done'"))
 
 
-async def test_a_status_change_stamps_the_row(repo: Repository, node_row: Node) -> None:
+async def test_a_status_change_stamps_the_row_and_appends_one_transition(
+    repo: Repository, database: Database, node_row: Node
+) -> None:
     updated = await repo.set_node_status(node_row.id, NodeStatus.RUNNING, at_ms=4_242)
     # Replay passes the event's ts, which is what makes a rebuilt row identical.
     assert updated.updated_ms == 4_242
     assert updated.created_ms == node_row.created_ms
+
+    # Reasserting a projection may refresh its timestamp during recovery, but
+    # it is not a second transition in the operator's activity feed.
+    await repo.set_node_status(node_row.id, NodeStatus.RUNNING, at_ms=4_243)
+    async with database.engine.connect() as connection:
+        transitions = (
+            await connection.execute(
+                sa.text(
+                    "SELECT status, ts FROM node_transition WHERE node_id = :node_id"
+                ),
+                {"node_id": node_row.id},
+            )
+        ).all()
+    assert transitions == [("running", 4_242)]
 
 
 async def test_a_retry_is_a_new_run_not_a_mutated_one(

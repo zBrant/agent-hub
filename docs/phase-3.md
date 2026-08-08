@@ -136,7 +136,7 @@ route tests cover current-snapshot reconnect semantics, duplicate cursor
 suppression, ring eviction, and a fake process tree updating the UI without REST
 polling.
 
-### D5 — Event feed, minute aggregates, and acceptance
+### D5 — Event feed, minute aggregates, and acceptance ✅
 
 Persist only 1-minute system aggregates, never raw 1-second points. Add the last
 N meaningful graph transitions to the dashboard, each deep-linked to its
@@ -146,6 +146,22 @@ and a live short run.
 **Done when:** reconnect and process restart preserve minute history, raw sample
 count stays bounded, and the committed acceptance record verifies
 SQLite/REST/WebSocket/UI agreement.
+
+**Result:** completed on 2026-08-08. `SystemMinuteWriter` folds the memory-only
+one-second stream into UTC minute rows containing mergeable sample counts,
+averages, and peaks. Shutdown flushes the partial bucket; another process in the
+same minute merges it by weighted average rather than inserting another row.
+Detailed node ids and PIDs remain live-only. The additive migration also creates
+an append-only node-transition log, backfilling exactly the meaningful current
+state and `updated_ms` of existing nodes without inventing older history.
+
+Every real status change is committed atomically with the node projection, while
+a recovery-time reassertion of the same status creates no duplicate feed event.
+The dashboard reads the newest 20 review, blocked, completed, failed, or skipped
+transitions, and each UI row deep-links to the session with its node drawer open.
+Run replay remains scoped to run/usage projections and leaves both D5 tables
+untouched. The real-history, restart, transport, and replay evidence is recorded
+in [`acceptance-phase-3.md`](acceptance-phase-3.md).
 
 ## Explicitly out of scope
 

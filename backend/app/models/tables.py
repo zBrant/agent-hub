@@ -5,10 +5,17 @@
 purpose: events live in ``runs/<run_id>/events.ndjson`` and only their
 *projection* is here.
 
-Two more tables hang off ``Node`` and off nothing else: :class:`AcceptanceResult`
-and :class:`NodeReview`, the human gate's record of what a reviewer decided
-about one attempt. They are keyed by ``(node_id, attempt)`` rather than by
-``run_id`` on purpose, and that class docstring is the place to read why.
+Three more tables hang off ``Node``: :class:`AcceptanceResult` and
+:class:`NodeReview`, the human gate's record of what a reviewer decided about
+one attempt, plus the append-only :class:`NodeTransition` activity log. The
+review tables are keyed by ``(node_id, attempt)`` rather than by ``run_id`` on
+purpose, and their class docstrings are the place to read why.
+
+:class:`SystemMetricMinute` sits outside the run tree. It is a lossy aggregate
+of local host observations, not a projection of agent output, so there is no
+run NDJSON record it could or should be rebuilt from. Keeping that distinction
+explicit prevents telemetry retention from weakening the replay contract for
+runs.
 
 No ``Graph`` table either, and that is a deliberate departure from `design.md`
 §5's diagram. A ``Graph`` sitting 1:1 between ``Session`` and ``Node`` would
@@ -556,6 +563,35 @@ class NodeReview(SQLModel, table=True):
     reviewed_ms: int
 
 
+class NodeTransition(SQLModel, table=True):
+    """One persisted orchestration-state transition for the dashboard feed.
+
+    This is not an ``AgentEvent``: a harness does not decide that a merge
+    conflict blocked a node or that a human approval completed it. It is an
+    append-only authored orchestration fact, written atomically beside the
+    current ``node.status`` projection and read newest-first by the dashboard.
+
+    Deleting a still-editable node cascades its transitions, just as deleting
+    that node removes its authored brief. Run replay never touches either row.
+    """
+
+    __tablename__ = "node_transition"
+    __table_args__ = (
+        _status_check("status", NodeStatus, name="node_status"),
+        sa.Index("ix_node_transition_ts", "ts"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: SessionId = Field(
+        sa_type=sa.String, foreign_key="session.id", ondelete="CASCADE", index=True
+    )
+    node_id: NodeId = Field(
+        sa_type=sa.String, foreign_key="node.id", ondelete="CASCADE", index=True
+    )
+    status: NodeStatus = Field(sa_column=_status("status", NodeStatus))
+    ts: int
+
+
 class UsageEvent(SQLModel, table=True):
     """Token consumption, append-only (`design.md` §4, invariant 3).
 
@@ -621,3 +657,37 @@ class UsageEvent(SQLModel, table=True):
     cache_write_1h_tokens: int = Field(default=0)
     price_table_version: int
     cost_usd: float | None = Field(default=None)
+
+
+class SystemMetricMinute(SQLModel, table=True):
+    """One bounded-resolution bucket of local host telemetry.
+
+    Raw one-second samples remain memory-only (`design.md` §8). This row stores
+    only a count, averages, and peaks for a UTC minute, which makes history
+    survive a process restart without making SQLite grow by 86,400 rows per
+    day. The averages are mergeable with :attr:`sample_count`, so two process
+    lifetimes that observe the same minute can safely contribute to one row.
+
+    Agent details are intentionally collapsed to totals. Node ids and PIDs are
+    useful live, but persisting a process inventory every minute would be an
+    activity log disguised as system telemetry.
+    """
+
+    __tablename__ = "system_metric_minute"
+
+    # UTC minute boundary: ``snapshot.ts - snapshot.ts % 60_000``.
+    minute_ms: int = Field(primary_key=True)
+    sample_count: int
+    cpu_avg_percent: float
+    cpu_peak_percent: float
+    memory_avg_percent: float
+    memory_peak_percent: float
+    swap_avg_percent: float
+    swap_peak_percent: float
+    disk_avg_percent: float
+    disk_peak_percent: float
+    agent_rss_avg_bytes: float
+    agent_rss_peak_bytes: int
+    agent_cpu_avg_percent: float
+    agent_cpu_peak_percent: float
+    agent_process_count_peak: int

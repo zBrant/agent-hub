@@ -760,6 +760,8 @@ export interface components {
             readonly by_harness: readonly components["schemas"]["MetricUsageResponse"][];
             /** By Model */
             readonly by_model: readonly components["schemas"]["MetricUsageResponse"][];
+            /** Event Feed */
+            readonly event_feed: readonly components["schemas"]["DashboardTransitionResponse"][];
             /** Generated Ms */
             readonly generated_ms: number;
             /** Node Completion Rate */
@@ -770,6 +772,22 @@ export interface components {
             /** Since Ms */
             readonly since_ms: number;
             readonly usage: components["schemas"]["MetricUsageResponse"];
+        };
+        /** DashboardTransitionResponse */
+        readonly DashboardTransitionResponse: {
+            /** Id */
+            readonly id: number;
+            /** Node Id */
+            readonly node_id: string;
+            /** Node Name */
+            readonly node_name: string;
+            /** Session Id */
+            readonly session_id: string;
+            /** Session Title */
+            readonly session_title: string;
+            readonly status: components["schemas"]["NodeStatus"];
+            /** Ts */
+            readonly ts: number;
         };
         /** DiffResponse */
         readonly DiffResponse: {

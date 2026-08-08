@@ -117,6 +117,21 @@ async def test_snapshot_groups_four_field_usage_and_active_progress(
                 ),
                 prices=prices,
             )
+            # The durable activity feed records only actual transitions, not a
+            # node's initial authored status. Running is deliberately omitted
+            # from the meaningful dashboard subset.
+            await repo.set_node_status(
+                done_node.id, NodeStatus.RUNNING, at_ms=stamp - 3_000
+            )
+            await repo.set_node_status(
+                done_node.id, NodeStatus.DONE, at_ms=stamp - 2_000
+            )
+            await repo.set_node_status(
+                failed_node.id, NodeStatus.RUNNING, at_ms=stamp - 1_500
+            )
+            await repo.set_node_status(
+                failed_node.id, NodeStatus.FAILED, at_ms=stamp - 1_000
+            )
 
         snapshot = await DashboardService(database).snapshot(DashboardPeriod.SEVEN_DAYS)
     finally:
@@ -141,6 +156,13 @@ async def test_snapshot_groups_four_field_usage_and_active_progress(
     assert snapshot.running_node_count == 0
     assert snapshot.blocked_node_count == 1
     assert snapshot.node_completion_rate == 0.5
+    assert [event.status for event in snapshot.event_feed] == [
+        NodeStatus.FAILED,
+        NodeStatus.DONE,
+    ]
+    assert snapshot.event_feed[0].session_title == "Finished graph"
+    assert snapshot.event_feed[0].node_name == "failed"
+    assert snapshot.event_feed[1].session_id == active_id
 
     active = snapshot.active_sessions[0]
     assert active.id == active_id
