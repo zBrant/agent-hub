@@ -716,6 +716,60 @@ async def test_an_invalid_adapter_does_not_leave_a_running_attempt(
         assert await repository.list_sessions() == []
 
 
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        ("missing", "is not a git repository"),
+        ("not-a-repo", "is not a git repository"),
+        ("bad-base-ref", "has no commit for base ref"),
+    ],
+)
+async def test_an_unusable_repo_path_is_rejected_as_an_argument(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+    tmp_path: Path,
+    kind: str,
+    expected: str,
+) -> None:
+    """A bad `repo_path` blames the request, not the server.
+
+    Regression: `worktree.NotARepositoryError` is a `WorktreeError`, not a
+    `ValueError`, so it escaped `api/deps.call`'s vocabulary and reached the
+    client as an opaque 500 with no body. That is the *first* thing anyone hits
+    — the README tells them to substitute their own path — and "Internal Server
+    Error" gives them nothing to correct.
+    """
+    if kind == "missing":
+        repo_path, base_ref = tmp_path / "nowhere", "HEAD"
+    elif kind == "not-a-repo":
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        repo_path, base_ref = plain, "HEAD"
+    else:
+        repo_path, base_ref = target_repo, "no-such-branch"
+
+    adapter = FakeAdapter(name="fake")
+    service = service_for(
+        database=database,
+        settings=settings,
+        prices=prices,
+        adapter=adapter,
+    )
+    with pytest.raises(ValueError, match=expected):
+        await service.create_session(
+            repo_path=repo_path,
+            prompt="does not matter",
+            harness=adapter.name,
+            model=MODEL,
+            base_ref=base_ref,
+        )
+
+    async with database.session() as db_session:
+        assert await Repository(db_session).list_sessions() == []
+
+
 async def test_a_pending_proposal_can_be_edited_validated_and_approved(
     database: Database,
     settings: Settings,

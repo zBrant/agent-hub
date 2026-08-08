@@ -75,10 +75,9 @@ to run on your own machine.
 
 ## Installation
 
-Phase 1 is runnable from this checkout. It provides one persistent session,
-one fixed node, real harness execution, live structured events, kill/retry,
-manual approval, diff inspection, and deterministic replay. Planner graphs,
-dashboards, metrics, and code search belong to later phases.
+All five phases are runnable from this checkout: planner graphs, the concurrent
+scheduler, kill/retry, manual approval, diff inspection, deterministic replay,
+the dashboards, and code search.
 
 ### Requirements
 
@@ -89,6 +88,11 @@ dashboards, metrics, and code search belong to later phases.
 - Git
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — code search's text tool
 - An installed and authenticated Codex or Claude Code CLI
+- An Anthropic credential **for the planner only** — `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile, in the environment
+  that starts the backend. This is the one credential AgentHub owns; the
+  harnesses authenticate themselves. Without it the planner answers **503** and
+  says so, and everything reachable through the resource API below still works.
 - Optional: [ast-grep](https://ast-grep.github.io/), for structural search.
   Without it that one tool reports itself unavailable and the rest still works.
 
@@ -129,8 +133,17 @@ server proxies `/api` and `/ws` to AgentHub on `127.0.0.1:8000`.
 
 ### Create and run a session
 
-Phase 1 creates sessions through the resource API. Replace `/absolute/repo`
-with an existing Git repository:
+There are two ways in.
+
+**From the UI.** Open the **Sessions** tab, describe an objective, and select
+*Create proposal*. The planner turns it into a graph and persists it `pending`;
+invariant 6 means nothing runs until you approve it. This is the path that
+needs the Anthropic credential above.
+
+**From the resource API**, which needs no credential, because you are writing
+the activity yourself instead of asking a model for one. Replace
+`/absolute/repo` with an existing Git repository — an absolute path to a real
+working tree, or the call answers 422 and names what it could not resolve:
 
 ```bash
 curl --request POST http://127.0.0.1:8000/api/sessions \
@@ -146,10 +159,21 @@ curl --request POST http://127.0.0.1:8000/api/sessions \
 JSON
 ```
 
-Open `/sessions/<session_id>` in the frontend. The page exposes start, kill,
-retry, approval, event history, all four token fields, estimated equivalent
-cost, and the final diff. With `auto_merge=false`, a successful run stops at
-`awaiting_review` until **Approve** is selected.
+`harness` is `codex` or `claude-code`, and `model` has to be one the adapter
+declares — `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` for Codex;
+`claude-opus-5`, `claude-sonnet-5`, `claude-haiku-4-5` for Claude Code. Anything
+else is a 422 that lists what was expected.
+
+Creating a session does not start it. Either open `/sessions/<session_id>` in
+the frontend, or start it over HTTP with the id from the response:
+
+```bash
+curl --request POST http://127.0.0.1:8000/api/sessions/<session_id>/runs
+```
+
+The page exposes start, kill, retry, approval, event history, all four token
+fields, estimated equivalent cost, and the final diff. With `auto_merge=false`,
+a successful run stops at `awaiting_review` until **Approve** is selected.
 
 ### Runtime data and replay
 

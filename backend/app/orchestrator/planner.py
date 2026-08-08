@@ -63,6 +63,11 @@ from app.orchestrator.service import CreatedGraph, PlannedNode
 
 log = structlog.get_logger()
 
+# The stable half of the SDK's auth-resolution `TypeError`. Matched rather than
+# caught by type because `_validate_headers` raises a bare `TypeError`; the
+# leading words have survived the SDK's rewordings of the rest of the sentence.
+_NO_CREDENTIAL = "Could not resolve authentication method"
+
 
 # ---------------------------------------------------------------------------
 # The prompt
@@ -384,6 +389,14 @@ class PlanFailureKind(StrEnum):
     API_ERROR = "api_error"
     """The request did not produce a usable response at all."""
 
+    NOT_CONFIGURED = "not_configured"
+    """No credential resolved, so no request was ever made.
+
+    Separate from :attr:`API_ERROR` because nothing failed remotely and a retry
+    cannot help: the operator has to supply a credential. It is the one planner
+    failure whose fix is on this machine.
+    """
+
 
 @dataclass(frozen=True, slots=True)
 class PlannerUsage:
@@ -593,6 +606,29 @@ class Planner:
             attempt += 1
             try:
                 response = await self._request(messages)
+            except TypeError as exc:
+                # The SDK's own verdict, after it has tried `ANTHROPIC_API_KEY`,
+                # `ANTHROPIC_AUTH_TOKEN` and the `ant auth login` profile — see
+                # `create_planner` on why this module deliberately checks none
+                # of them itself. It arrives as a bare `TypeError` from a
+                # private `_validate_headers` hook, so the message is the only
+                # thing that distinguishes it; anything else with this type is a
+                # real bug and must keep propagating.
+                if _NO_CREDENTIAL not in str(exc):
+                    raise
+                bound.warning("planner.not_configured", attempt=attempt)
+                return PlanFailure(
+                    kind=PlanFailureKind.NOT_CONFIGURED,
+                    message=(
+                        "the planner has no Anthropic credential: set "
+                        "ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN, or run "
+                        "`ant auth login`) in the environment that starts the "
+                        "server, and restart it. The harnesses authenticate "
+                        "themselves; this credential is the planner's alone."
+                    ),
+                    usage=usage,
+                    attempts=attempt,
+                )
             except APIError as exc:
                 # The class name and status, never the body or the request: an
                 # error rendered into a UI must not become a channel for the

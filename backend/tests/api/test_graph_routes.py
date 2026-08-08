@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
@@ -181,6 +182,43 @@ def test_plan_failure_is_typed_and_persists_nothing(
             }
         ]
         assert client.get("/api/sessions").json() == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "expected"),
+    [
+        (PlanFailureKind.NOT_CONFIGURED, 503),
+        (PlanFailureKind.API_ERROR, 502),
+        (PlanFailureKind.REFUSED, 422),
+        (PlanFailureKind.TRUNCATED, 422),
+        (PlanFailureKind.MALFORMED, 422),
+    ],
+)
+def test_every_plan_failure_has_a_status_that_points_somewhere(
+    settings: Settings,
+    target_repo: Path,
+    kind: PlanFailureKind,
+    expected: int,
+) -> None:
+    """The status code has to say who can fix it.
+
+    503 for a missing credential rather than 502: nothing upstream was reached,
+    and the operator would otherwise go looking for an Anthropic outage instead
+    of at their own environment. Parametrized over the whole enum so a new
+    failure kind cannot quietly inherit 422.
+    """
+    failure = PlanFailure(kind=kind, message="no", usage=planner_usage(), attempts=1)
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        client.app.state.planner = FakePlanner(failure=failure)
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={"repo_path": str(target_repo), "objective": "Build it"},
+        )
+
+        assert response.status_code == expected
+        assert response.json()["detail"]["kind"] == kind.value
 
 
 def test_a_proposal_is_persisted_pending_and_addressable_by_node(

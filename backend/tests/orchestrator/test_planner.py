@@ -22,6 +22,7 @@ from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import httpx
 import pytest
@@ -240,7 +241,7 @@ def make_planner(
     prices: PriceTable,
     *,
     catalog: Mapping[str, Sequence[str]] | None = None,
-    api_key: str = CANARY_KEY,
+    api_key: str | None = CANARY_KEY,
 ) -> Planner:
     client = AsyncAnthropic(
         api_key=api_key,
@@ -641,6 +642,54 @@ async def test_api_error_is_data(settings: Settings, prices: PriceTable) -> None
     assert result.kind is PlanFailureKind.API_ERROR
     assert "HTTP 500" in result.message
     assert result.usage.requests == 0
+
+
+async def test_a_missing_credential_is_data_and_not_a_crash(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, prices: PriceTable
+) -> None:
+    """No credential is a named failure, not a 500.
+
+    The SDK reports it as a bare `TypeError` from a private `_validate_headers`
+    hook, so it slipped past `except APIError` and reached the browser as
+    "Internal Server Error" — the whole Sessions tab, whose only button is
+    "Create proposal", was unusable with nothing on screen saying why.
+
+    Separate from `API_ERROR`: no request left the machine, so `requests` is 0
+    and the correction loop must not spend its budget retrying.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    api = FakeApi([Reply(body(recorded_plan()))])
+
+    result = await make_planner(api, settings, prices, api_key=None).propose(OBJECTIVE)
+
+    assert isinstance(result, PlanFailure)
+    assert result.kind is PlanFailureKind.NOT_CONFIGURED
+    assert "ANTHROPIC_API_KEY" in result.message
+    assert result.attempts == 1
+    assert result.usage.requests == 0
+    assert api.requests == []
+
+
+async def test_an_unrelated_type_error_still_propagates(
+    settings: Settings, prices: PriceTable
+) -> None:
+    """The credential catch is matched on a message, so it must stay narrow.
+
+    A `TypeError` from anywhere else in the request path is a bug in this
+    module, and reporting it as "no credential" would send the operator to look
+    for a key that is already there.
+    """
+    planner = make_planner(FakeApi([Reply(body(recorded_plan()))]), settings, prices)
+
+    async def boom(_messages: object) -> object:
+        raise TypeError("parse() got an unexpected keyword argument")
+
+    with (
+        mock.patch.object(planner, "_request", boom),
+        pytest.raises(TypeError, match="unexpected keyword"),
+    ):
+        await planner.propose(OBJECTIVE)
 
 
 async def test_an_empty_objective_is_programmer_error(

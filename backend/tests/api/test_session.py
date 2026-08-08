@@ -235,6 +235,44 @@ def test_missing_resources_and_invalid_bodies_are_transport_errors(
         assert client.get("/api/sessions").json() == []
 
 
+def test_an_unusable_repo_path_is_a_422_with_a_reason(
+    settings: Settings, tmp_path: Path
+) -> None:
+    """The first mistake anyone makes must not be an opaque 500.
+
+    The README says to substitute your own path into the create-session call,
+    so getting it wrong is the common case, not the exotic one. Before this,
+    `NotARepositoryError` escaped `api/deps.call` and FastAPI answered with a
+    bare "Internal Server Error" — no body, nothing naming the path.
+
+    The neighbouring rejection test also posts a non-existent `repo_path`, but
+    pairs it with `prompt: ""`, so Pydantic rejects the body before the
+    orchestrator ever looks at the repository. This one sends an otherwise
+    valid body.
+    """
+    plain = tmp_path / "not-a-repo"
+    plain.mkdir()
+
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        response = client.post(
+            "/api/sessions",
+            json={
+                "repo_path": str(plain),
+                "prompt": "work",
+                "harness": "fake",
+                "model": MODEL,
+            },
+        )
+
+        assert response.status_code == 422
+        # The path has to be in the message: "not a git repository" alone does
+        # not tell you *which* path the server resolved.
+        assert str(plain) in response.json()["detail"]
+        assert "not a git repository" in response.json()["detail"]
+        assert client.get("/api/sessions").json() == []
+
+
 def test_kill_and_retry_invalid_transitions_are_conflicts(
     settings: Settings, target_repo: Path
 ) -> None:

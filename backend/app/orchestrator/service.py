@@ -98,6 +98,7 @@ from app.orchestrator.worktree import (
     CommitResult,
     MergeResult,
     MergeStatus,
+    NotARepositoryError,
     SessionWorkspace,
     init_session_workspace,
 )
@@ -191,6 +192,39 @@ class InvalidGraphError(OrchestratorError):
     def __init__(self, errors: Sequence[DagError]) -> None:
         self.errors = tuple(errors)
         super().__init__("; ".join(error.message for error in self.errors))
+
+
+async def _open_workspace(
+    *,
+    repo_path: Path,
+    session_id: SessionId,
+    workspaces_root: Path | None,
+    base_ref: str,
+) -> SessionWorkspace:
+    """Create a session's workspace, blaming the request when it is at fault.
+
+    ``worktree.py`` raises one exception family, and only part of it is the
+    caller's doing. ``NotARepositoryError`` means the *body* named a path that
+    is not a git repository, or a ``base_ref`` with no commit — an argument the
+    orchestrator rejects, so it joins the ``ValueError`` → 422 case that already
+    covers an unknown harness or an unsupported model.
+
+    The rest of ``WorktreeError`` deliberately keeps propagating as a 500.
+    ``GitCommandError`` ("git failed"), ``PathEscapeError``, and
+    ``InvalidNameError`` are raised against ids this module generates itself, so
+    they are our bugs, not bad input. Translating them too would answer every
+    broken repository and every missing ``git`` with a status code that blames
+    the operator.
+    """
+    try:
+        return await init_session_workspace(
+            repo_path=repo_path,
+            session_id=session_id,
+            workspaces_root=workspaces_root,
+            base_ref=base_ref,
+        )
+    except NotARepositoryError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def session_status_for_nodes(statuses: Iterable[NodeStatus]) -> SessionStatus:
@@ -596,7 +630,7 @@ class NodeRunService:
             )
         session_id = new_session_id()
         node_id = new_node_id()
-        workspace = await init_session_workspace(
+        workspace = await _open_workspace(
             repo_path=repo_path,
             session_id=session_id,
             workspaces_root=self._settings.workspaces_root,
@@ -686,7 +720,7 @@ class NodeRunService:
                 )
 
         session_id = new_session_id()
-        workspace = await init_session_workspace(
+        workspace = await _open_workspace(
             repo_path=repo_path,
             session_id=session_id,
             workspaces_root=self._settings.workspaces_root,

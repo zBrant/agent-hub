@@ -43,6 +43,10 @@ from app.orchestrator.planner import PlanFailure
 
 router = APIRouter(prefix="/api/graphs", tags=["graphs"])
 
+# Everything not listed is 422: the model answered, and what came back is
+# unprocessable rather than a transport or configuration problem.
+_PLAN_FAILURE_STATUS = {"api_error": 502, "not_configured": 503}
+
 
 @router.post(
     "/plan",
@@ -76,7 +80,10 @@ async def plan_graph(body: PlanGraphRequest, request: Request) -> PlannedGraphRe
                 for error in result.errors
             ],
         }
-        code = 502 if result.kind.value == "api_error" else 422
+        # 503 and not 502: with no credential nothing upstream was reached, and
+        # the fix is on this machine — an operator reading "bad gateway" would
+        # go looking for an Anthropic outage.
+        code = _PLAN_FAILURE_STATUS.get(result.kind.value, 422)
         raise HTTPException(status_code=code, detail=detail)
     return PlannedGraphResponse.from_proposal(result)
 
