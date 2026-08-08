@@ -13,7 +13,8 @@ dashboards. Single-user, binds to `127.0.0.1`, targets macOS.
 | `docs/conventions.md` | Python and TypeScript code standards |
 | `docs/design-system.md` | Visual tokens, components, UI rules |
 | `docs/roadmap.md` | **Where** the project is — phase status and what comes next |
-| `docs/phase-2.md` | The current phase, broken into activities with dependencies |
+| `docs/phase-<n>.md` | Each phase, broken into activities with dependencies and results |
+| `docs/acceptance-phase-<n>.md` | What was actually run to accept a phase, and what it does *not* claim |
 
 `design.md` is the source of truth for decisions already made. If you think one of
 them is wrong, say so — don't quietly work around it.
@@ -81,22 +82,30 @@ Before calling anything done: `ruff check`, `mypy app`, `pytest`, and
 
 ## Project state
 
-Current phase: **Phase 2 — the graph** (see `design.md` §10 and
-`docs/phase-2.md`). This is the heart of the product.
+**The MVP is complete.** Phases 0 through 4 are accepted, each against real
+runs rather than fixtures — see `docs/roadmap.md` for the summary and
+`docs/acceptance-phase-{1,2,3,4}.md` for the evidence.
 
-Phases 0 and 1 are complete and were accepted against a real Codex session:
-sandbox, structured events, four-field usage, NDJSON replay with pinned price
-versions, the persistent run service, REST, the cursor-replay WebSocket broker,
-process-group kill, immutable-attempt retry, and the live session view. Claude
-Code's successful acceptance run is deferred while that account is not in use;
-its failure path remains covered. Channel B (PTY attach) is deliberately
-deferred — B10 proved Codex's `exec --json` runtime is not attachable, and a
-misleading terminal is worse than none.
+What is deliberately *not* done, so nobody "fixes" it by accident:
 
-Two things Phase 1 leaves standing that Phase 2 must generalize, not work
-around: `SingleRunService` assumes **one active run per session**, and nothing
-serializes concurrent merges into the shared integration worktree. Do not jump
-ahead to dashboards or code search before the graph executes.
+- **Channel B (PTY attach) is deferred.** B10 proved Codex's `exec --json`
+  runtime is not attachable; a terminal that shows something other than the
+  live run is worse than no terminal.
+- **Claude Code's successful acceptance run is deferred** while that account is
+  not in use. Its failure path is covered.
+- **No live-provider turn is claimed for Phase 4's agentic loop.** There was no
+  API key on the acceptance machine, and `acceptance-phase-4.md` says so rather
+  than implying coverage it does not have.
+- **Planner spend is not recorded in `usage_event`.** It structurally cannot be:
+  `run_id`, `session_id` and `harness` are all `NOT NULL`. Phase 2's C8 result
+  lists the four changes that would make it recordable.
+
+Two environment traps that have already cost time here:
+
+- **`rg` may be a shell function.** `which rg` and `rg --version` succeed while
+  `subprocess` cannot find it. Verify with `ls -l "$(command -v rg)"`.
+- **SQLAlchemy skips `greenlet` on Apple Silicon** because its marker lists
+  `aarch64` and not `arm64`; the `sqlalchemy[asyncio]` extra is what pulls it in.
 
 ## Language
 

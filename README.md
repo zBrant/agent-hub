@@ -87,7 +87,17 @@ dashboards, metrics, and code search belong to later phases.
 - Node 20+ and pnpm
 - [ai-jail](https://github.com/akitaonrails/ai-jail)
 - Git
+- [ripgrep](https://github.com/BurntSushi/ripgrep) — code search's text tool
 - An installed and authenticated Codex or Claude Code CLI
+- Optional: [ast-grep](https://ast-grep.github.io/), for structural search.
+  Without it that one tool reports itself unavailable and the rest still works.
+
+> **Verify `rg` is a real binary, not a shell function.** Some shells and
+> terminal integrations define `rg` as a function or alias, so `which rg` and
+> `rg --version` both succeed while `subprocess` — which does not go through the
+> shell — cannot find it. Check with `ls -l "$(command -v rg)"`: it must be a
+> file. This masked a missing ripgrep on the development machine for the whole
+> of Phase 4.
 
 Install the locked dependencies:
 
