@@ -49,6 +49,12 @@ WebSocket, restart, and UI contracts agree; see
 [`acceptance-phase-3.md`](acceptance-phase-3.md) and
 [`phase-3.md`](phase-3.md).
 
+**Phase 4 is in progress.** E1 is complete: bounded ripgrep, file-read, and
+directory-listing tools are scoped to a session's integration worktree and
+exposed through generated REST/client contracts. E2 structural search is next;
+the incremental symbol index, agent loop, cited UI, and sqlite-vec fallback
+follow; see [`phase-4.md`](phase-4.md).
+
 ## Phases
 
 - [x] **Phase 0 — Vertical spike.** No UI. A script that creates a worktree,
@@ -64,7 +70,7 @@ WebSocket, restart, and UI contracts agree; see
 - [x] **Phase 3 — Dashboards.** Token/cost KPIs and system metrics, once there is
       real data to show.
 - [ ] **Phase 4 — Code search.** ripgrep + ast-grep + tree-sitter tags + agentic
-      chat, then sqlite-vec.
+      chat, then sqlite-vec. Activity breakdown: [`phase-4.md`](phase-4.md).
 
 Install and run instructions are in the repository `README.md`.
 

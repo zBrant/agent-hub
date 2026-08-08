@@ -133,6 +133,57 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/search/directory": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** List Directory */
+        readonly get: operations["list_directory_api_search_directory_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/search/file": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Read File */
+        readonly get: operations["read_file_api_search_file_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/search/text": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Search Text */
+        readonly get: operations["search_text_api_search_text_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/sessions": {
         readonly parameters: {
             readonly query?: never;
@@ -794,6 +845,38 @@ export interface components {
             /** Patch */
             readonly patch: string;
         };
+        /** DirectoryEntryResponse */
+        readonly DirectoryEntryResponse: {
+            /** Kind */
+            readonly kind: string;
+            /** Path */
+            readonly path: string;
+        };
+        /** DirectoryListResponse */
+        readonly DirectoryListResponse: {
+            /** Entries */
+            readonly entries: readonly components["schemas"]["DirectoryEntryResponse"][];
+            /** Path */
+            readonly path: string;
+            /** Truncated */
+            readonly truncated: boolean;
+        };
+        /** FileLineResponse */
+        readonly FileLineResponse: {
+            /** Line */
+            readonly line: number;
+            /** Text */
+            readonly text: string;
+        };
+        /** FileReadResponse */
+        readonly FileReadResponse: {
+            /** Lines */
+            readonly lines: readonly components["schemas"]["FileLineResponse"][];
+            /** Path */
+            readonly path: string;
+            /** Truncated */
+            readonly truncated: boolean;
+        };
         /** GraphResponse */
         readonly GraphResponse: {
             /** Edges */
@@ -1215,6 +1298,24 @@ export interface components {
             /** Ts */
             readonly ts: number;
         };
+        /** TextMatchResponse */
+        readonly TextMatchResponse: {
+            /** Column */
+            readonly column: number;
+            /** Line */
+            readonly line: number;
+            /** Path */
+            readonly path: string;
+            /** Preview */
+            readonly preview: string;
+        };
+        /** TextSearchResponse */
+        readonly TextSearchResponse: {
+            /** Matches */
+            readonly matches: readonly components["schemas"]["TextMatchResponse"][];
+            /** Truncated */
+            readonly truncated: boolean;
+        };
         /** TokenCountsResponse */
         readonly TokenCountsResponse: {
             /** Cache Read Tokens */
@@ -1473,6 +1574,109 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["GraphRunResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly list_directory_api_search_directory_get: {
+        readonly parameters: {
+            readonly query: {
+                readonly session_id: string;
+                readonly path?: string;
+                readonly limit?: number;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["DirectoryListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly read_file_api_search_file_get: {
+        readonly parameters: {
+            readonly query: {
+                readonly session_id: string;
+                readonly path: string;
+                readonly start_line?: number;
+                readonly end_line?: number | null;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["FileReadResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly search_text_api_search_text_get: {
+        readonly parameters: {
+            readonly query: {
+                readonly session_id: string;
+                readonly pattern: string;
+                readonly glob?: string | null;
+                readonly case_sensitive?: boolean;
+                readonly literal?: boolean;
+                readonly limit?: number;
+            };
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["TextSearchResponse"];
                 };
             };
             /** @description Validation Error */

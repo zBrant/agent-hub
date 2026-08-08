@@ -13,6 +13,7 @@ from app.api.dashboard import router as dashboard_router
 from app.api.graph import router as graph_router
 from app.api.health import router as health_router
 from app.api.node import router as node_router
+from app.api.search import router as search_router
 from app.api.session import router as session_router
 from app.config import Settings, get_settings
 from app.metrics.dashboard import DashboardService
@@ -23,6 +24,7 @@ from app.models.tables import Node
 from app.orchestrator.planner import create_planner
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
+from app.search.tools import CodeSearchService
 from app.storage.db import Database, upgrade_database
 from app.ws.broker import EventBroker
 from app.ws.router import router as websocket_router
@@ -68,6 +70,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.planner = planner
     app.state.dashboard = DashboardService(database)
+    app.state.search = CodeSearchService(database)
     minute_writer = SystemMinuteWriter(database)
 
     async def publish_system_snapshot(snapshot: SystemSnapshot) -> None:
@@ -108,6 +111,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = settings or get_settings()
     application.include_router(health_router)
     application.include_router(dashboard_router)
+    application.include_router(search_router)
     application.include_router(session_router)
     # Registered after the session router so that `/api/sessions/{session_id}`
     # keeps matching before the node prefix that extends it; FastAPI resolves in

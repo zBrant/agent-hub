@@ -20,6 +20,9 @@ export type PlanGraphRequest = components["schemas"]["PlanGraphRequest"];
 export type Dashboard = components["schemas"]["DashboardResponse"];
 export type DashboardPeriod = components["schemas"]["DashboardPeriod"];
 export type MetricUsage = components["schemas"]["MetricUsageResponse"];
+export type TextSearch = components["schemas"]["TextSearchResponse"];
+export type FileRead = components["schemas"]["FileReadResponse"];
+export type DirectoryList = components["schemas"]["DirectoryListResponse"];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -93,7 +96,58 @@ function jsonBody(body: unknown): Pick<RequestInit, "body" | "headers"> {
   };
 }
 
+function queryString(
+  values: Readonly<Record<string, string | number | boolean | undefined>>,
+): string {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) query.set(key, String(value));
+  }
+  return query.toString();
+}
+
 export const api = {
+  searchText: (
+    sessionId: string,
+    pattern: string,
+    options: {
+      glob?: string;
+      caseSensitive?: boolean;
+      literal?: boolean;
+      limit?: number;
+    } = {},
+  ) =>
+    request<TextSearch>(
+      `/api/search/text?${queryString({
+        session_id: sessionId,
+        pattern,
+        glob: options.glob,
+        case_sensitive: options.caseSensitive,
+        literal: options.literal,
+        limit: options.limit,
+      })}`,
+    ),
+  readSearchFile: (
+    sessionId: string,
+    path: string,
+    options: { startLine?: number; endLine?: number } = {},
+  ) =>
+    request<FileRead>(
+      `/api/search/file?${queryString({
+        session_id: sessionId,
+        path,
+        start_line: options.startLine,
+        end_line: options.endLine,
+      })}`,
+    ),
+  listSearchDirectory: (sessionId: string, path = ".", limit?: number) =>
+    request<DirectoryList>(
+      `/api/search/directory?${queryString({
+        session_id: sessionId,
+        path,
+        limit,
+      })}`,
+    ),
   getDashboard: (period: DashboardPeriod) =>
     request<Dashboard>(`/api/dashboard?period=${encodeURIComponent(period)}`),
   listSessions: () => request<readonly Session[]>("/api/sessions"),
