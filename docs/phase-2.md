@@ -142,7 +142,7 @@ rather than its immediate parent. `design.md` §8's drawer shows a reason, and
 
 ---
 
-### C3 — Concurrent scheduler
+### C3 — Concurrent scheduler ✅
 
 `orchestrator/scheduler.py`. The topological loop from `design.md` §9 — and
 nothing more. **Do not build a generic workflow engine.**
@@ -162,6 +162,45 @@ run at a time.
 **Done when:** a fake adapter drives a diamond graph to completion with
 `max_concurrency=2`, provably never exceeding two concurrent runs; and a node
 failure leaves its dependents `blocked` rather than `pending` forever.
+
+**Result:** completed on 2026-08-07, 28 tests. `SingleRunService` became
+`NodeRunService` — the same class re-keyed from session to **node**, because a
+node is what genuinely admits one run at a time (one worktree, one live
+process) while a session is explicitly meant to have several. `GraphScheduler`
+is separate, coupled through a three-method `NodeLifecycle` protocol that is
+also the complete set of transitions the scheduler may cause.
+
+**Two claims in "what is actually risky", above, were wrong.** The ingest path
+does *not* assume one `meta.json` — it derives the path from `meta.run_id` and
+holds no module state. The broker does *not* assume one run topic per session —
+`register_run` fans out to both topics. Neither needed changing.
+
+The assumption that did bite was invisible from the outside: the session-status
+projection was written through the run's long-lived `AsyncSession`, and
+`expire_on_commit=False` plus SQLModel's identity map means such a session never
+sees a sibling row another connection changed. With two nodes in flight it
+folded over stale siblings. It now runs on a fresh connection under a
+per-session mutex.
+
+`asyncio.TaskGroup` turned out to be the wrong tool despite
+`docs/conventions.md` §2 reaching for it: it cancels every sibling when one
+child fails — the opposite of "agent failure is data" — and re-raises as an
+`ExceptionGroup`, which turned an `InvalidGraphError` into a 500 at the
+transport.
+
+**A `skipped` parent has no branch.** It never ran, so materializing a child off
+it dies with *invalid reference*. Parents are filtered to those with a persisted
+branch; a node whose parents were all skipped is created off `integration`.
+Neither `design.md` §9 nor §2.2 mentions this.
+
+**The concurrency-bound test as first written could not fail** — a diamond
+offers at most two parallel nodes, so an unbounded scheduler still peaks at two.
+It now gives four independent nodes two slots and parks every arrival until the
+census is sampled; removing the bound turns it red.
+
+**Left open for C9:** the REST routes are still session-addressed and now return
+**409** on a multi-node session, so graph sessions have no HTTP surface yet.
+Guessing which of four nodes `/diff` meant would be worse.
 
 ---
 
@@ -228,7 +267,7 @@ process does not keep.
 
 ---
 
-### C6 — Budgets, timeouts and restart recovery
+### C6 — Budgets, timeouts and restart recovery ✅
 
 Per-node **token budget and wall-clock timeout**, with kill (`design.md` §9 and
 §12's runaway-agent risk). An agent in a loop burns hundreds of thousands of
@@ -246,6 +285,31 @@ it orphaned; do not leave the row lying.
 **Done when:** a token budget kills a running node mid-stream and the node is
 `failed` with its partial usage recorded; and a scheduler restarted with a
 `RUNNING` row resolves it without human intervention.
+
+**Result:** completed on 2026-08-07, 16 tests. The budget counts all four fields
+from the `Usage` events themselves, `reported` and `reconstructed` alike —
+A3 found that a budget-exhausted Claude Code turn reports `result.usage` as all
+zeros, so a budget trusting the harness's own total reads zero in exactly the
+runaway case it exists to stop.
+
+The wall clock is a background task rather than `asyncio.timeout` around the
+event loop: a timeout raises and cancels, and cancelling would skip the
+checkpoint commit and leave the partial work uncommitted. Being cut off is an
+ordinary terminal outcome, not an error.
+
+**Recovery never adopts a leftover run, and the reason is stronger than pid
+reuse: adoption is not implementable.** The adapter reads events off pipes that
+died with the parent that opened them, so a re-found process can emit no further
+`AgentEvent` and its run could never honestly finish. A gone process leaves the
+node `failed` and retryable; one that survived SIGTERM leaves it `blocked`,
+because the scheduler drives past `failed` on its own and a second agent in a
+worktree the first is still writing to corrupts the diff invariant 2 protects.
+
+Also bounded the broker, which C3 reported: `_history`, `_sequences` and
+`_run_sessions` each grew one entry per run forever. The trap in fixing it is
+that an eviction without a record is indistinguishable from a topic that never
+published, so a stale cursor would be told it is current and silently skip the
+difference. Every drop now raises `ReplayGapError` instead.
 
 ---
 
