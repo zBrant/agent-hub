@@ -555,6 +555,23 @@ loud log rather than a quiet exit.
 **A `skipped` node satisfies its dependents.** A skip that blocks everything
 downstream is not a usable operator action.
 
+**`check_acceptance` does not evaluate the criteria — a human does.** §8 emits
+them as prose (`"pytest tests/test_auth.py passes"` describes a command, it is
+not one), and there is no honest way to run prose. Guessing which strings are
+shell commands would be a heuristic that silently passes a criterion it failed
+to understand, which is worse than not checking. So the run records each
+criterion against its outcome and the review panel presents them as a checklist
+the reviewer resolves.
+
+With `auto_merge` on there is no reviewer, and the criteria are recorded but not
+enforced. That is a real limitation and it is stated rather than hidden: an
+unattended graph merges on the harness's own verdict.
+
+The upgrade path, when it is worth building, is to give a criterion an optional
+`command` in §8's schema — then the ones that *are* checkable run in the node's
+worktree under the sandbox, and the rest still go to the human. That is a
+planner-schema change and belongs with whoever next touches it.
+
 What matters:
 
 - **`max_concurrency` configurable and low by default (2–3).** Each agent is a
