@@ -160,7 +160,7 @@ changed or missing source is explicitly marked stale instead of silently shown
 as supporting evidence. Route tests cover exact citation-to-snippet arguments,
 changed content, and rejection of an unlinked server claim.
 
-### E6 — Semantic fallback and acceptance
+### E6 — Semantic fallback and acceptance ✅
 
 Add sqlite-vec only as the last-resort tool the agent can choose after lexical,
 structural, and symbol navigation. Chunk by symbols where available and by
@@ -170,6 +170,30 @@ repository and record answer/citation agreement.
 **Done when:** semantic indexing is incremental, ordinary symbol questions do
 not invoke it, and the committed acceptance record verifies every cited path and
 line against the repository revision that was searched.
+
+**Result:** completed on 2026-08-08. Supported source files are split at indexed
+definition boundaries and then into bounded 80-line windows with ten lines of
+overlap. Files without definitions use the same bounded windows. The default
+offline embedder feature-hashes identifier, snake-case and camel-case terms into
+normalized float32 vectors; both chunks and vectors live in migrated SQLite
+rows. sqlite-vec loads only inside a worker-thread connection and performs the
+bounded cosine ranking, so neither filesystem work nor native vector work blocks
+the event loop.
+
+The model sees `semantic_search` as a last-resort seventh navigation tool. The
+loop rejects it until a lexical, structural, symbol or reference search has been
+attempted, and search previews remain navigation hints rather than citable
+evidence. The existing symbol watcher updates the secondary index only after its
+primary symbol update, so definition boundaries and vectors share the same file
+revision; unchanged hashes skip both parsing and embedding.
+
+Acceptance against detached commit `5aba943` indexed 168 AgentHub files, reused
+all of them on the second semantic pass, placed both expected implementation
+files in the top two, and re-read the exact indexed citation with a recorded
+content hash. It also exposed a native Tree-sitter `QueryCursor` crash that only
+appeared after many heterogeneous files. Parsing each changed file in a recycled
+worker process now contains that native boundary without penalizing unchanged
+files. See [`acceptance-phase-4.md`](acceptance-phase-4.md).
 
 ## Explicitly out of scope
 
