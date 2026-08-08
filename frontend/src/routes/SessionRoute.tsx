@@ -1,8 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, ArrowLeft, Loader } from "lucide-react";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Link, useParams } from "react-router";
-import { ApiError, api } from "@/api/client";
+import {
+  ApiError,
+  api,
+  type Graph,
+  type Node,
+  type UpdateNode,
+} from "@/api/client";
 import { DiffView } from "@/components/session/DiffView";
 import { EventFeed } from "@/components/session/EventFeed";
 import {
@@ -13,10 +19,22 @@ import { TokenSummary } from "@/components/session/TokenSummary";
 import { nodeStateVisual } from "@/lib/node-state";
 import { cn } from "@/lib/utils";
 import { useSessionFeedStore } from "@/stores/session-feed-store";
-import { sessionTopic } from "@/ws/protocol";
+import { graphTopic, sessionTopic } from "@/ws/protocol";
 import { useWebSocketClient } from "@/ws/WebSocketProvider";
 
 const EMPTY_EVENTS = [] as const;
+
+const GraphWorkspace = lazy(async () => {
+  const module = await import("@/components/graph/GraphWorkspace");
+  return { default: module.GraphWorkspace };
+});
+
+type GraphOperation =
+  | { kind: "update_node"; nodeId: string; update: UpdateNode }
+  | { kind: "delete_node"; nodeId: string }
+  | { kind: "add_dependency"; nodeId: string; dependsOnId: string }
+  | { kind: "remove_dependency"; nodeId: string; dependsOnId: string }
+  | { kind: "approve" };
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "Unexpected local API error";
@@ -29,20 +47,28 @@ export function SessionRoute() {
   const append = useSessionFeedStore((state) => state.append);
   const hydrate = useSessionFeedStore((state) => state.hydrate);
 
+  const graph = useQuery({
+    queryKey: ["graph", id],
+    queryFn: () => api.getGraph(id ?? ""),
+    enabled: Boolean(id),
+  });
+  const legacySingleNode = Boolean(
+    graph.data?.nodes.length === 1 && graph.data.nodes[0]?.status !== "pending",
+  );
   const session = useQuery({
     queryKey: ["session", id],
     queryFn: () => api.getSession(id ?? ""),
-    enabled: Boolean(id),
+    enabled: Boolean(id && legacySingleNode),
   });
   const node = useQuery({
     queryKey: ["session", id, "node"],
     queryFn: () => api.getNode(id ?? ""),
-    enabled: Boolean(id),
+    enabled: Boolean(id && legacySingleNode),
   });
   const runs = useQuery({
     queryKey: ["session", id, "runs"],
     queryFn: () => api.listRuns(id ?? ""),
-    enabled: Boolean(id),
+    enabled: Boolean(id && legacySingleNode),
   });
   const latest = runs.data?.at(-1);
   const summary = useQuery({
@@ -58,7 +84,7 @@ export function SessionRoute() {
   const diff = useQuery({
     queryKey: ["session", id, "diff"],
     queryFn: () => api.getDiff(id ?? ""),
-    enabled: Boolean(id),
+    enabled: Boolean(id && legacySingleNode),
   });
   const events = useSessionFeedStore((state) =>
     latest ? (state.eventsByRun[latest.id] ?? EMPTY_EVENTS) : EMPTY_EVENTS,
@@ -71,8 +97,9 @@ export function SessionRoute() {
   }, [hydrate, latest, persistedEvents.data]);
 
   useEffect(() => {
-    if (!id || !websocket) return;
+    if (!id || !websocket || !legacySingleNode) return;
     return websocket.subscribe(sessionTopic(id), (event) => {
+      if (!("run_id" in event)) return;
       append(event);
       if (event.type === "usage") {
         void queryClient.invalidateQueries({
@@ -100,7 +127,49 @@ export function SessionRoute() {
         ]);
       }
     });
-  }, [append, id, queryClient, websocket]);
+  }, [append, id, legacySingleNode, queryClient, websocket]);
+
+  useEffect(() => {
+    if (!id || !websocket) return;
+    return websocket.subscribe(graphTopic(id), (_, frame) => {
+      if (frame.type !== "node_status") return;
+      void queryClient.invalidateQueries({ queryKey: ["graph", id] });
+    });
+  }, [id, queryClient, websocket]);
+
+  const graphAction = useMutation({
+    mutationFn: async (operation: GraphOperation): Promise<Graph | Node> => {
+      if (!id) throw new Error("Missing session id");
+      switch (operation.kind) {
+        case "update_node":
+          return api.updateNode(id, operation.nodeId, operation.update);
+        case "delete_node":
+          return api.deleteNode(id, operation.nodeId);
+        case "add_dependency":
+          return api.addDependency(id, operation.nodeId, operation.dependsOnId);
+        case "remove_dependency":
+          return api.removeDependency(
+            id,
+            operation.nodeId,
+            operation.dependsOnId,
+          );
+        case "approve":
+          return api.approveGraph(id);
+      }
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData<Graph>(["graph", id], (current) => {
+        if ("nodes" in result) return result;
+        if (!current) return current;
+        return {
+          ...current,
+          nodes: current.nodes.map((node) =>
+            node.id === result.id ? result : node,
+          ),
+        };
+      });
+    },
+  });
 
   const action = useMutation({
     mutationFn: async (kind: SessionAction) => {
@@ -122,7 +191,60 @@ export function SessionRoute() {
   });
 
   if (!id) return <RouteError title="Missing session id" />;
-  if (session.isLoading || node.isLoading || runs.isLoading) {
+  if (graph.data) {
+    const proposal = graph.data.nodes.every(
+      (graphNode) => graphNode.status === "pending",
+    );
+    if (proposal || graph.data.nodes.length !== 1) {
+      return (
+        <Suspense
+          fallback={
+            <div className="flex h-full items-center justify-center gap-2 text-meta text-fg-muted">
+              <Loader className="size-4 animate-spin" data-motion="essential" />
+              Loading graph canvas…
+            </div>
+          }
+        >
+          <GraphWorkspace
+            graph={graph.data}
+            onAddDependency={async (nodeId, dependsOnId) => {
+              await graphAction.mutateAsync({
+                kind: "add_dependency",
+                nodeId,
+                dependsOnId,
+              });
+            }}
+            onApprove={async () => {
+              await graphAction.mutateAsync({ kind: "approve" });
+            }}
+            onDeleteNode={async (nodeId) => {
+              await graphAction.mutateAsync({ kind: "delete_node", nodeId });
+            }}
+            onRemoveDependency={async (nodeId, dependsOnId) => {
+              await graphAction.mutateAsync({
+                kind: "remove_dependency",
+                nodeId,
+                dependsOnId,
+              });
+            }}
+            onUpdateNode={async (nodeId, update) => {
+              await graphAction.mutateAsync({
+                kind: "update_node",
+                nodeId,
+                update,
+              });
+            }}
+          />
+        </Suspense>
+      );
+    }
+  }
+  if (
+    session.isLoading ||
+    graph.isLoading ||
+    node.isLoading ||
+    runs.isLoading
+  ) {
     return (
       <div className="flex h-full items-center justify-center gap-2 text-meta text-fg-muted">
         <Loader className="size-4 animate-spin" data-motion="essential" />
@@ -130,8 +252,8 @@ export function SessionRoute() {
       </div>
     );
   }
-  const loadError = session.error ?? node.error ?? runs.error;
-  if (loadError || !session.data || !node.data) {
+  const loadError = session.error ?? graph.error ?? node.error ?? runs.error;
+  if (loadError || !session.data || !graph.data || !node.data) {
     return (
       <RouteError
         title={

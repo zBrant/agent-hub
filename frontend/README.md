@@ -19,6 +19,7 @@ pnpm gen:api     # regenerate src/api/*.d.ts from exported backend schemas
 src/
   api/            query-client.ts + the generated, committed schema.d.ts / events.d.ts
   components/
+    graph/        React Flow canvas, ELK layout, proposal editing and validation
     layout/       the application frame (top bar, tabs, empty state)
     ui/           shadcn primitives; density is tuned here, once, not per call site
   lib/            cn(), the node-state vocabulary of design-system §5

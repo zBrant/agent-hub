@@ -492,7 +492,7 @@ expanded REST schema is already generated for it.
 
 ---
 
-### C10 — Editable canvas
+### C10 — Editable canvas ✅
 
 `@xyflow/react` + `elkjs` for layout, per `design.md` §6 and §8. The graph is an
 **editable proposal**: rename, remove, add an edge, and assign harness and model
@@ -504,6 +504,33 @@ holds that mapping from B8; consume it rather than redefining it.
 
 **Done when:** a proposal renders, survives edit and reload, and the approve
 action is disabled while the client-side graph is invalid.
+
+**Result:** completed on 2026-08-07. The session route now renders multi-node
+graphs with `@xyflow/react`; ELK owns the layered layout and remains a frontend
+detail, so no coordinates entered the REST model. Both the canvas and ELK are
+loaded on demand: the normal application bundle remains 468 KB while the large
+layout engine is fetched only when a graph is opened.
+
+Pending proposals support complete node replacement (including name, harness,
+and model), node removal, and dependency creation/removal through C9's REST
+surface. Successful mutations replace TanStack Query's persisted graph; a
+reload therefore reads the edit back from SQLite rather than from UI state.
+The editor preserves authored fields it does not expose yet — prompt,
+acceptance criteria, touches, and estimated effort — instead of erasing them
+during a rename.
+
+The client validates the whole draft for self-dependencies, duplicate edges,
+orphans, and cycles. An invalid connection stays visibly dashed and red until
+removed, is never sent to the backend, and disables graph approval. Server-side
+DAG validation remains authoritative; this client pass exists to make the
+proposal repairable before the approval request.
+
+Node state rendering consumes `src/lib/node-state.ts` for colour, icon, and
+label. The C9 `graph:<session_id>` topic is now decoded as orchestration state
+distinct from `AgentEvent`; a transition invalidates the persisted graph query.
+The frontend suite is 15 tests across 6 files, including edit/reload, invalid
+approval, route integration, and WebSocket decoding; typecheck, lint, and the
+production build are green.
 
 ---
 

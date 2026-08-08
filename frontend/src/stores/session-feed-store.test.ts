@@ -67,4 +67,27 @@ describe("WebSocket AgentEvent validation", () => {
     });
     expect(decodeServerFrame(malformed)).toBeNull();
   });
+
+  it("decodes graph node transitions as orchestration state", () => {
+    const frame = decodeServerFrame(
+      JSON.stringify({
+        type: "node_status",
+        stream: "stream_one",
+        topic: "graph:sess_one",
+        seq: 4,
+        payload: {
+          session_id: "sess_one",
+          node_id: "node_one",
+          status: "running",
+          ts: 20,
+        },
+      }),
+    );
+
+    expect(frame?.type).toBe("node_status");
+    if (frame?.type === "node_status") {
+      expect(frame.payload.status).toBe("running");
+      expect(frame.topic).toBe("graph:sess_one");
+    }
+  });
 });

@@ -41,6 +41,7 @@
   --color-harness-claude-code: #d97757;
   --color-harness-codex: #a0a0a0;
   --color-harness-opencode: #7c6bf5;
+  --color-graph-mask: #08090acc;
 
   /* typography */
   --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;

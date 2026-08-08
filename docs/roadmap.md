@@ -24,11 +24,12 @@ WebSocket, including reconnect, kill, immutable retry, two NDJSON replays, and
 database/REST/UI total agreement. See [`acceptance-phase-1.md`](acceptance-phase-1.md)
 for the evidence and [`phase-1.md`](phase-1.md) for the activity details.
 
-**Phase 2 is in progress.** C1–C9 are complete: graph persistence and the pure
+**Phase 2 is in progress.** C1–C10 are complete: graph persistence and the pure
 DAG core, concurrent worktrees and serialized merges, the scheduler with
 budgets/recovery, the acceptance gate, structured planner, and the complete
-graph REST/WebSocket orchestration surface. C10 — the editable canvas — is next;
-see [`phase-2.md`](phase-2.md).
+graph REST/WebSocket orchestration surface, followed by the editable React Flow
+canvas with client-side DAG validation. C11 — the per-state node drawer — is
+next; see [`phase-2.md`](phase-2.md).
 
 ## Phases
 

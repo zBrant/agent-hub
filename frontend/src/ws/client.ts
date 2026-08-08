@@ -3,6 +3,7 @@ import {
   decodeServerFrame,
   type EventFrame,
   encodeClientFrame,
+  type NodeStatusFrame,
   type Topic,
   type TopicPayload,
 } from "@/ws/protocol";
@@ -14,7 +15,10 @@ export type ConnectionStatus =
   | "reconnecting"
   | "closed";
 
-export type TopicHandler = (payload: TopicPayload, frame: EventFrame) => void;
+export type TopicHandler = (
+  payload: TopicPayload,
+  frame: EventFrame | NodeStatusFrame,
+) => void;
 
 type TopicCursor = {
   stream: string;
@@ -98,7 +102,7 @@ export class WebSocketClient {
         });
         return;
       }
-      if (frame.type !== "event") return;
+      if (frame.type !== "event" && frame.type !== "node_status") return;
       const cursor = this.#cursors.get(frame.topic);
       if (cursor?.stream === frame.stream && frame.seq <= cursor.seq) {
         return;

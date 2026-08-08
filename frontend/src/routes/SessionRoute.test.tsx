@@ -18,6 +18,7 @@ import { useSessionFeedStore } from "@/stores/session-feed-store";
 const harness = vi.hoisted(() => ({
   handler: null as ((event: AgentEvent) => void) | null,
   session: vi.fn(),
+  graph: vi.fn(),
   node: vi.fn(),
   runs: vi.fn(),
   summary: vi.fn(),
@@ -27,6 +28,7 @@ const harness = vi.hoisted(() => ({
   kill: vi.fn(),
   retry: vi.fn(),
   approve: vi.fn(),
+  graphAction: vi.fn(),
 }));
 
 vi.mock("@/api/client", () => ({
@@ -35,6 +37,12 @@ vi.mock("@/api/client", () => ({
   },
   api: {
     getSession: harness.session,
+    getGraph: harness.graph,
+    updateNode: harness.graphAction,
+    deleteNode: harness.graphAction,
+    addDependency: harness.graphAction,
+    removeDependency: harness.graphAction,
+    approveGraph: harness.graphAction,
     getNode: harness.node,
     listRuns: harness.runs,
     getRunSummary: harness.summary,
@@ -49,10 +57,10 @@ vi.mock("@/api/client", () => ({
 
 vi.mock("@/ws/WebSocketProvider", () => ({
   useWebSocketClient: () => ({
-    subscribe: (_topic: string, handler: (event: AgentEvent) => void) => {
-      harness.handler = handler;
+    subscribe: (topic: string, handler: (event: AgentEvent) => void) => {
+      if (topic.startsWith("session:")) harness.handler = handler;
       return () => {
-        harness.handler = null;
+        if (topic.startsWith("session:")) harness.handler = null;
       };
     },
   }),
@@ -146,6 +154,11 @@ describe("live session route", () => {
     vi.clearAllMocks();
     useSessionFeedStore.setState({ eventsByRun: {} });
     harness.session.mockResolvedValue(session);
+    harness.graph.mockResolvedValue({
+      session,
+      nodes: [node("ready")],
+      edges: [],
+    });
     harness.diff.mockResolvedValue({ patch: "" });
     harness.events.mockResolvedValue([]);
     harness.summary.mockResolvedValue(summary(true));

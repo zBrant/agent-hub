@@ -7,13 +7,16 @@
  */
 
 import type { AgentEvent } from "@/api/events";
+import type { components } from "@/api/schema";
+import { NODE_STATES } from "@/lib/node-state";
 
 export type SessionTopic = `session:${string}`;
 export type RunTopic = `run:${string}`;
+export type GraphTopic = `graph:${string}`;
 export type MetricsTopic = "metrics";
 
 /** WS topic vocabulary — docs/conventions.md §4. */
-export type Topic = SessionTopic | RunTopic | MetricsTopic;
+export type Topic = SessionTopic | RunTopic | GraphTopic | MetricsTopic;
 
 export function sessionTopic(sessionId: string): SessionTopic {
   return `session:${sessionId}`;
@@ -23,6 +26,10 @@ export function runTopic(runId: string): RunTopic {
   return `run:${runId}`;
 }
 
+export function graphTopic(sessionId: string): GraphTopic {
+  return `graph:${sessionId}`;
+}
+
 export const METRICS_TOPIC: MetricsTopic = "metrics";
 
 /**
@@ -30,7 +37,14 @@ export const METRICS_TOPIC: MetricsTopic = "metrics";
  * validation below checks the stable envelope/discriminator fields; component
  * code receives the generated union and narrows on `type`.
  */
-export type TopicPayload = AgentEvent;
+export type NodeStatusPayload = {
+  session_id: string;
+  node_id: string;
+  status: components["schemas"]["NodeStatus"];
+  ts: number;
+};
+
+export type TopicPayload = AgentEvent | NodeStatusPayload;
 
 /** A durable event delivered on one multiplexed topic. */
 export type EventFrame = {
@@ -38,7 +52,15 @@ export type EventFrame = {
   stream: string;
   topic: Topic;
   seq: number;
-  payload: TopicPayload;
+  payload: AgentEvent;
+};
+
+export type NodeStatusFrame = {
+  type: "node_status";
+  stream: string;
+  topic: GraphTopic;
+  seq: number;
+  payload: NodeStatusPayload;
 };
 
 export type ReadyFrame = {
@@ -54,7 +76,11 @@ export type ErrorFrame = {
   message: string;
 };
 
-export type ServerFrame = EventFrame | ReadyFrame | ErrorFrame;
+export type ServerFrame =
+  | EventFrame
+  | NodeStatusFrame
+  | ReadyFrame
+  | ErrorFrame;
 
 /** Control frames the client sends. A cursor is valid only in its stream. */
 export type ClientFrame =
@@ -70,7 +96,8 @@ function isTopic(value: unknown): value is Topic {
     typeof value === "string" &&
     (value === METRICS_TOPIC ||
       (value.startsWith("session:") && value.length > "session:".length) ||
-      (value.startsWith("run:") && value.length > "run:".length))
+      (value.startsWith("run:") && value.length > "run:".length) ||
+      (value.startsWith("graph:") && value.length > "graph:".length))
   );
 }
 
@@ -100,6 +127,21 @@ function isAgentEvent(value: unknown): value is AgentEvent {
   );
 }
 
+const NODE_STATUSES = new Set<string>(NODE_STATES);
+
+function isNodeStatusPayload(value: unknown): value is NodeStatusPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const payload = value as Record<string, unknown>;
+  return (
+    typeof payload.session_id === "string" &&
+    typeof payload.node_id === "string" &&
+    typeof payload.status === "string" &&
+    NODE_STATUSES.has(payload.status) &&
+    typeof payload.ts === "number" &&
+    Number.isSafeInteger(payload.ts)
+  );
+}
+
 /**
  * Parse one raw frame. Returns `null` for anything unrecognizable — a malformed
  * frame must never take the connection down, and it must never be silently
@@ -120,6 +162,28 @@ export function decodeServerFrame(raw: unknown): ServerFrame | null {
 
   if (typeof parsed !== "object" || parsed === null) return null;
   const frame = parsed as Record<string, unknown>;
+  if (frame.type === "node_status") {
+    if (
+      typeof frame.topic !== "string" ||
+      !frame.topic.startsWith("graph:") ||
+      frame.topic.length === "graph:".length ||
+      typeof frame.stream !== "string" ||
+      frame.stream.length === 0 ||
+      typeof frame.seq !== "number" ||
+      !Number.isSafeInteger(frame.seq) ||
+      frame.seq < 1 ||
+      !isNodeStatusPayload(frame.payload)
+    ) {
+      return null;
+    }
+    return {
+      type: "node_status",
+      stream: frame.stream,
+      topic: frame.topic as GraphTopic,
+      seq: frame.seq,
+      payload: frame.payload,
+    };
+  }
   if (frame.type === "event") {
     if (
       !isTopic(frame.topic) ||
