@@ -1,4 +1,4 @@
-import { Save, Trash2 } from "lucide-react";
+import { Save, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import type { Node, UpdateNode } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 type Props = {
   node: Node;
   busy: boolean;
+  dependencies?: readonly string[];
+  onClose?: () => void;
   onSave: (nodeId: string, update: UpdateNode) => void;
   onRemove: (nodeId: string) => void;
 };
@@ -13,16 +15,28 @@ type Props = {
 const CONTROL =
   "h-[30px] w-full rounded-md border border-border-strong bg-inset px-2 text-ui text-fg outline-none focus:border-focus";
 
-export function NodeEditor({ node, busy, onSave, onRemove }: Props) {
+export function NodeEditor({
+  node,
+  busy,
+  dependencies = [],
+  onClose,
+  onSave,
+  onRemove,
+}: Props) {
   const [name, setName] = useState(node.name);
+  const [prompt, setPrompt] = useState(node.prompt);
   const [harness, setHarness] = useState(node.harness);
   const [model, setModel] = useState(node.model ?? "");
+  const [criteria, setCriteria] = useState(node.acceptance_criteria.join("\n"));
 
   function save() {
     onSave(node.id, {
       name: name.trim(),
-      prompt: node.prompt,
-      acceptance_criteria: node.acceptance_criteria,
+      prompt: prompt.trim(),
+      acceptance_criteria: criteria
+        .split("\n")
+        .map((criterion) => criterion.trim())
+        .filter(Boolean),
       harness: harness.trim(),
       model: model.trim() || null,
       touches: node.touches,
@@ -31,10 +45,22 @@ export function NodeEditor({ node, busy, onSave, onRemove }: Props) {
   }
 
   return (
-    <aside className="w-[340px] shrink-0 border-border border-l bg-surface p-3">
-      <div className="mb-3">
-        <h2 className="font-semibold text-ui">Edit proposal node</h2>
-        <code className="text-code text-fg-muted">{node.id}</code>
+    <aside className="w-[480px] max-w-[60vw] shrink-0 border-border border-l bg-surface p-3">
+      <div className="mb-3 flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <h2 className="font-semibold text-ui">Edit proposal node</h2>
+          <code className="text-code text-fg-muted">{node.id}</code>
+        </div>
+        {onClose ? (
+          <Button
+            aria-label="Close node drawer"
+            onClick={onClose}
+            size="icon-sm"
+            variant="ghost"
+          >
+            <X />
+          </Button>
+        ) : null}
       </div>
       <div className="space-y-3">
         <label className="block text-meta text-fg-muted">
@@ -45,6 +71,16 @@ export function NodeEditor({ node, busy, onSave, onRemove }: Props) {
             disabled={busy}
             onChange={(event) => setName(event.target.value)}
             value={name}
+          />
+        </label>
+        <label className="block text-meta text-fg-muted">
+          Prompt
+          <textarea
+            aria-label="Node prompt"
+            className="mt-1 min-h-32 w-full resize-y rounded-md border border-border-strong bg-inset p-2 text-ui text-fg"
+            disabled={busy}
+            onChange={(event) => setPrompt(event.target.value)}
+            value={prompt}
           />
         </label>
         <label className="block text-meta text-fg-muted">
@@ -64,6 +100,22 @@ export function NodeEditor({ node, busy, onSave, onRemove }: Props) {
           </datalist>
         </label>
         <label className="block text-meta text-fg-muted">
+          Acceptance criteria, one per line
+          <textarea
+            aria-label="Node acceptance criteria"
+            className="mt-1 min-h-24 w-full resize-y rounded-md border border-border-strong bg-inset p-2 text-ui text-fg"
+            disabled={busy}
+            onChange={(event) => setCriteria(event.target.value)}
+            value={criteria}
+          />
+        </label>
+        <div className="text-meta text-fg-muted">
+          Dependencies
+          <p className="mt-1 text-ui text-fg">
+            {dependencies.length > 0 ? dependencies.join(", ") : "None"}
+          </p>
+        </div>
+        <label className="block text-meta text-fg-muted">
           Model
           <input
             aria-label="Node model"
@@ -80,7 +132,7 @@ export function NodeEditor({ node, busy, onSave, onRemove }: Props) {
         </p>
         <div className="flex items-center justify-between gap-2 border-border border-t pt-3">
           <Button
-            disabled={busy || !name.trim() || !harness.trim()}
+            disabled={busy || !name.trim() || !prompt.trim() || !harness.trim()}
             onClick={save}
             size="sm"
           >

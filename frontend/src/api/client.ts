@@ -9,6 +9,12 @@ export type Diff = components["schemas"]["DiffResponse"];
 export type Graph = components["schemas"]["GraphResponse"];
 export type NodeDependency = components["schemas"]["NodeDependencyResponse"];
 export type UpdateNode = components["schemas"]["UpdateNodeRequest"];
+export type AcceptanceResult =
+  components["schemas"]["AcceptanceResultResponse"];
+export type CriterionOutcome = components["schemas"]["CriterionOutcome"];
+export type Merge = components["schemas"]["MergeResponse"];
+export type NodeReview = components["schemas"]["NodeReviewResponse"];
+export type RunOutcome = components["schemas"]["RunOutcomeResponse"];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -61,6 +67,17 @@ function nodePath(sessionId: string, nodeId: string): string {
   return `${sessionPath(sessionId)}/nodes/${encodeURIComponent(nodeId)}`;
 }
 
+function nodeRunPath(sessionId: string, nodeId: string, runId: string): string {
+  return `${nodePath(sessionId, nodeId)}/runs/${encodeURIComponent(runId)}`;
+}
+
+function jsonBody(body: unknown): Pick<RequestInit, "body" | "headers"> {
+  return {
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  };
+}
+
 export const api = {
   listSessions: () => request<readonly Session[]>("/api/sessions"),
   getSession: (sessionId: string) => request<Session>(sessionPath(sessionId)),
@@ -72,8 +89,7 @@ export const api = {
   updateNode: (sessionId: string, nodeId: string, body: UpdateNode) =>
     request<Node>(nodePath(sessionId, nodeId), {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
+      ...jsonBody(body),
     }),
   deleteNode: (sessionId: string, nodeId: string) =>
     request<Graph>(nodePath(sessionId, nodeId), { method: "DELETE" }),
@@ -87,6 +103,50 @@ export const api = {
       `${nodePath(sessionId, nodeId)}/dependencies/${encodeURIComponent(dependsOnId)}`,
       { method: "DELETE" },
     ),
+  listNodeRuns: (sessionId: string, nodeId: string) =>
+    request<readonly Run[]>(`${nodePath(sessionId, nodeId)}/runs`),
+  getNodeRunSummary: (sessionId: string, nodeId: string, runId: string) =>
+    request<RunSummary>(`${nodeRunPath(sessionId, nodeId, runId)}/summary`),
+  getNodeRunEvents: (sessionId: string, nodeId: string, runId: string) =>
+    request<readonly AgentEvent[]>(
+      `${nodeRunPath(sessionId, nodeId, runId)}/events`,
+    ),
+  getNodeDiff: (sessionId: string, nodeId: string) =>
+    request<Diff>(`${nodePath(sessionId, nodeId)}/diff`),
+  listNodeAcceptance: (sessionId: string, nodeId: string, attempt?: number) =>
+    request<readonly AcceptanceResult[]>(
+      `${nodePath(sessionId, nodeId)}/acceptance${attempt === undefined ? "" : `?attempt=${attempt}`}`,
+    ),
+  runNode: (sessionId: string, nodeId: string) =>
+    request<RunOutcome>(`${nodePath(sessionId, nodeId)}/runs`, {
+      method: "POST",
+    }),
+  killNode: (sessionId: string, nodeId: string) =>
+    request<Run>(`${nodePath(sessionId, nodeId)}/kill`, { method: "POST" }),
+  retryNode: (sessionId: string, nodeId: string, feedback?: string) =>
+    request<RunOutcome>(`${nodePath(sessionId, nodeId)}/retry`, {
+      method: "POST",
+      ...(feedback === undefined ? {} : jsonBody({ feedback })),
+    }),
+  approveNode: (
+    sessionId: string,
+    nodeId: string,
+    outcomes: Readonly<Record<number, CriterionOutcome>>,
+  ) =>
+    request<Merge>(`${nodePath(sessionId, nodeId)}/approve`, {
+      method: "POST",
+      ...jsonBody({ outcomes }),
+    }),
+  rejectNode: (
+    sessionId: string,
+    nodeId: string,
+    feedback: string,
+    outcomes: Readonly<Record<number, CriterionOutcome>>,
+  ) =>
+    request<NodeReview>(`${nodePath(sessionId, nodeId)}/reject`, {
+      method: "POST",
+      ...jsonBody({ feedback, outcomes }),
+    }),
   getNode: (sessionId: string) =>
     request<Node>(`${sessionPath(sessionId)}/node`),
   listRuns: (sessionId: string) =>

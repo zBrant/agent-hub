@@ -126,19 +126,25 @@ describe("editable graph workspace", () => {
     fireEvent.change(screen.getByLabelText("Node name"), {
       target: { value: "Renamed" },
     });
+    fireEvent.change(screen.getByLabelText("Node prompt"), {
+      target: { value: "Build the renamed node" },
+    });
     fireEvent.change(screen.getByLabelText("Node harness"), {
       target: { value: "claude-code" },
     });
     fireEvent.change(screen.getByLabelText("Node model"), {
       target: { value: "claude-opus-5" },
     });
+    fireEvent.change(screen.getByLabelText("Node acceptance criteria"), {
+      target: { value: "Tests pass\nDocs updated" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
       expect(callbacks.onUpdateNode).toHaveBeenCalledWith("node_a", {
         name: "Renamed",
-        prompt: "Build First",
-        acceptance_criteria: ["Tests pass"],
+        prompt: "Build the renamed node",
+        acceptance_criteria: ["Tests pass", "Docs updated"],
         harness: "claude-code",
         model: "claude-opus-5",
         touches: ["frontend/**"],
@@ -147,13 +153,33 @@ describe("editable graph workspace", () => {
     );
 
     first.unmount();
-    render(<GraphWorkspace graph={graph("Renamed")} {...actions()} />, {
+    const reloaded = graph("Renamed");
+    const saved = {
+      ...reloaded,
+      nodes: reloaded.nodes.map((item) =>
+        item.id === "node_a"
+          ? {
+              ...item,
+              prompt: "Build the renamed node",
+              acceptance_criteria: ["Tests pass", "Docs updated"],
+            }
+          : item,
+      ),
+    };
+    render(<GraphWorkspace graph={saved} {...actions()} />, {
       wrapper,
     });
     act(() => canvas.props?.onSelectNode("node_a"));
     expect((screen.getByLabelText("Node name") as HTMLInputElement).value).toBe(
       "Renamed",
     );
+    expect(
+      (screen.getByLabelText("Node prompt") as HTMLTextAreaElement).value,
+    ).toBe("Build the renamed node");
+    expect(
+      (screen.getByLabelText("Node acceptance criteria") as HTMLTextAreaElement)
+        .value,
+    ).toBe("Tests pass\nDocs updated");
   });
 
   it("refuses a non-atomic multi-node removal", () => {
@@ -166,5 +192,30 @@ describe("editable graph workspace", () => {
       "one node at a time",
     );
     expect(callbacks.onDeleteNode).not.toHaveBeenCalled();
+  });
+
+  it("opens a drawer when a running graph node is selected", () => {
+    const callbacks = actions();
+    const running = {
+      ...graph(),
+      nodes: graph().nodes.map((item) => ({
+        ...item,
+        status: "running" as const,
+      })),
+    };
+    render(
+      <GraphWorkspace
+        graph={running}
+        {...callbacks}
+        renderNodeDrawer={(selected) => (
+          <aside>Live drawer for {selected.name}</aside>
+        )}
+      />,
+      { wrapper },
+    );
+
+    act(() => canvas.props?.onSelectNode("node_b"));
+
+    expect(screen.getByText("Live drawer for Second")).toBeTruthy();
   });
 });

@@ -1,4 +1,5 @@
 import { AlertTriangle, ArrowLeft, Check, Loader } from "lucide-react";
+import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { Graph, UpdateNode } from "@/api/client";
@@ -18,6 +19,10 @@ type Props = {
   onAddDependency: (nodeId: string, dependsOnId: string) => Promise<void>;
   onRemoveDependency: (nodeId: string, dependsOnId: string) => Promise<void>;
   onApprove: () => Promise<void>;
+  renderNodeDrawer?: (
+    node: Graph["nodes"][number],
+    onClose: () => void,
+  ) => ReactNode;
 };
 
 function errorMessage(error: unknown): string {
@@ -31,6 +36,7 @@ export function GraphWorkspace({
   onAddDependency,
   onRemoveDependency,
   onApprove,
+  renderNodeDrawer,
 }: Props) {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [draftEdges, setDraftEdges] = useState<readonly GraphEdge[]>([]);
@@ -169,17 +175,20 @@ export function GraphWorkspace({
             selectedNodeId={selectedNodeId}
           />
         </main>
-        {editable && selectedNode ? (
-          <NodeEditor
-            key={selectedNode.id}
-            busy={busy}
-            node={selectedNode}
-            onRemove={(nodeId) => deleteNodes([nodeId])}
-            onSave={(nodeId, update) =>
-              void perform(() => onUpdateNode(nodeId, update))
-            }
-          />
-        ) : null}
+        {selectedNode
+          ? (renderNodeDrawer?.(selectedNode, () => setSelectedNodeId(null)) ??
+            (editable ? (
+              <NodeEditor
+                key={selectedNode.id}
+                busy={busy}
+                node={selectedNode}
+                onRemove={(nodeId) => deleteNodes([nodeId])}
+                onSave={(nodeId, update) =>
+                  void perform(() => onUpdateNode(nodeId, update))
+                }
+              />
+            ) : null))
+          : null}
       </div>
     </div>
   );

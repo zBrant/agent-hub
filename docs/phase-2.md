@@ -534,7 +534,7 @@ production build are green.
 
 ---
 
-### C11 — Node drawer
+### C11 — Node drawer ✅
 
 The per-state panel from `design.md` §8's table: edit when `pending`/`ready`,
 live stream and message input when `running`, diff and approve/reject when
@@ -546,6 +546,37 @@ addressable per node rather than per session.
 
 **Done when:** clicking any node in a running graph opens its live feed, and the
 `awaiting_review` state offers a diff and both actions.
+
+**Result:** completed on 2026-08-08. Every graph node is selectable after the
+proposal gate, and selection opens a 480px state-aware drawer keyed by node id.
+The route reads attempts, canonical events, usage totals, worktree diff, and
+acceptance results exclusively through C9's node-addressed REST surface. It
+hydrates the existing per-run Zustand feed, then follows `run:<run_id>` for live
+events; `graph:<session_id>` and `session:<session_id>` transitions invalidate
+the structural queries that discover new attempts.
+
+`awaiting_review` renders the persisted per-criterion checklist and diff. A
+reviewer can mark each criterion pass/fail/unevaluated, approve the merge, or
+reject with mandatory feedback; both actions carry the same outcome map the
+drawer displays. Running nodes expose the live feed and kill, blocked nodes
+show the best durable explanation available plus diff and retry, and terminal
+nodes show transcript, four-field token totals, estimated-equivalent cost, and
+diff. Pending nodes now edit prompt and acceptance criteria in addition to the
+C10 fields and preserve the remaining authored data on replacement.
+
+Three rows of `design.md` §8 remain deliberately narrower than their original
+wording rather than pretending the backend can do more than it can:
+
+- a `ready` node is read-only because C9 made graph approval the edit boundary;
+  its action schedules all ready nodes through the graph scheduler;
+- messaging and terminal attach are unavailable because B10 proved the active
+  Codex runtime is not attachable and there is no message REST contract;
+- an integrated `done` node has no rerun/commit-history operation, so the
+  drawer reports that limitation instead of presenting a button that fails.
+
+The frontend suite is 20 tests across 8 files. Coverage includes selecting a
+running node, replay plus a synthetic live run event, kill, complete proposal
+editing and reload, criterion changes, and both review transports.
 
 ---
 

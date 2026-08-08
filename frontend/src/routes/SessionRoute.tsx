@@ -29,6 +29,11 @@ const GraphWorkspace = lazy(async () => {
   return { default: module.GraphWorkspace };
 });
 
+const NodeDrawerRoute = lazy(async () => {
+  const module = await import("@/routes/NodeDrawerRoute");
+  return { default: module.NodeDrawerRoute };
+});
+
 type GraphOperation =
   | { kind: "update_node"; nodeId: string; update: UpdateNode }
   | { kind: "delete_node"; nodeId: string }
@@ -233,6 +238,46 @@ export function SessionRoute() {
                 nodeId,
                 update,
               });
+            }}
+            renderNodeDrawer={(selectedNode, onClose) => {
+              const dependencies = graph.data.edges
+                .filter((edge) => edge.node_id === selectedNode.id)
+                .map(
+                  (edge) =>
+                    graph.data.nodes.find(
+                      (candidate) => candidate.id === edge.depends_on_id,
+                    )?.name ?? edge.depends_on_id,
+                );
+              return (
+                <Suspense
+                  fallback={
+                    <aside className="flex w-[480px] max-w-[60vw] items-center justify-center border-border border-l bg-elevated text-meta text-fg-muted">
+                      Loading node…
+                    </aside>
+                  }
+                >
+                  <NodeDrawerRoute
+                    key={selectedNode.id}
+                    dependencies={dependencies}
+                    node={selectedNode}
+                    onClose={onClose}
+                    onDeleteNode={async (nodeId) => {
+                      await graphAction.mutateAsync({
+                        kind: "delete_node",
+                        nodeId,
+                      });
+                    }}
+                    onUpdateNode={async (nodeId, update) => {
+                      await graphAction.mutateAsync({
+                        kind: "update_node",
+                        nodeId,
+                        update,
+                      });
+                    }}
+                    sessionId={id}
+                  />
+                </Suspense>
+              );
             }}
           />
         </Suspense>
