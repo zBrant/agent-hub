@@ -38,6 +38,8 @@ EXPECTED_TABLES = {
     "node_review",
     "node_transition",
     "system_metric_minute",
+    "symbol_source",
+    "code_symbol",
 }
 
 # The last revision of Phase 1. Databases at this revision exist on real

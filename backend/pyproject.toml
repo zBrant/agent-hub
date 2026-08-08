@@ -29,6 +29,16 @@ dependencies = [
     # one would mean prompting for JSON and parsing prose.
     "anthropic>=0.121.0",
     "psutil>=7.2.2",
+    # E3 keeps parsing offline and deterministic: the base binding plus the
+    # Python/web grammar wheels avoid a first-search parser download. New
+    # languages require an explicit grammar and tags query.
+    "tree-sitter>=0.26.0",
+    "tree-sitter-python>=0.25.0",
+    "tree-sitter-javascript>=0.25.0",
+    "tree-sitter-typescript>=0.23.2",
+    # The index manager consumes filesystem changes instead of polling and
+    # reparsing repositories on request paths.
+    "watchfiles>=1.2.0",
 ]
 
 [project.scripts]

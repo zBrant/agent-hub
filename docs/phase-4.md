@@ -77,7 +77,7 @@ exact argv, streaming JSON conversion, truncation, error text, missing binary,
 and the HTTP citation shape without making ast-grep a Python or frontend
 dependency.
 
-### E3 — Incremental symbol index
+### E3 — Incremental symbol index ✅
 
 Use tree-sitter `tags.scm` queries to index definitions and references, with
 `watchfiles` updating only changed files in the background. Persist source hash,
@@ -86,6 +86,24 @@ the request path.
 
 **Done when:** create/change/delete events update only affected files, restart
 reuses unchanged rows, and duplicate definitions remain separately citable.
+
+**Result:** completed on 2026-08-08. A lifespan-owned background manager
+discovers persisted session integration worktrees, performs the initial scan
+off the event loop, and then applies `watchfiles` create/change/delete events
+one path at a time. Each supported source is capped at two MiB and keyed by its
+SHA-256 digest. Restart still reads hashes to detect drift, but unchanged files
+reuse their rows without rerunning Tree-sitter; files with no tags also retain a
+source row so an empty result is reusable rather than ambiguous.
+
+Python, JavaScript, TypeScript, and TSX parsers ship as offline wheels. Their
+repository-owned `tags.scm` queries extract definitions and call references,
+avoiding the current language pack's first-use network downloads. Adding a
+language therefore remains an explicit parser/query change. SQLite persists the
+session, relative path, source hash, language, name, kind, definition/reference
+role, and one-based span. Composite source foreign keys make replacement and
+deletion file-local. `/api/search/symbols` and `/api/search/references` expose
+bounded, generated citation contracts, and duplicate definitions are returned
+as separate ordered matches.
 
 ### E4 — Agentic search loop
 

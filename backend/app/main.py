@@ -24,6 +24,7 @@ from app.models.tables import Node
 from app.orchestrator.planner import create_planner
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
+from app.search.symbols import SymbolIndexManager, SymbolIndexService
 from app.search.tools import CodeSearchService
 from app.storage.db import Database, upgrade_database
 from app.ws.broker import EventBroker
@@ -71,6 +72,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.planner = planner
     app.state.dashboard = DashboardService(database)
     app.state.search = CodeSearchService(database)
+    symbols = SymbolIndexService(database)
+    symbol_manager = SymbolIndexManager(database, symbols)
+    app.state.symbols = symbols
+    app.state.symbol_manager = symbol_manager
     minute_writer = SystemMinuteWriter(database)
 
     async def publish_system_snapshot(snapshot: SystemSnapshot) -> None:
@@ -87,10 +92,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.system_sampler = system_sampler
     app.state.system_minute_writer = minute_writer
     system_sampler.start()
+    symbol_manager.start()
     try:
         yield
     finally:
         await system_sampler.close()
+        await symbol_manager.close()
         try:
             await minute_writer.close()
         except Exception:

@@ -22,6 +22,7 @@ export type DashboardPeriod = components["schemas"]["DashboardPeriod"];
 export type MetricUsage = components["schemas"]["MetricUsageResponse"];
 export type TextSearch = components["schemas"]["TextSearchResponse"];
 export type StructuralSearch = components["schemas"]["TextSearchResponse"];
+export type SymbolSearch = components["schemas"]["SymbolSearchResponse"];
 export type FileRead = components["schemas"]["FileReadResponse"];
 export type DirectoryList = components["schemas"]["DirectoryListResponse"];
 
@@ -139,6 +140,27 @@ export const api = {
         session_id: sessionId,
         pattern,
         language,
+        limit,
+      })}`,
+    ),
+  findSymbol: (
+    sessionId: string,
+    name: string,
+    options: { kind?: string; limit?: number } = {},
+  ) =>
+    request<SymbolSearch>(
+      `/api/search/symbols?${queryString({
+        session_id: sessionId,
+        name,
+        kind: options.kind,
+        limit: options.limit,
+      })}`,
+    ),
+  findReferences: (sessionId: string, name: string, limit?: number) =>
+    request<SymbolSearch>(
+      `/api/search/references?${queryString({
+        session_id: sessionId,
+        name,
         limit,
       })}`,
     ),

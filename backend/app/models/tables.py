@@ -17,6 +17,11 @@ run NDJSON record it could or should be rebuilt from. Keeping that distinction
 explicit prevents telemetry retention from weakening the replay contract for
 runs.
 
+The search-owned :class:`SymbolSource` and :class:`CodeSymbol` tables are also
+outside the run tree. They are a disposable index of an integration worktree,
+rebuildable from source bytes and their hashes; run replay neither reads nor
+writes them.
+
 No ``Graph`` table either, and that is a deliberate departure from `design.md`
 §5's diagram. A ``Graph`` sitting 1:1 between ``Session`` and ``Node`` would
 carry no column of its own — the session already owns the objective, the
@@ -691,3 +696,55 @@ class SystemMetricMinute(SQLModel, table=True):
     agent_cpu_avg_percent: float
     agent_cpu_peak_percent: float
     agent_process_count_peak: int
+
+
+class SymbolSource(SQLModel, table=True):
+    """One repository file already considered by the symbol index.
+
+    A separate source row is necessary even when a valid file contains no tags:
+    its hash proves a restart may reuse that empty result instead of parsing the
+    file again. Paths are repository-relative strings, not host filesystem paths.
+    """
+
+    __tablename__ = "symbol_source"
+
+    session_id: SessionId = Field(
+        sa_type=sa.String,
+        foreign_key="session.id",
+        ondelete="CASCADE",
+        primary_key=True,
+    )
+    path: str = Field(primary_key=True)
+    source_hash: str
+    language: str
+
+
+class CodeSymbol(SQLModel, table=True):
+    """One definition or reference extracted from a Tree-sitter tags query."""
+
+    __tablename__ = "code_symbol"
+    __table_args__ = (
+        sa.ForeignKeyConstraint(
+            ["session_id", "path"],
+            ["symbol_source.session_id", "symbol_source.path"],
+            ondelete="CASCADE",
+        ),
+        sa.CheckConstraint(
+            "role IN ('definition', 'reference')", name="code_symbol_role"
+        ),
+        sa.Index("ix_code_symbol_session_name_role", "session_id", "name", "role"),
+        sa.Index("ix_code_symbol_session_path", "session_id", "path"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    session_id: SessionId = Field(sa_type=sa.String)
+    path: str
+    source_hash: str
+    language: str
+    name: str
+    kind: str
+    role: str
+    start_line: int
+    start_column: int
+    end_line: int
+    end_column: int

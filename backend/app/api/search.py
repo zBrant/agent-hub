@@ -7,6 +7,7 @@ from typing import Annotated, NoReturn, cast
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
+from app.search.symbols import SymbolIndexService, SymbolSearchResult
 from app.search.tools import (
     CodeSearchService,
     DirectoryListResult,
@@ -44,6 +45,43 @@ class TextSearchResponse(BaseModel):
                     line=match.line,
                     column=match.column,
                     preview=match.preview,
+                )
+                for match in result.matches
+            ),
+            truncated=result.truncated,
+        )
+
+
+class SymbolMatchResponse(BaseModel):
+    path: str
+    language: str
+    name: str
+    kind: str
+    role: str
+    line: int
+    column: int
+    end_line: int
+    end_column: int
+
+
+class SymbolSearchResponse(BaseModel):
+    matches: tuple[SymbolMatchResponse, ...]
+    truncated: bool
+
+    @classmethod
+    def from_result(cls, result: SymbolSearchResult) -> SymbolSearchResponse:
+        return cls(
+            matches=tuple(
+                SymbolMatchResponse(
+                    path=match.path,
+                    language=match.language,
+                    name=match.name,
+                    kind=match.kind,
+                    role=match.role,
+                    line=match.line,
+                    column=match.column,
+                    end_line=match.end_line,
+                    end_column=match.end_column,
                 )
                 for match in result.matches
             ),
@@ -99,6 +137,10 @@ def _service(request: Request) -> CodeSearchService:
     return cast(CodeSearchService, request.app.state.search)
 
 
+def _symbols(request: Request) -> SymbolIndexService:
+    return cast(SymbolIndexService, request.app.state.symbols)
+
+
 def _raise_http(error: Exception) -> NoReturn:
     if isinstance(error, SearchTargetNotFound):
         raise HTTPException(status_code=404, detail=str(error)) from error
@@ -144,6 +186,37 @@ async def search_text(
     ) as error:
         _raise_http(error)
     return TextSearchResponse.from_result(result)
+
+
+@router.get("/symbols", response_model=SymbolSearchResponse)
+async def find_symbol(
+    request: Request,
+    session_id: Annotated[str, Query(min_length=1, max_length=128)],
+    name: Annotated[str, Query(min_length=1, max_length=512)],
+    kind: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> SymbolSearchResponse:
+    try:
+        result = await _symbols(request).find_symbol(
+            session_id, name, kind=kind, limit=limit
+        )
+    except SearchTargetNotFound as error:
+        _raise_http(error)
+    return SymbolSearchResponse.from_result(result)
+
+
+@router.get("/references", response_model=SymbolSearchResponse)
+async def find_references(
+    request: Request,
+    session_id: Annotated[str, Query(min_length=1, max_length=128)],
+    name: Annotated[str, Query(min_length=1, max_length=512)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> SymbolSearchResponse:
+    try:
+        result = await _symbols(request).find_references(session_id, name, limit=limit)
+    except SearchTargetNotFound as error:
+        _raise_http(error)
+    return SymbolSearchResponse.from_result(result)
 
 
 @router.get("/structural", response_model=TextSearchResponse)
