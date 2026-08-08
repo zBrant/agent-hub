@@ -373,7 +373,7 @@ instead.
 
 ---
 
-### C8 — Planner
+### C8 — Planner ✅
 
 `orchestrator/planner.py`. Objective → DAG via **structured output against a
 JSON Schema**, never markdown parsing. The node schema is specified in
@@ -401,9 +401,45 @@ executes before human approval while `auto_merge` is off.
 cyclic response triggers exactly one correction round-trip and then succeeds; and
 an incorrigible planner fails with a message naming the cycle.
 
+**Result:** completed on 2026-08-07, 36 tests. `messages.parse()` against a
+Pydantic model, slugs mapped before persistence, DAG validated **on slugs**, and
+a three-attempt correction loop.
+
+Validating on slugs rather than after the write is load-bearing, and disabling
+it proved why: the same cycle still surfaces — from `create_graph`, two attempts
+too late, and named in ULIDs the model cannot edit.
+
+**Planner tokens are returned and logged, not written to `usage_event`** — and
+not by preference. `run_id`, `session_id` and `harness` are all `NOT NULL`, so
+recording a planner call means fabricating a run and a node that no
+`events.ndjson` can rebuild, and writing `"planner"` into `harness` puts real
+spend into the per-harness view as a harness that does not exist, mixed
+unlabelled with invariant 7's estimated equivalent. Making it recordable needs
+four changes (nullable `run_id`, an `origin` with a billing discriminator,
+nullable `session_id`, and an event log for the call) — a migration, and Phase
+3's problem when the dashboard actually reads it.
+
+Three things the documents got wrong:
+
+- **`messages.parse()` can raise before `stop_reason` is readable.** "Check
+  `stop_reason` first" is necessary but not sufficient: the SDK validates every
+  text block after parsing, so a refusal or truncation carrying *prose* raises
+  out of the call. A refusal with empty content — the common shape — does reach
+  the check. Both paths are handled.
+- **§8's schema and the `node` table disagree on one more field than C1
+  recorded.** §8 has `title` *and* `description`; the table has `name` (taken by
+  the slug) and `prompt`. The title is folded into the prompt as a heading —
+  recoverable, but a fold, not a column. If C10's canvas wants a display title,
+  that is a migration and should be decided before C10.
+- **§8 anticipates one non-success outcome; there are five** — refusal,
+  truncation, unparseable content, an empty plan, and an unreachable API. Each
+  needs a different message and none is an exception.
+
 ---
 
-### C9 — Graph REST and WebSocket
+---
+
+### C9 — Graph REST and WebSocket ⚠️
 
 Create a graph from a planner proposal, edit nodes and edges before approval,
 approve, run, and per-node operations. Routes validate and delegate; every
@@ -415,6 +451,39 @@ B6's bounded, cursor-replay broker — do not write a second one.
 **Done when:** API tests cover editing a graph before approval, refusing to edit
 one after it has started, and a reconnect replaying node transitions without a
 gap.
+
+**Partial result:** completed on 2026-08-07, 19 tests. Node-addressed routes
+nest under the session — `/sessions/{id}/nodes/{node_id}/...` — so containment
+is checkable: addressing another session's node returns 404 rather than
+silently operating on its worktree. The session-addressed routes stay; their
+409 on a multi-node session was never the defect, the absence of an alternative
+was. The graph topic goes through the broker's retention path, so an evicted
+cursor still raises instead of silently resuming.
+
+**Half of this activity did not land, and the cause was a scoping mistake in
+this plan, not in the work.** C9 was scoped out of `app/orchestrator/**`, so it
+could not add the service use cases its own routes needed, and correctly
+refused to put them in `api/` (architecture §1 rule 3). Missing at the service
+layer: `update_node` and the editable-only-while-pending check, a graph read
+that includes edges, graph approve, wiring `GraphScheduler` into `app.state`,
+per-node `/diff` and `/runs`, standalone criterion resolution, and a node
+transition hook — routes publish after they return, so a transition the
+*scheduler* causes never reaches the graph topic.
+
+`reject_node` also still runs the retry synchronously. C9's analysis is that
+scheduling it from the transport is impossible — there is no point between the
+transition and the run a route can observe — and the fix is a service-level
+split, specified but not implementable from `api/`.
+
+These are being closed as a follow-up with the orchestrator scope C9 lacked.
+
+**The topic vocabulary changed.** `docs/architecture.md` §6 lists
+`session:<id>`, `run:<id>` and `metrics`; there is now also
+`graph:<session_id>`. The frontend's `src/ws/protocol.ts` holds the matching
+union and is hand-written, not generated — the exact edits it needs are
+recorded in C9's report and must land with C10.
+
+---
 
 ---
 
