@@ -15,6 +15,7 @@ from app.api.node import router as node_router
 from app.api.session import router as session_router
 from app.config import Settings, get_settings
 from app.metrics.dashboard import DashboardService
+from app.metrics.system import SystemSampler
 from app.models.clock import now_ms
 from app.models.pricing import load_price_table
 from app.models.tables import Node
@@ -64,9 +65,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.planner = planner
     app.state.dashboard = DashboardService(database)
+    system_sampler = SystemSampler(database=database, disk_path=settings.root)
+    app.state.system_sampler = system_sampler
+    system_sampler.start()
     try:
         yield
     finally:
+        await system_sampler.close()
         await scheduler.close()
         await planner.close()
         await database.dispose()

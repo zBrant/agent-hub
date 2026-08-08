@@ -28,6 +28,7 @@ dependencies = [
     # has an equivalent of `output_config.format` — routing the planner through
     # one would mean prompting for JSON and parsing prose.
     "anthropic>=0.121.0",
+    "psutil>=7.2.2",
 ]
 
 [project.scripts]
@@ -42,6 +43,7 @@ dev = [
     "import-linter>=2.1",
     "types-pyyaml>=6.0",
     "httpx2>=2.9.1",
+    "types-psutil>=7.2.2.20260518",
 ]
 
 [build-system]

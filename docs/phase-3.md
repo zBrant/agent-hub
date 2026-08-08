@@ -79,7 +79,7 @@ future time-series charts still use an audited Tremor Raw adaptation. Three
 route tests cover real-shaped four-field data, partial and empty cost, period
 refetch, and session navigation.
 
-### D3 — System sampler
+### D3 — System sampler ✅
 
 Use `psutil` for total/per-core CPU, RAM, swap and worktree-disk usage. Calls are
 synchronous, so sampling runs through `asyncio.to_thread` (invariant 5). Keep
@@ -93,6 +93,21 @@ normal data, not a failed dashboard request.
 **Done when:** deterministic fake-psutil tests cover process disappearance,
 recursive child totals, ring eviction, and cancellation without blocking the
 event loop.
+
+**Result:** completed on 2026-08-08. The lifespan-owned `SystemSampler` reads
+persisted running PIDs, then moves every synchronous psutil call into
+`asyncio.to_thread`. Each immutable snapshot carries total/per-core CPU, RAM,
+swap, disk, and a process table whose RSS/CPU sum the root plus recursive live
+children. Processes disappearing between enumeration and detail reads are
+omitted without losing the host snapshot.
+
+The one-second history is a `deque(maxlen=300)` and therefore cannot grow. The
+sampler is idempotently started, explicitly cancelled before database disposal,
+and logs a transient sampling failure instead of silently killing its background
+task. `psutil` is the runtime dependency required by `design.md` §8;
+`types-psutil` keeps the isolated vertical under mypy strict. Tests prove tree
+totals, disappearance, persisted PID discovery, worker-thread execution, ring
+eviction, duplicate-start refusal, and clean cancellation.
 
 ### D4 — Live metrics and process table
 
