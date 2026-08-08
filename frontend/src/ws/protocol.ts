@@ -44,7 +44,13 @@ export type NodeStatusPayload = {
   ts: number;
 };
 
-export type TopicPayload = AgentEvent | NodeStatusPayload;
+export type SystemMetricsPayload =
+  components["schemas"]["SystemSnapshotResponse"];
+
+export type TopicPayload =
+  | AgentEvent
+  | NodeStatusPayload
+  | SystemMetricsPayload;
 
 /** A durable event delivered on one multiplexed topic. */
 export type EventFrame = {
@@ -63,6 +69,14 @@ export type NodeStatusFrame = {
   payload: NodeStatusPayload;
 };
 
+export type MetricsFrame = {
+  type: "metrics";
+  stream: string;
+  topic: MetricsTopic;
+  seq: number;
+  payload: SystemMetricsPayload;
+};
+
 export type ReadyFrame = {
   type: "ready";
   stream: string;
@@ -79,6 +93,7 @@ export type ErrorFrame = {
 export type ServerFrame =
   | EventFrame
   | NodeStatusFrame
+  | MetricsFrame
   | ReadyFrame
   | ErrorFrame;
 
@@ -142,6 +157,53 @@ function isNodeStatusPayload(value: unknown): value is NodeStatusPayload {
   );
 }
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isAgentProcessMetric(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const process = value as Record<string, unknown>;
+  return (
+    typeof process.node_id === "string" &&
+    isNonNegativeInteger(process.pid) &&
+    typeof process.harness === "string" &&
+    isNonNegativeInteger(process.rss_bytes) &&
+    isFiniteNumber(process.cpu_percent) &&
+    isNonNegativeInteger(process.uptime_ms) &&
+    isNonNegativeInteger(process.process_count)
+  );
+}
+
+function isSystemMetricsPayload(value: unknown): value is SystemMetricsPayload {
+  if (typeof value !== "object" || value === null) return false;
+  const snapshot = value as Record<string, unknown>;
+  return (
+    isNonNegativeInteger(snapshot.ts) &&
+    isFiniteNumber(snapshot.cpu_percent) &&
+    Array.isArray(snapshot.cpu_per_core) &&
+    snapshot.cpu_per_core.every(isFiniteNumber) &&
+    isNonNegativeInteger(snapshot.memory_total_bytes) &&
+    isNonNegativeInteger(snapshot.memory_used_bytes) &&
+    isNonNegativeInteger(snapshot.memory_available_bytes) &&
+    isFiniteNumber(snapshot.memory_percent) &&
+    isNonNegativeInteger(snapshot.swap_total_bytes) &&
+    isNonNegativeInteger(snapshot.swap_used_bytes) &&
+    isNonNegativeInteger(snapshot.swap_free_bytes) &&
+    isFiniteNumber(snapshot.swap_percent) &&
+    isNonNegativeInteger(snapshot.disk_total_bytes) &&
+    isNonNegativeInteger(snapshot.disk_used_bytes) &&
+    isNonNegativeInteger(snapshot.disk_free_bytes) &&
+    isFiniteNumber(snapshot.disk_percent) &&
+    Array.isArray(snapshot.processes) &&
+    snapshot.processes.every(isAgentProcessMetric)
+  );
+}
+
 /**
  * Parse one raw frame. Returns `null` for anything unrecognizable — a malformed
  * frame must never take the connection down, and it must never be silently
@@ -162,6 +224,26 @@ export function decodeServerFrame(raw: unknown): ServerFrame | null {
 
   if (typeof parsed !== "object" || parsed === null) return null;
   const frame = parsed as Record<string, unknown>;
+  if (frame.type === "metrics") {
+    if (
+      frame.topic !== METRICS_TOPIC ||
+      typeof frame.stream !== "string" ||
+      frame.stream.length === 0 ||
+      typeof frame.seq !== "number" ||
+      !Number.isSafeInteger(frame.seq) ||
+      frame.seq < 1 ||
+      !isSystemMetricsPayload(frame.payload)
+    ) {
+      return null;
+    }
+    return {
+      type: "metrics",
+      stream: frame.stream,
+      topic: frame.topic,
+      seq: frame.seq,
+      payload: frame.payload,
+    };
+  }
   if (frame.type === "node_status") {
     if (
       typeof frame.topic !== "string" ||

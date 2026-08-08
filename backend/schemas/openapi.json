@@ -103,6 +103,49 @@
         "title": "ActiveSessionMetricResponse",
         "type": "object"
       },
+      "AgentProcessMetricResponse": {
+        "properties": {
+          "cpu_percent": {
+            "title": "Cpu Percent",
+            "type": "number"
+          },
+          "harness": {
+            "title": "Harness",
+            "type": "string"
+          },
+          "node_id": {
+            "title": "Node Id",
+            "type": "string"
+          },
+          "pid": {
+            "title": "Pid",
+            "type": "integer"
+          },
+          "process_count": {
+            "title": "Process Count",
+            "type": "integer"
+          },
+          "rss_bytes": {
+            "title": "Rss Bytes",
+            "type": "integer"
+          },
+          "uptime_ms": {
+            "title": "Uptime Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "node_id",
+          "pid",
+          "harness",
+          "rss_bytes",
+          "cpu_percent",
+          "uptime_ms",
+          "process_count"
+        ],
+        "title": "AgentProcessMetricResponse",
+        "type": "object"
+      },
       "CreateGraphRequest": {
         "additionalProperties": false,
         "description": "A whole proposed graph, persisted in one call.\n\nOne call and not \"create session, then POST each node\": a half-written\ngraph is a graph, and a scheduler reading one would happily start the\nfragment it can see. ``create_graph`` validates the DAG before the first row\n(invariant 6 \u2014 this is a proposal, and persisting it starts nothing).",
@@ -1335,6 +1378,100 @@
         "title": "SessionStatus",
         "type": "string"
       },
+      "SystemSnapshotResponse": {
+        "properties": {
+          "cpu_per_core": {
+            "items": {
+              "type": "number"
+            },
+            "title": "Cpu Per Core",
+            "type": "array"
+          },
+          "cpu_percent": {
+            "title": "Cpu Percent",
+            "type": "number"
+          },
+          "disk_free_bytes": {
+            "title": "Disk Free Bytes",
+            "type": "integer"
+          },
+          "disk_percent": {
+            "title": "Disk Percent",
+            "type": "number"
+          },
+          "disk_total_bytes": {
+            "title": "Disk Total Bytes",
+            "type": "integer"
+          },
+          "disk_used_bytes": {
+            "title": "Disk Used Bytes",
+            "type": "integer"
+          },
+          "memory_available_bytes": {
+            "title": "Memory Available Bytes",
+            "type": "integer"
+          },
+          "memory_percent": {
+            "title": "Memory Percent",
+            "type": "number"
+          },
+          "memory_total_bytes": {
+            "title": "Memory Total Bytes",
+            "type": "integer"
+          },
+          "memory_used_bytes": {
+            "title": "Memory Used Bytes",
+            "type": "integer"
+          },
+          "processes": {
+            "items": {
+              "$ref": "#/components/schemas/AgentProcessMetricResponse"
+            },
+            "title": "Processes",
+            "type": "array"
+          },
+          "swap_free_bytes": {
+            "title": "Swap Free Bytes",
+            "type": "integer"
+          },
+          "swap_percent": {
+            "title": "Swap Percent",
+            "type": "number"
+          },
+          "swap_total_bytes": {
+            "title": "Swap Total Bytes",
+            "type": "integer"
+          },
+          "swap_used_bytes": {
+            "title": "Swap Used Bytes",
+            "type": "integer"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ts",
+          "cpu_percent",
+          "cpu_per_core",
+          "memory_total_bytes",
+          "memory_used_bytes",
+          "memory_available_bytes",
+          "memory_percent",
+          "swap_total_bytes",
+          "swap_used_bytes",
+          "swap_free_bytes",
+          "swap_percent",
+          "disk_total_bytes",
+          "disk_used_bytes",
+          "disk_free_bytes",
+          "disk_percent",
+          "processes"
+        ],
+        "title": "SystemSnapshotResponse",
+        "type": "object"
+      },
       "TokenCountsResponse": {
         "properties": {
           "cache_read_tokens": {
@@ -1519,6 +1656,35 @@
           }
         },
         "summary": "Get Dashboard",
+        "tags": [
+          "dashboard"
+        ]
+      }
+    },
+    "/api/dashboard/system": {
+      "get": {
+        "operationId": "get_system_snapshot_api_dashboard_system_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SystemSnapshotResponse"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "title": "Response Get System Snapshot Api Dashboard System Get"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get System Snapshot",
         "tags": [
           "dashboard"
         ]

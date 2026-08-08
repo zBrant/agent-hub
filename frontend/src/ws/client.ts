@@ -3,6 +3,7 @@ import {
   decodeServerFrame,
   type EventFrame,
   encodeClientFrame,
+  type MetricsFrame,
   type NodeStatusFrame,
   type Topic,
   type TopicPayload,
@@ -17,7 +18,7 @@ export type ConnectionStatus =
 
 export type TopicHandler = (
   payload: TopicPayload,
-  frame: EventFrame | NodeStatusFrame,
+  frame: EventFrame | NodeStatusFrame | MetricsFrame,
 ) => void;
 
 type TopicCursor = {
@@ -102,7 +103,13 @@ export class WebSocketClient {
         });
         return;
       }
-      if (frame.type !== "event" && frame.type !== "node_status") return;
+      if (
+        frame.type !== "event" &&
+        frame.type !== "node_status" &&
+        frame.type !== "metrics"
+      ) {
+        return;
+      }
       const cursor = this.#cursors.get(frame.topic);
       if (cursor?.stream === frame.stream && frame.seq <= cursor.seq) {
         return;

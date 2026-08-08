@@ -7,6 +7,7 @@ import asyncio
 import pytest
 
 from app.harnesses.events import AgentEvent, AssistantText, Usage
+from app.metrics.system import SystemSnapshot
 from app.ws.broker import EventBroker, ReplayGapError
 
 
@@ -40,6 +41,56 @@ async def test_event_is_published_to_run_and_session_topics() -> None:
         "ts": 1_001,
         "text": "event-1",
     }
+
+
+def system_snapshot(ts: int) -> SystemSnapshot:
+    return SystemSnapshot(
+        ts=ts,
+        cpu_percent=float(ts),
+        cpu_per_core=(float(ts),),
+        memory_total_bytes=100,
+        memory_used_bytes=50,
+        memory_available_bytes=50,
+        memory_percent=50,
+        swap_total_bytes=0,
+        swap_used_bytes=0,
+        swap_free_bytes=0,
+        swap_percent=0,
+        disk_total_bytes=100,
+        disk_used_bytes=25,
+        disk_free_bytes=75,
+        disk_percent=25,
+        processes=(),
+    )
+
+
+async def test_metrics_subscription_gets_only_current_snapshot_then_live() -> None:
+    broker = EventBroker(history_size=2)
+    for stamp in range(1, 5):
+        await broker.publish_metrics(system_snapshot(stamp))
+
+    async with broker.connection() as connection:
+        await broker.subscribe(
+            connection,
+            "metrics",
+            stream=broker.stream_id,
+            after=1,
+        )
+        current = await connection.receive()
+        assert current is not None
+        assert current["type"] == "metrics"
+        assert current["seq"] == 4
+        assert current["payload"]["ts"] == 4
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(connection.receive(), timeout=0.01)
+
+        await broker.publish_metrics(system_snapshot(5))
+        live = await connection.receive()
+        assert live is not None and live["seq"] == 5
+
+    # Metrics have their own one-snapshot retention and do not consume the
+    # durable topic LRU or its history window.
+    assert "metrics" not in broker._history
 
 
 async def test_reconnect_replays_without_a_gap_or_duplicate() -> None:

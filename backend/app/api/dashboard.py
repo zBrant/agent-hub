@@ -15,6 +15,7 @@ from app.metrics.dashboard import (
     DashboardSnapshot,
     MetricUsage,
 )
+from app.metrics.system import AgentProcessMetric, SystemSampler, SystemSnapshot
 from app.models.status import SessionStatus
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -108,6 +109,70 @@ class DashboardResponse(BaseModel):
         )
 
 
+class AgentProcessMetricResponse(BaseModel):
+    node_id: str
+    pid: int
+    harness: str
+    rss_bytes: int
+    cpu_percent: float
+    uptime_ms: int
+    process_count: int
+
+    @classmethod
+    def from_result(cls, result: AgentProcessMetric) -> AgentProcessMetricResponse:
+        return cls(
+            node_id=result.node_id,
+            pid=result.pid,
+            harness=result.harness,
+            rss_bytes=result.rss_bytes,
+            cpu_percent=result.cpu_percent,
+            uptime_ms=result.uptime_ms,
+            process_count=result.process_count,
+        )
+
+
+class SystemSnapshotResponse(BaseModel):
+    ts: int
+    cpu_percent: float
+    cpu_per_core: tuple[float, ...]
+    memory_total_bytes: int
+    memory_used_bytes: int
+    memory_available_bytes: int
+    memory_percent: float
+    swap_total_bytes: int
+    swap_used_bytes: int
+    swap_free_bytes: int
+    swap_percent: float
+    disk_total_bytes: int
+    disk_used_bytes: int
+    disk_free_bytes: int
+    disk_percent: float
+    processes: tuple[AgentProcessMetricResponse, ...]
+
+    @classmethod
+    def from_result(cls, result: SystemSnapshot) -> SystemSnapshotResponse:
+        return cls(
+            ts=result.ts,
+            cpu_percent=result.cpu_percent,
+            cpu_per_core=result.cpu_per_core,
+            memory_total_bytes=result.memory_total_bytes,
+            memory_used_bytes=result.memory_used_bytes,
+            memory_available_bytes=result.memory_available_bytes,
+            memory_percent=result.memory_percent,
+            swap_total_bytes=result.swap_total_bytes,
+            swap_used_bytes=result.swap_used_bytes,
+            swap_free_bytes=result.swap_free_bytes,
+            swap_percent=result.swap_percent,
+            disk_total_bytes=result.disk_total_bytes,
+            disk_used_bytes=result.disk_used_bytes,
+            disk_free_bytes=result.disk_free_bytes,
+            disk_percent=result.disk_percent,
+            processes=tuple(
+                AgentProcessMetricResponse.from_result(row) for row in result.processes
+            ),
+        )
+
+
 @router.get("", response_model=DashboardResponse)
 async def get_dashboard(
     request: Request,
@@ -115,6 +180,13 @@ async def get_dashboard(
 ) -> DashboardResponse:
     metrics = cast(DashboardService, request.app.state.dashboard)
     return DashboardResponse.from_result(await metrics.snapshot(period))
+
+
+@router.get("/system", response_model=SystemSnapshotResponse | None)
+async def get_system_snapshot(request: Request) -> SystemSnapshotResponse | None:
+    sampler = cast(SystemSampler, request.app.state.system_sampler)
+    snapshot = sampler.latest
+    return None if snapshot is None else SystemSnapshotResponse.from_result(snapshot)
 
 
 __all__ = ["router"]

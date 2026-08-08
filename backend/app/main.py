@@ -65,7 +65,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.scheduler = scheduler
     app.state.planner = planner
     app.state.dashboard = DashboardService(database)
-    system_sampler = SystemSampler(database=database, disk_path=settings.root)
+    system_sampler = SystemSampler(
+        database=database,
+        disk_path=settings.root,
+        publish=broker.publish_metrics,
+    )
     app.state.system_sampler = system_sampler
     system_sampler.start()
     try:

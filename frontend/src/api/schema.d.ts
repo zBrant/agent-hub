@@ -20,6 +20,23 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/dashboard/system": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get System Snapshot */
+        readonly get: operations["get_system_snapshot_api_dashboard_system_get"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/api/graphs": {
         readonly parameters: {
             readonly query?: never;
@@ -611,6 +628,23 @@ export interface components {
             readonly total_nodes: number;
             readonly usage: components["schemas"]["MetricUsageResponse"];
         };
+        /** AgentProcessMetricResponse */
+        readonly AgentProcessMetricResponse: {
+            /** Cpu Percent */
+            readonly cpu_percent: number;
+            /** Harness */
+            readonly harness: string;
+            /** Node Id */
+            readonly node_id: string;
+            /** Pid */
+            readonly pid: number;
+            /** Process Count */
+            readonly process_count: number;
+            /** Rss Bytes */
+            readonly rss_bytes: number;
+            /** Uptime Ms */
+            readonly uptime_ms: number;
+        };
         /**
          * CreateGraphRequest
          * @description A whole proposed graph, persisted in one call.
@@ -1128,6 +1162,41 @@ export interface components {
          * @enum {string}
          */
         readonly SessionStatus: "planning" | "running" | "paused" | "done" | "failed";
+        /** SystemSnapshotResponse */
+        readonly SystemSnapshotResponse: {
+            /** Cpu Per Core */
+            readonly cpu_per_core: readonly number[];
+            /** Cpu Percent */
+            readonly cpu_percent: number;
+            /** Disk Free Bytes */
+            readonly disk_free_bytes: number;
+            /** Disk Percent */
+            readonly disk_percent: number;
+            /** Disk Total Bytes */
+            readonly disk_total_bytes: number;
+            /** Disk Used Bytes */
+            readonly disk_used_bytes: number;
+            /** Memory Available Bytes */
+            readonly memory_available_bytes: number;
+            /** Memory Percent */
+            readonly memory_percent: number;
+            /** Memory Total Bytes */
+            readonly memory_total_bytes: number;
+            /** Memory Used Bytes */
+            readonly memory_used_bytes: number;
+            /** Processes */
+            readonly processes: readonly components["schemas"]["AgentProcessMetricResponse"][];
+            /** Swap Free Bytes */
+            readonly swap_free_bytes: number;
+            /** Swap Percent */
+            readonly swap_percent: number;
+            /** Swap Total Bytes */
+            readonly swap_total_bytes: number;
+            /** Swap Used Bytes */
+            readonly swap_used_bytes: number;
+            /** Ts */
+            readonly ts: number;
+        };
         /** TokenCountsResponse */
         readonly TokenCountsResponse: {
             /** Cache Read Tokens */
@@ -1216,6 +1285,26 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_system_snapshot_api_dashboard_system_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["SystemSnapshotResponse"] | null;
                 };
             };
         };

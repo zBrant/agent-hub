@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,6 +58,41 @@ class SystemSnapshot:
     disk_free_bytes: int
     disk_percent: float
     processes: tuple[AgentProcessMetric, ...]
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "ts": self.ts,
+            "cpu_percent": self.cpu_percent,
+            "cpu_per_core": list(self.cpu_per_core),
+            "memory_total_bytes": self.memory_total_bytes,
+            "memory_used_bytes": self.memory_used_bytes,
+            "memory_available_bytes": self.memory_available_bytes,
+            "memory_percent": self.memory_percent,
+            "swap_total_bytes": self.swap_total_bytes,
+            "swap_used_bytes": self.swap_used_bytes,
+            "swap_free_bytes": self.swap_free_bytes,
+            "swap_percent": self.swap_percent,
+            "disk_total_bytes": self.disk_total_bytes,
+            "disk_used_bytes": self.disk_used_bytes,
+            "disk_free_bytes": self.disk_free_bytes,
+            "disk_percent": self.disk_percent,
+            "processes": [
+                {
+                    "node_id": process.node_id,
+                    "pid": process.pid,
+                    "harness": process.harness,
+                    "rss_bytes": process.rss_bytes,
+                    "cpu_percent": process.cpu_percent,
+                    "uptime_ms": process.uptime_ms,
+                    "process_count": process.process_count,
+                }
+                for process in self.processes
+            ],
+        }
+
+
+async def _discard_snapshot(_: SystemSnapshot) -> None:
+    return None
 
 
 class SystemProbe:
@@ -151,6 +186,7 @@ class SystemSampler:
         interval_s: float = 1.0,
         capacity: int = 300,
         probe: SystemProbe | None = None,
+        publish: Callable[[SystemSnapshot], Awaitable[None]] = _discard_snapshot,
     ) -> None:
         if interval_s <= 0:
             raise ValueError("system sample interval must be positive")
@@ -160,6 +196,7 @@ class SystemSampler:
         self._disk_path = disk_path
         self._interval_s = interval_s
         self._probe = probe or SystemProbe()
+        self._publish = publish
         self._history: deque[SystemSnapshot] = deque(maxlen=capacity)
         self._task: asyncio.Task[None] | None = None
 
@@ -199,6 +236,7 @@ class SystemSampler:
             candidates=candidates,
         )
         self._history.append(snapshot)
+        await self._publish(snapshot)
         return snapshot
 
     async def _running_processes(self) -> tuple[ProcessCandidate, ...]:

@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from uuid import uuid4
 
 from app.harnesses.events import AgentEvent, agent_event_adapter
+from app.metrics.system import SystemSnapshot
 from app.models.ids import RunId, SessionId
 
 type WireMessage = dict[str, object]
@@ -98,6 +99,10 @@ class EventBroker:
         # silently skip everything in between.
         self._dropped_through: dict[str, int] = defaultdict(int)
         self._run_sessions: dict[RunId, SessionId] = {}
+        # Metrics are ephemeral snapshots, not durable facts. Retain exactly
+        # one so a new subscriber hydrates immediately without replaying five
+        # minutes of one-second samples.
+        self._latest_metrics: _EventFrame | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -145,6 +150,10 @@ class EventBroker:
 
         async with self._lock:
             if connection.closed:
+                return
+            if topic == "metrics" and self._latest_metrics is not None:
+                connection.topics.add(topic)
+                self._put_locked(connection, self._wire_event(self._latest_metrics))
                 return
             current = self._sequences[topic]
             if stream != self.stream_id or after is None or after > current:
@@ -222,6 +231,22 @@ class EventBroker:
         }
         async with self._lock:
             self._fan_out_locked(f"graph:{session_id}", payload, kind="node_status")
+
+    async def publish_metrics(self, snapshot: SystemSnapshot) -> None:
+        """Publish one ephemeral current-state snapshot on ``metrics``."""
+        async with self._lock:
+            self._sequences["metrics"] += 1
+            frame = _EventFrame(
+                topic="metrics",
+                seq=self._sequences["metrics"],
+                payload=snapshot.to_payload(),
+                kind="metrics",
+            )
+            self._latest_metrics = frame
+            message = self._wire_event(frame)
+            for connection in tuple(self._connections):
+                if "metrics" in connection.topics:
+                    self._put_locked(connection, message)
 
     def _fan_out_locked(
         self, topic: str, payload: dict[str, object], *, kind: str = "event"

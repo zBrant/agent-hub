@@ -164,6 +164,11 @@ async def test_sampler_runs_off_loop_evicts_ring_and_cancels(tmp_path: Path) -> 
     upgrade_database_sync(database_url)
     database = Database(database_url)
     probe = ThreadProbe()
+    published: list[SystemSnapshot] = []
+
+    async def publish(snapshot: SystemSnapshot) -> None:
+        published.append(snapshot)
+
     async with database.session() as db_session:
         repo = Repository(db_session)
         session_id = new_session_id()
@@ -205,6 +210,7 @@ async def test_sampler_runs_off_loop_evicts_ring_and_cancels(tmp_path: Path) -> 
         interval_s=10,
         capacity=2,
         probe=probe,  # type: ignore[arg-type] - deliberately structural fake
+        publish=publish,
     )
     loop_thread = threading.get_ident()
     try:
@@ -212,6 +218,7 @@ async def test_sampler_runs_off_loop_evicts_ring_and_cancels(tmp_path: Path) -> 
         await sampler.sample_once()
         await sampler.sample_once()
         assert [row.ts for row in sampler.history] == [2, 3]
+        assert [row.ts for row in published] == [1, 2, 3]
         assert all(thread_id != loop_thread for thread_id in probe.thread_ids)
         assert probe.candidate_batches[0] == (
             ProcessCandidate(node_id=node.id, pid=4_242, harness="codex"),

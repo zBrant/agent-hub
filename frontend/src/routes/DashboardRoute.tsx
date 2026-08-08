@@ -1,9 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ArrowRight, Workflow } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router";
 import { api, type DashboardPeriod } from "@/api/client";
+import { SystemHealth } from "@/components/dashboard/SystemHealth";
 import { TokenBreakdown } from "@/components/dashboard/TokenBreakdown";
+import { useSystemMetricsStore } from "@/stores/system-metrics-store";
+import { METRICS_TOPIC } from "@/ws/protocol";
+import { useWebSocketClient } from "@/ws/WebSocketProvider";
 
 const compact = new Intl.NumberFormat("en", {
   notation: "compact",
@@ -26,10 +30,20 @@ function elapsed(milliseconds: number): string {
 
 export function DashboardRoute() {
   const [period, setPeriod] = useState<DashboardPeriod>("today");
+  const websocket = useWebSocketClient();
+  const latestSystemMetrics = useSystemMetricsStore((state) => state.latest);
+  const pushSystemMetrics = useSystemMetricsStore((state) => state.push);
   const dashboard = useQuery({
     queryKey: ["dashboard", period],
     queryFn: () => api.getDashboard(period),
   });
+
+  useEffect(() => {
+    if (!websocket) return;
+    return websocket.subscribe(METRICS_TOPIC, (_payload, frame) => {
+      if (frame.type === "metrics") pushSystemMetrics(frame.payload);
+    });
+  }, [pushSystemMetrics, websocket]);
 
   if (dashboard.isLoading) {
     return <p className="p-4 text-meta text-fg-muted">Loading dashboard…</p>;
@@ -103,6 +117,8 @@ export function DashboardRoute() {
         <TokenBreakdown rows={data.by_harness} title="Tokens by harness" />
         <TokenBreakdown rows={data.by_model} title="Tokens by model" />
       </div>
+
+      <SystemHealth snapshot={latestSystemMetrics} />
 
       <section aria-labelledby="active-sessions-heading">
         <h2 className="mb-2 font-semibold text-ui" id="active-sessions-heading">

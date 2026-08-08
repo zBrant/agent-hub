@@ -34,13 +34,16 @@ deliberate merge conflict, two NDJSON replays, and database/REST/UI agreement.
 See [`acceptance-phase-2.md`](acceptance-phase-2.md) for the evidence and
 [`phase-2.md`](phase-2.md) for the activity details.
 
-**Phase 3 is in progress.** D1–D3 are complete: the read-only dashboard projection
+**Phase 3 is in progress.** D1–D4 are complete: the read-only dashboard projection
 aggregates four-field usage and ingest-time estimated-equivalent cost by period,
 harness and model, and returns active-session progress through generated REST
 types; the dashboard UI renders the selectable KPIs, proportional token mix,
 honest empty/partial cost states, and deep-linked active sessions. The bounded
 psutil sampler now collects host and recursive agent-process metrics off the
-event loop. D4 — live WebSocket metrics and the process table — is next; see
+event loop. Its current snapshot now streams over the existing multiplexed
+WebSocket into a bounded Zustand ring, live system gauges, and the per-node
+process table without persisting one-second telemetry. D5 — minute aggregates,
+the meaningful event feed, and real acceptance — is next; see
 [`phase-3.md`](phase-3.md).
 
 ## Phases

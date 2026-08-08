@@ -13,6 +13,7 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Dashboard, DashboardPeriod } from "@/api/client";
 import { DashboardRoute } from "@/routes/DashboardRoute";
+import { useSystemMetricsStore } from "@/stores/system-metrics-store";
 
 const harness = vi.hoisted(() => ({ getDashboard: vi.fn() }));
 
@@ -82,6 +83,7 @@ function wrapper({ children }: { children: ReactNode }) {
 describe("dashboard route", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useSystemMetricsStore.getState().reset();
     harness.getDashboard.mockImplementation((period: DashboardPeriod) =>
       Promise.resolve(snapshot(period)),
     );
@@ -112,6 +114,45 @@ describe("dashboard route", () => {
     await waitFor(() =>
       expect(harness.getDashboard).toHaveBeenCalledWith("7d"),
     );
+  });
+
+  it("renders live system gauges and the active process tree", async () => {
+    useSystemMetricsStore.getState().push({
+      ts: 20,
+      cpu_percent: 34.5,
+      cpu_per_core: [20, 49],
+      memory_total_bytes: 1_073_741_824,
+      memory_used_bytes: 536_870_912,
+      memory_available_bytes: 536_870_912,
+      memory_percent: 50,
+      swap_total_bytes: 0,
+      swap_used_bytes: 0,
+      swap_free_bytes: 0,
+      swap_percent: 0,
+      disk_total_bytes: 2_147_483_648,
+      disk_used_bytes: 1_073_741_824,
+      disk_free_bytes: 1_073_741_824,
+      disk_percent: 50,
+      processes: [
+        {
+          node_id: "node_live",
+          pid: 123,
+          harness: "codex",
+          rss_bytes: 268_435_456,
+          cpu_percent: 12.5,
+          uptime_ms: 3_900_000,
+          process_count: 3,
+        },
+      ],
+    });
+
+    render(<DashboardRoute />, { wrapper });
+
+    expect(await screen.findByText("System health")).toBeTruthy();
+    expect(screen.getByText("34.5%")).toBeTruthy();
+    expect(screen.getByText("node_live")).toBeTruthy();
+    expect(screen.getByText("256.0 MiB")).toBeTruthy();
+    expect(screen.getByText("1h 5m")).toBeTruthy();
   });
 
   it("renders empty usage without inventing cost", async () => {

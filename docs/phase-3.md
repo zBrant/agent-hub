@@ -109,7 +109,7 @@ task. `psutil` is the runtime dependency required by `design.md` §8;
 totals, disappearance, persisted PID discovery, worker-thread execution, ring
 eviction, duplicate-start refusal, and clean cancellation.
 
-### D4 — Live metrics and process table
+### D4 — Live metrics and process table ✅
 
 Publish sampler frames over the existing multiplexed WebSocket `metrics` topic,
 hydrate a Zustand store from the latest snapshot, and render system gauges plus
@@ -118,6 +118,23 @@ five minutes of 1-second samples through the broker.
 
 **Done when:** one browser connection receives bounded live history and a fake
 process tree updates CPU/RAM/disk gauges without polling REST.
+
+**Result:** completed on 2026-08-08. Every completed sampler pass publishes a
+generated-schema `SystemSnapshotResponse` payload through the singleton broker's
+reserved `metrics` topic. Metrics deliberately bypass durable event history and
+retain exactly one current snapshot in the broker: a new or reconnected
+subscriber hydrates immediately, while old one-second samples never enter the
+cursor replay window. The browser keeps its own 300-sample Zustand ring and
+deduplicates the current snapshot by timestamp.
+
+The dashboard subscribes through the application's existing multiplexed
+WebSocket and renders live CPU, memory, swap, worktree-disk gauges plus the
+persisted node/harness process-tree table with PID, descendant count, CPU, RSS,
+and uptime. Runtime protocol validation rejects incomplete metrics frames before
+they can reach the store. Broker, protocol, shared-client, bounded-store, and
+route tests cover current-snapshot reconnect semantics, duplicate cursor
+suppression, ring eviction, and a fake process tree updating the UI without REST
+polling.
 
 ### D5 — Event feed, minute aggregates, and acceptance
 
