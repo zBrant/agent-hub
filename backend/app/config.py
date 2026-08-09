@@ -106,6 +106,23 @@ class Settings(BaseSettings):
     # choice in the editable proposal anyway — so an unusable suggestion is
     # worth a default, never a failed plan.
     planner_fallback_harness: str = Field(default="claude-code")
+    # Where plans come from (`design.md` §8's backend seam).
+    #
+    # `harness` is the default because it is the one that works out of the box:
+    # a Claude Max/Pro plan is not API access, so `api` on a fresh machine
+    # means the Sessions tab answers 503 until the operator buys credit. The
+    # tradeoff is honest and worth stating — `api` validates with
+    # `messages.parse` against the Pydantic model in-process and reports
+    # refusals and truncation through `stop_reason`, which a CLI cannot match.
+    #
+    # A value, never a conditional: nothing branches on which harness this
+    # names (invariant 1). The adapter is asked whether it supports structured
+    # output, and one that does not is a configuration error at startup.
+    planner_backend: Literal["harness", "api"] = Field(default="harness")
+    planner_harness: str = Field(default="claude-code")
+    # None lets the CLI use whatever it is already configured for. Pinning it
+    # here is for reproducibility, not capability.
+    planner_harness_model: str | None = Field(default=None)
 
     # --- agentic code search (`design.md` §8, Phase 4 E4) -------------------
     # These are independent ceilings: raising one must never disable another.

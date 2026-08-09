@@ -23,10 +23,13 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "alembic>=1.19.0",
     "pydantic-settings>=2.14.2",
-    # The planner calls the Anthropic API directly (design.md §8): only the SDK
-    # offers `messages.parse(output_format=<pydantic model>)`, and no harness CLI
-    # has an equivalent of `output_config.format` — routing the planner through
-    # one would mean prompting for JSON and parsing prose.
+    # Two callers. Phase 4's agentic search loop (`app/search/agent.py`) needs
+    # a real tool-use loop, which no harness CLI exposes as a library. The
+    # planner needs it only for its `api` backend: `messages.parse` validates
+    # against the Pydantic model in-process, where the `harness` backend hands
+    # a JSON Schema to a CLI and validates the answer afterwards (design.md §8,
+    # revised 2026-08-08 — both CLIs grew a structured-output flag, so the
+    # planner is no longer API-only).
     "anthropic>=0.121.0",
     "psutil>=7.2.2",
     # E3 keeps parsing offline and deterministic: the base binding plus the

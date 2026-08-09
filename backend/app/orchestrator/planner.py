@@ -1,11 +1,24 @@
 """Objective in, validated graph proposal out (`design.md` §8).
 
-**The planner calls the Anthropic API directly; it is not a harness.** That is
-`design.md` §8's decision, not this module's: the CLI's
-``--output-format stream-json`` structures the *event envelope* and not the
-assistant's content, there is no CLI equivalent of ``output_config.format``, and
-a harness-routed planner would therefore be prompting for JSON and parsing
-prose — exactly what "structured output, never markdown parsing" rules out.
+**The planner has two interchangeable backends** (`design.md` §8, revised
+2026-08-08): :class:`ApiPlanBackend` calls the Anthropic API with
+``messages.parse``, and :class:`HarnessPlanBackend` drives any adapter that
+implements ``StructuredCompleter`` — Claude Code's ``--json-schema``, Codex's
+``--output-schema``. Both return schema-validated content, so neither is
+prompting for JSON and parsing prose, which is the thing §8 actually rules out.
+
+The seam is :class:`PlanBackend`, and :meth:`Planner.propose` is written
+against it: the correction loop, the DAG validation and the failure vocabulary
+below are identical whichever backend is configured. **Nothing in this module
+names a harness** — the adapter arrives from :func:`app.harnesses.create_adapter`
+by configuration and is asked only whether it *can* return structured content.
+Invariant 1 forbids branching on which harness is running, not asking what one
+can do.
+
+Which backend runs decides whether the planner is spend. Against the API its
+tokens are real per-token billing; against a harness it inherits invariant 7
+like everything else, which is what makes the product usable on a subscription
+with no API credit at all.
 
 Three consequences shape everything below.
 
@@ -29,10 +42,15 @@ unknown node 'db_schema'`` names something the model can edit, where a
 path into the database and does it entirely in memory before its first INSERT.
 
 **Failure is a value, not an exception** (`docs/architecture.md` §9). A refusal,
-an unreachable API, a response that will not validate and an incorrigible cycle
-are all ordinary outcomes of asking a model for a graph; every one of them
-returns a :class:`PlanFailure` carrying enough detail for C9 to render it.
-:class:`ValueError` is still raised for programmer error.
+an unreachable backend, a missing credential, a response that will not validate
+and an incorrigible cycle are all ordinary outcomes of asking a model for a
+graph; every one of them returns a :class:`PlanFailure` carrying enough detail
+for C9 to render it. :class:`ValueError` is still raised for programmer error.
+
+The two backends do not have identical failure modes, and none are faked to
+pretend otherwise: the API reports a refusal and a truncation through
+``stop_reason``, and a CLI has no equivalent, so :attr:`PlanFailureKind.REFUSED`
+and :attr:`PlanFailureKind.TRUNCATED` are simply unreachable on that path.
 
 Everything that can be pure is pure and lives at the top of this file
 (`docs/architecture.md` §3): the response schema, the translation into
@@ -47,7 +65,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol, cast
 
 import structlog
 from anthropic import APIError, AsyncAnthropic
@@ -57,6 +75,14 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.config import PlannerEffort, Settings
 from app.harnesses import ADAPTERS, create_adapter
+from app.harnesses.base import (
+    BaseHarnessAdapter,
+    HarnessError,
+    StructuredCompleter,
+    StructuredRequest,
+    supports_structured_output,
+)
+from app.harnesses.events import Usage
 from app.models.pricing import PriceTable, TokenCounts
 from app.orchestrator.graph import Dag, DagError, GraphNode, InvalidDag, build_dag
 from app.orchestrator.service import CreatedGraph, PlannedNode
@@ -398,14 +424,105 @@ class PlanFailureKind(StrEnum):
     """
 
 
+class PlanOutcome(StrEnum):
+    """What one backend round trip produced, before the DAG is looked at."""
+
+    OK = "ok"
+    REFUSED = "refused"
+    TRUNCATED = "truncated"
+    MALFORMED = "malformed"
+
+
+@dataclass(frozen=True, slots=True)
+class PlanTurn:
+    """One turn of the correction conversation, in neither backend's dialect.
+
+    The API takes `MessageParam`; a CLI takes a prompt on stdin. Neither type
+    may be what the loop passes around, or swapping the backend would rewrite
+    the loop.
+    """
+
+    role: Literal["user", "assistant"]
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class PlanReply:
+    """One backend's answer, normalized.
+
+    ``usage`` is always present and always four fields, even when the backend
+    failed: a truncated attempt still burned tokens, and dropping them makes
+    the correction loop under-report what it cost.
+    """
+
+    outcome: PlanOutcome
+    usage: TokenCounts
+    plan: PlanResponse | None = None
+    # What actually answered. Empty when the backend could not tell, which
+    # leaves the configured label in place rather than inventing one.
+    model: str = ""
+    # Free text for the outcome that has more than one cause — which stop
+    # reason truncated it. Rendered into the failure message, never logged raw.
+    detail: str = ""
+
+
+class PlanBackendUnavailable(Exception):
+    """The backend cannot run at all, and no request was attempted.
+
+    A missing credential, or a harness that does not do structured output.
+    Distinct from a failed request: nothing was spent and a retry cannot help
+    until a human changes the configuration.
+    """
+
+
+class PlanBackendError(Exception):
+    """A request was attempted and did not come back usable."""
+
+
+class PlanBackend(Protocol):
+    """Where a plan comes from. `design.md` §8's backend seam.
+
+    Two implementations: the Anthropic API, and any harness adapter that
+    implements `StructuredCompleter`. The loop in :meth:`Planner.propose` is
+    written against this and knows about neither.
+    """
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def is_spend(self) -> bool:
+        """Whether this backend's tokens are billed, or ride a subscription.
+
+        Invariant 7 lives or dies on this being read rather than assumed: the
+        two backends give the same number two different meanings.
+        """
+        ...
+
+    async def request(self, turns: Sequence[PlanTurn]) -> PlanReply: ...
+
+    async def close(self) -> None: ...
+
+
 @dataclass(frozen=True, slots=True)
 class PlannerUsage:
-    """The planner's own token consumption — **real spend**, not an estimate.
+    """The planner's own token consumption.
 
-    Invariant 7's "estimated equivalent" exists because the harnesses run under
-    a Max/Pro subscription. This module does not: it bills per token against an
-    API key. That is exactly why the number is returned as a value and logged
-    rather than written to ``usage_event`` — see :meth:`Planner.propose`.
+    ``is_spend`` is the whole reason this is not just a number. On the ``api``
+    backend the planner bills per token against a credential of its own, so
+    ``cost_usd`` is **real money**. On the ``harness`` backend it rides an
+    already-paid subscription, so the same field is invariant 7's *estimated
+    equivalent* and calling it spend would be a lie. Read the flag; never
+    assume, and never label the value without it.
+
+    Either way it is returned as a value and logged rather than written to
+    ``usage_event`` — a plan is not a node, and that table's ``run_id``,
+    ``session_id`` and ``harness`` are all ``NOT NULL``. See
+    :meth:`Planner.propose`.
+
+    ``model`` is what actually answered, which on the harness backend is
+    whatever the CLI chose and not ``planner_model``. It is what ``cost_usd``
+    is priced against, so a wrong label here is a wrong number.
 
     ``requests`` counts round trips, so a proposal that took two attempts shows
     what the correction loop cost.
@@ -416,19 +533,26 @@ class PlannerUsage:
     cost_usd: float | None
     price_table_version: int
     requests: int = 0
+    is_spend: bool = True
 
-    def with_request(self, counts: TokenCounts, prices: PriceTable) -> PlannerUsage:
+    def with_request(
+        self, counts: TokenCounts, prices: PriceTable, *, model: str = ""
+    ) -> PlannerUsage:
         total = self.counts + counts
+        # The backend reports what actually answered; the configured label is
+        # only a placeholder until the first reply arrives.
+        priced_as = model or self.model
         return PlannerUsage(
-            model=self.model,
+            model=priced_as,
             counts=total,
             # Repriced over the running total rather than accumulated per
             # request: identical arithmetic, one rounding path. Computed here,
             # at ingest, with the table in effect now (invariant 3) — never
             # recomputed later from a stored token count.
-            cost_usd=prices.cost_usd(self.model, total),
+            cost_usd=prices.cost_usd(priced_as, total),
             price_table_version=prices.version,
             requests=self.requests + 1,
+            is_spend=self.is_spend,
         )
 
 
@@ -513,17 +637,19 @@ def _token_counts(usage: AnthropicUsage) -> TokenCounts:
     )
 
 
-def _assistant_text(response: ParsedMessage[PlanResponse]) -> str:
-    """The text blocks only.
+def _assistant_text(plan: PlanResponse) -> str:
+    """The rejected plan, as the assistant turn of the correction conversation.
 
-    Thinking blocks are deliberately not echoed back into the correction turn:
-    they are not required outside a tool-use continuation, and a plan is not
-    improved by making the model re-read its own reasoning about a graph it got
-    wrong.
+    The *parsed* plan and not the raw assistant text, for two reasons. It is
+    the only form both backends have — a CLI returns a structured object and no
+    content blocks — and it is canonical, so the model re-reads the graph it
+    actually produced rather than whatever prose surrounded it.
+
+    Thinking is deliberately not echoed back: it is not required outside a
+    tool-use continuation, and a plan is not improved by making the model
+    re-read its own reasoning about a graph it got wrong.
     """
-    return "".join(
-        block.text for block in response.content if block.type == "text"
-    ).strip()
+    return plan.model_dump_json(indent=2)
 
 
 def _digest(text: str) -> str:
@@ -531,23 +657,359 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-class Planner:
-    """Turns an objective into a proposal. Proposes only — invariant 6.
+def _strict_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Make every object closed, and verify it was already exhaustive.
+
+    Codex rejects a schema whose objects omit ``additionalProperties: false``
+    or whose ``required`` does not list every key in ``properties``
+    (``invalid_json_schema``, exit 1). Claude Code accepts both the strict and
+    the loose form, so the strict one is simply the portable dialect — this is
+    a tightening that both adapters can take, not a branch on which harness is
+    running, which invariant 1 would forbid.
+
+    ``additionalProperties`` is *added*, because closing an object cannot
+    change what a valid document means. ``required`` is only *checked*: filling
+    it in would silently promote an optional field to mandatory and change what
+    the model is being asked for. `PlanResponse` happens to have no optional
+    fields today, and if someone adds one this raises here — at construction,
+    where `create_backend` turns it into a logged startup error and a 503 —
+    instead of as a Codex ``invalid_json_schema`` on somebody's first objective.
+    """
+
+    def tighten(node: object, path: str) -> object:
+        if isinstance(node, list):
+            return [tighten(item, f"{path}[]") for item in node]
+        if not isinstance(node, dict):
+            return node
+        walked = {key: tighten(value, f"{path}.{key}") for key, value in node.items()}
+        if walked.get("type") != "object":
+            return walked
+        properties = walked.get("properties")
+        if isinstance(properties, dict):
+            required = walked.get("required")
+            listed = set(required) if isinstance(required, list) else set()
+            missing = sorted(set(properties) - listed)
+            if missing:
+                raise ValueError(
+                    f"plan schema is not strict at {path or 'the root'}: "
+                    f"{missing} are in `properties` but not in `required`. "
+                    "Codex rejects that. Make the field required, or give the "
+                    "adapters an explicitly nullable one."
+                )
+        return {**walked, "additionalProperties": False}
+
+    tightened = tighten(schema, "")
+    assert isinstance(tightened, dict)
+    return tightened
+
+
+def _flatten_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Inline every ``$ref`` and drop ``$defs``.
+
+    Pydantic hoists nested models into ``$defs`` and points at them with
+    ``$ref``. `StructuredRequest` promises adapters a resolved schema because
+    the two CLIs disagree about supporting references, and resolving it once
+    here beats each adapter carrying its own copy of this.
+
+    The plan schema is a shallow tree with no recursion, so a plain expansion
+    terminates. A self-referential model would not, and there is no reason for
+    the planner to grow one.
+    """
+    defs = schema.get("$defs")
+    definitions: Mapping[str, object] = defs if isinstance(defs, dict) else {}
+
+    def expand(node: object) -> object:
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str):
+                name = ref.rsplit("/", 1)[-1]
+                target = definitions.get(name)
+                if target is None:
+                    raise ValueError(f"unresolvable $ref in plan schema: {ref}")
+                # Sibling keys next to a `$ref` (a `description`, say) survive
+                # the expansion; dropping them would lose field documentation
+                # the model is meant to read.
+                merged = {k: v for k, v in node.items() if k != "$ref"}
+                expanded = expand(target)
+                assert isinstance(expanded, dict)
+                return {**expanded, **merged}
+            return {key: expand(value) for key, value in node.items() if key != "$defs"}
+        if isinstance(node, list):
+            return [expand(item) for item in node]
+        return node
+
+    resolved = expand(schema)
+    assert isinstance(resolved, dict)
+    return resolved
+
+
+class ApiPlanBackend:
+    """`messages.parse` against the Anthropic API. Real per-token spend.
 
     The client is injected rather than built here so a test can drive the whole
     path, including the SDK's schema transform and response parsing, against a
     recorded response and no network.
     """
 
+    def __init__(self, *, client: AsyncAnthropic, settings: Settings) -> None:
+        self._client = client
+        self._settings = settings
+
+    @property
+    def model(self) -> str:
+        return self._settings.planner_model
+
+    @property
+    def is_spend(self) -> bool:
+        """Real per-token billing against a credential of the planner's own."""
+        return True
+
+    async def close(self) -> None:
+        await self._client.close()
+
+    async def request(self, turns: Sequence[PlanTurn]) -> PlanReply:
+        """One round trip.
+
+        ``thinking`` is deliberately absent: it is adaptive by default on the
+        default model, and pinning it would trade the model's own judgement
+        about how much reasoning a graph needs for a constant. ``max_tokens``
+        caps thinking *and* the response text together, which is why the
+        configured default has headroom over the size of a plan.
+
+        ``effort`` is the depth knob (`output_config`), configured rather than
+        constant because a five-node refactor and a thirty-node migration do
+        not deserve the same spend.
+        """
+        effort: PlannerEffort = self._settings.planner_effort
+        messages: list[MessageParam] = [
+            {"role": turn.role, "content": turn.text} for turn in turns
+        ]
+        try:
+            response: ParsedMessage[PlanResponse] = await self._client.messages.parse(
+                model=self._settings.planner_model,
+                max_tokens=self._settings.planner_max_tokens,
+                system=SYSTEM_PROMPT,
+                messages=messages,
+                output_format=PlanResponse,
+                output_config={"effort": effort},
+            )
+        except TypeError as exc:
+            # The SDK's own verdict, after it has tried `ANTHROPIC_API_KEY`,
+            # `ANTHROPIC_AUTH_TOKEN` and the `ant auth login` profile — see
+            # `create_planner` on why this module deliberately checks none of
+            # them itself. It arrives as a bare `TypeError` from a private
+            # `_validate_headers` hook, so the message is the only thing that
+            # distinguishes it; anything else with this type is a real bug and
+            # must keep propagating.
+            if _NO_CREDENTIAL not in str(exc):
+                raise
+            raise PlanBackendUnavailable(
+                "the planner has no Anthropic credential: set ANTHROPIC_API_KEY "
+                "(or ANTHROPIC_AUTH_TOKEN) in the environment that starts the "
+                "server and restart it, or point AGENTHUB_PLANNER_BACKEND at a "
+                "harness, which authenticates itself. Note that a Claude "
+                "Max/Pro plan is not API access and `ant auth login` is "
+                "organization auth, not a route from one."
+            ) from exc
+        except APIError as exc:
+            # The class name and status, never the body or the request: an
+            # error rendered into a UI must not become a channel for the
+            # credential or the prompt (`docs/conventions.md` §6).
+            detail = type(exc).__name__
+            status = getattr(exc, "status_code", None)
+            if status is not None:
+                detail = f"{detail} (HTTP {status})"
+            raise PlanBackendError(detail) from exc
+        except ValidationError:
+            # `messages.parse` validates the assistant text against the schema
+            # inside the SDK, so a response that is JSON-shaped but wrong never
+            # reaches `stop_reason`. Malformed and not an error: the call
+            # succeeded and the model answered — what came back is unusable.
+            #
+            # The tokens are lost with it, because the exception carries no
+            # usage. That is the SDK's shape, not a choice here, and it is why
+            # this is the one path that reports zeros for a round trip that
+            # really happened.
+            return PlanReply(outcome=PlanOutcome.MALFORMED, usage=TokenCounts())
+
+        usage = _token_counts(response.usage)
+
+        # Before `content`, always: a refusal is an HTTP 200 whose content is
+        # not a plan, and indexing into it is how this breaks in production
+        # instead of in a test.
+        stop = response.stop_reason
+        model = response.model or self._settings.planner_model
+        if stop == "refusal":
+            return PlanReply(
+                outcome=PlanOutcome.REFUSED,
+                usage=usage,
+                model=model,
+                detail=f"stop_reason: {stop}",
+            )
+        if stop in ("max_tokens", "model_context_window_exceeded"):
+            return PlanReply(
+                outcome=PlanOutcome.TRUNCATED,
+                usage=usage,
+                model=model,
+                detail=str(stop),
+            )
+        return PlanReply(
+            outcome=PlanOutcome.OK,
+            usage=usage,
+            model=model,
+            plan=response.parsed_output,
+        )
+
+
+class HarnessPlanBackend:
+    """A harness adapter that can return schema-validated content.
+
+    This is the backend that makes the planner usable on a subscription: the
+    CLI is already authenticated, so the planner stops being the one component
+    with real per-token billing and inherits invariant 7 like everything else.
+
+    Nothing here names a harness. The adapter is resolved by
+    `app.harnesses.create_adapter` from configuration and asked only whether it
+    has the capability — invariant 1 forbids branching on which one it is, not
+    asking what it can do.
+    """
+
     def __init__(
         self,
         *,
-        client: AsyncAnthropic,
+        adapter: BaseHarnessAdapter,
+        settings: Settings,
+    ) -> None:
+        if not supports_structured_output(adapter):
+            raise PlanBackendUnavailable(
+                f"harness {adapter.name!r} cannot return schema-validated "
+                "content, so it cannot back the planner. Set "
+                "AGENTHUB_PLANNER_BACKEND to `api`, or name a harness that can."
+            )
+        model = settings.planner_harness_model
+        if model is not None and model not in adapter.supported_models:
+            raise PlanBackendUnavailable(
+                f"planner_harness_model {model!r} is not one of "
+                f"{adapter.name!r}'s models: {adapter.supported_models!r}"
+            )
+        self._adapter = adapter
+        self._completer = cast(StructuredCompleter, adapter)
+        self._settings = settings
+        self._model = model
+        self._schema = _strict_schema(_flatten_schema(PlanResponse.model_json_schema()))
+
+    @property
+    def model(self) -> str:
+        # The adapter decides when nothing is configured, and it reports what
+        # it actually used on the reply; this is only the label for logging
+        # before the first round trip.
+        return self._model or f"{self._adapter.name}:default"
+
+    @property
+    def is_spend(self) -> bool:
+        """False: the CLI is already authenticated under a subscription.
+
+        This is what makes the planner obey invariant 7 like every node — the
+        tokens are real, the money was already paid, and the cost is an
+        estimated equivalent.
+        """
+        return False
+
+    async def close(self) -> None:
+        """Nothing to release: each request is its own process."""
+
+    async def request(self, turns: Sequence[PlanTurn]) -> PlanReply:
+        """One CLI invocation.
+
+        A CLI has no conversation to append to across processes, so the
+        correction loop's turns are rendered into a single prompt. That is a
+        real difference from the API backend and not a workaround: the loop's
+        contract is "the model sees what it said and why it was rejected",
+        which a transcript satisfies.
+        """
+        try:
+            result = await self._completer.complete_structured(
+                StructuredRequest(
+                    prompt=_render_transcript(turns),
+                    schema=self._schema,
+                    system=SYSTEM_PROMPT,
+                    model=self._model,
+                )
+            )
+        except HarnessError as exc:
+            raise PlanBackendError(type(exc).__name__) from exc
+
+        usage = _counts_from_usage(result.usage)
+        try:
+            plan = PlanResponse.model_validate(result.data)
+        except ValidationError:
+            # The harness validated against the JSON Schema; this validates
+            # against the Pydantic model, which is stricter. A gap between them
+            # is malformed content, not a broken harness.
+            return PlanReply(
+                outcome=PlanOutcome.MALFORMED, usage=usage, model=result.model
+            )
+        return PlanReply(
+            outcome=PlanOutcome.OK, usage=usage, model=result.model, plan=plan
+        )
+
+
+def _render_transcript(turns: Sequence[PlanTurn]) -> str:
+    """The correction conversation as one prompt.
+
+    Headed rather than run together: the rejected plan and the correction have
+    to stay distinguishable, or the model reads its own previous answer as part
+    of the instruction.
+    """
+    if len(turns) == 1:
+        return turns[0].text
+    blocks = [
+        f"## {'Your previous answer' if turn.role == 'assistant' else 'Instruction'}"
+        f"\n\n{turn.text}"
+        for turn in turns
+    ]
+    return "\n\n".join(blocks)
+
+
+def _counts_from_usage(usage: Usage | None) -> TokenCounts:
+    """A harness `Usage` event as the planner's four fields.
+
+    ``None`` becomes zeros rather than an error: a plan that succeeded must not
+    be failed by an accounting gap, which is the same rule `_token_counts`
+    follows for a split that does not add up. The adapter's `ParseStats`
+    already records the gap for anyone auditing it.
+    """
+    if usage is None:
+        return TokenCounts()
+    return TokenCounts(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_tokens,
+        cache_write_tokens=usage.cache_write_tokens,
+        cache_write_5m_tokens=usage.cache_write_5m_tokens,
+        cache_write_1h_tokens=usage.cache_write_1h_tokens,
+    )
+
+
+class Planner:
+    """Turns an objective into a proposal. Proposes only — invariant 6.
+
+    The backend is injected rather than built here so a test can drive the
+    whole path — the correction loop, the DAG validation, the persistence —
+    against a recorded response and no network, and so `design.md` §8's two
+    backends are interchangeable at this seam rather than behind a flag inside
+    it.
+    """
+
+    def __init__(
+        self,
+        *,
+        backend: PlanBackend,
         settings: Settings,
         prices: PriceTable,
         catalog: Mapping[str, Sequence[str]] | None = None,
     ) -> None:
-        self._client = client
+        self._backend = backend
         self._settings = settings
         self._prices = prices
         self._catalog = dict(harness_catalog() if catalog is None else catalog)
@@ -564,8 +1026,8 @@ class Planner:
         return self._catalog
 
     async def close(self) -> None:
-        """Release the HTTP client owned by the application composition root."""
-        await self._client.close()
+        """Release whatever the backend owns, on behalf of the composition root."""
+        await self._backend.close()
 
     async def propose(
         self, objective: str, *, context: str | None = None
@@ -581,21 +1043,24 @@ class Planner:
             raise ValueError("objective must not be empty")
 
         usage = PlannerUsage(
-            model=self._settings.planner_model,
+            # A placeholder until the first reply says what actually answered:
+            # the harness backend does not use `planner_model` at all.
+            model=self._backend.model,
             counts=TokenCounts(),
             cost_usd=None,
             price_table_version=self._prices.version,
+            is_spend=self._backend.is_spend,
         )
-        messages: list[MessageParam] = [
-            {
-                "role": "user",
-                "content": objective_prompt(
+        messages: list[PlanTurn] = [
+            PlanTurn(
+                role="user",
+                text=objective_prompt(
                     objective, catalog=self._catalog, context=context
                 ),
-            }
+            )
         ]
         bound = log.bind(
-            planner_model=self._settings.planner_model,
+            planner_model=self._backend.model,
             objective_sha=_digest(objective),
             objective_chars=len(objective),
         )
@@ -605,49 +1070,61 @@ class Planner:
         while attempt < self._settings.planner_max_attempts:
             attempt += 1
             try:
-                response = await self._request(messages)
-            except TypeError as exc:
-                # The SDK's own verdict, after it has tried `ANTHROPIC_API_KEY`,
-                # `ANTHROPIC_AUTH_TOKEN` and the `ant auth login` profile — see
-                # `create_planner` on why this module deliberately checks none
-                # of them itself. It arrives as a bare `TypeError` from a
-                # private `_validate_headers` hook, so the message is the only
-                # thing that distinguishes it; anything else with this type is a
-                # real bug and must keep propagating.
-                if _NO_CREDENTIAL not in str(exc):
-                    raise
+                reply = await self._backend.request(messages)
+            except PlanBackendUnavailable as exc:
+                # Nothing was attempted and nothing was spent. The fix is on
+                # this machine, which is why it is not `API_ERROR`.
                 bound.warning("planner.not_configured", attempt=attempt)
                 return PlanFailure(
                     kind=PlanFailureKind.NOT_CONFIGURED,
+                    message=str(exc),
+                    usage=usage,
+                    attempts=attempt,
+                )
+            except PlanBackendError as exc:
+                # The backend already reduced this to a safe label — a class
+                # name and maybe a status. An error rendered into a UI must not
+                # become a channel for the credential or the prompt
+                # (`docs/conventions.md` §6), so it is not re-inspected here.
+                detail = str(exc)
+                bound.warning("planner.api_error", attempt=attempt, error=detail)
+                return PlanFailure(
+                    kind=PlanFailureKind.API_ERROR,
+                    message=f"the planner request failed: {detail}",
+                    usage=usage,
+                    attempts=attempt,
+                )
+
+            usage = usage.with_request(reply.usage, self._prices, model=reply.model)
+
+            # Before the plan, always: a refusal and a truncation both arrive
+            # as a successful call whose content is not a plan, and indexing
+            # into it is how this breaks in production instead of in a test.
+            if reply.outcome is PlanOutcome.REFUSED:
+                bound.warning("planner.refused", attempt=attempt)
+                # The backend appends why when it knows: the API says
+                # `stop_reason: refusal`, a CLI has no equivalent to report.
+                because = f" ({reply.detail})" if reply.detail else ""
+                return PlanFailure(
+                    kind=PlanFailureKind.REFUSED,
+                    message=(f"the planner declined to answer this objective{because}"),
+                    usage=usage,
+                    attempts=attempt,
+                )
+            if reply.outcome is PlanOutcome.TRUNCATED:
+                bound.warning(
+                    "planner.truncated", attempt=attempt, stop_reason=reply.detail
+                )
+                return PlanFailure(
+                    kind=PlanFailureKind.TRUNCATED,
                     message=(
-                        "the planner has no Anthropic credential: set "
-                        "ANTHROPIC_API_KEY (or ANTHROPIC_AUTH_TOKEN, or run "
-                        "`ant auth login`) in the environment that starts the "
-                        "server, and restart it. The harnesses authenticate "
-                        "themselves; this credential is the planner's alone."
+                        f"the planner's response was cut off ({reply.detail}); "
+                        "raise AGENTHUB_PLANNER_MAX_TOKENS or narrow the objective"
                     ),
                     usage=usage,
                     attempts=attempt,
                 )
-            except APIError as exc:
-                # The class name and status, never the body or the request: an
-                # error rendered into a UI must not become a channel for the
-                # credential or the prompt (`docs/conventions.md` §6).
-                detail = f"{type(exc).__name__}"
-                status = getattr(exc, "status_code", None)
-                if status is not None:
-                    detail = f"{detail} (HTTP {status})"
-                bound.warning("planner.api_error", attempt=attempt, error=detail)
-                return PlanFailure(
-                    kind=PlanFailureKind.API_ERROR,
-                    message=f"the planner API call failed: {detail}",
-                    usage=usage,
-                    attempts=attempt,
-                )
-            except ValidationError:
-                # `messages.parse` validates the assistant text against the
-                # schema inside the SDK, so a response that is JSON-shaped but
-                # wrong never reaches `stop_reason`. Reported, not raised.
+            if reply.outcome is PlanOutcome.MALFORMED:
                 bound.warning("planner.unparseable", attempt=attempt)
                 return PlanFailure(
                     kind=PlanFailureKind.MALFORMED,
@@ -659,38 +1136,9 @@ class Planner:
                     attempts=attempt,
                 )
 
-            usage = usage.with_request(_token_counts(response.usage), self._prices)
-
-            # Before `content`, always: a refusal is an HTTP 200 whose content
-            # is not a plan, and indexing into it is how this breaks in
-            # production instead of in a test.
-            stop = response.stop_reason
-            if stop == "refusal":
-                bound.warning("planner.refused", attempt=attempt)
-                return PlanFailure(
-                    kind=PlanFailureKind.REFUSED,
-                    message=(
-                        "the planner declined to answer this objective "
-                        "(stop_reason: refusal)"
-                    ),
-                    usage=usage,
-                    attempts=attempt,
-                )
-            if stop in ("max_tokens", "model_context_window_exceeded"):
-                bound.warning("planner.truncated", attempt=attempt, stop_reason=stop)
-                return PlanFailure(
-                    kind=PlanFailureKind.TRUNCATED,
-                    message=(
-                        f"the planner's response was cut off ({stop}); raise "
-                        "AGENTHUB_PLANNER_MAX_TOKENS or narrow the objective"
-                    ),
-                    usage=usage,
-                    attempts=attempt,
-                )
-
-            plan = response.parsed_output
+            plan = reply.plan
             if plan is None or not plan.nodes:
-                bound.warning("planner.empty", attempt=attempt, stop_reason=stop)
+                bound.warning("planner.empty", attempt=attempt)
                 return PlanFailure(
                     kind=PlanFailureKind.MALFORMED,
                     message="the planner returned no activities",
@@ -728,8 +1176,8 @@ class Planner:
                 defects=[error.kind.value for error in dag.errors],
                 cycles=[list(cycle) for cycle in dag.cycles],
             )
-            messages.append({"role": "assistant", "content": _assistant_text(response)})
-            messages.append({"role": "user", "content": correction_prompt(dag)})
+            messages.append(PlanTurn(role="assistant", text=_assistant_text(plan)))
+            messages.append(PlanTurn(role="user", text=correction_prompt(dag)))
 
         errors = invalid.errors if invalid is not None else ()
         bound.error(
@@ -779,59 +1227,100 @@ class Planner:
         )
         return replace(result, graph=graph)
 
-    async def _request(
-        self, messages: Sequence[MessageParam]
-    ) -> ParsedMessage[PlanResponse]:
-        """One round trip.
 
-        ``thinking`` is deliberately absent: it is adaptive by default on the
-        default model, and pinning it would trade the model's own judgement
-        about how much reasoning a graph needs for a constant. ``max_tokens``
-        caps thinking *and* the response text together, which is why the
-        configured default has headroom over the size of a plan.
+class UnavailablePlanBackend:
+    """A backend that reports, on use, why it could not be built.
 
-        ``effort`` is the depth knob (`output_config`), configured rather than
-        constant because a five-node refactor and a thirty-node migration do not
-        deserve the same spend.
-        """
-        effort: PlannerEffort = self._settings.planner_effort
-        return await self._client.messages.parse(
-            model=self._settings.planner_model,
-            max_tokens=self._settings.planner_max_tokens,
-            system=SYSTEM_PROMPT,
-            messages=list(messages),
-            output_format=PlanResponse,
-            output_config={"effort": effort},
+    The planner is one feature of five. A harness that cannot do structured
+    output, or a `planner_harness` naming no adapter at all, must not stop the
+    scheduler, the dashboards and code search from starting — on a
+    single-user local tool, refusing to boot over a misconfigured planner takes
+    away four working things to punish one broken one.
+
+    So the failure is deferred rather than swallowed: it is logged once at
+    startup, where whoever set the configuration will see it, and returned as
+    :attr:`PlanFailureKind.NOT_CONFIGURED` — a 503 naming the fix — to whoever
+    later asks for a plan.
+    """
+
+    def __init__(self, reason: str) -> None:
+        self._reason = reason
+
+    @property
+    def model(self) -> str:
+        return "unavailable"
+
+    @property
+    def is_spend(self) -> bool:
+        """Nothing runs, so nothing is billed either way."""
+        return False
+
+    async def close(self) -> None:
+        """Nothing was built, so there is nothing to release."""
+
+    async def request(self, turns: Sequence[PlanTurn]) -> PlanReply:
+        raise PlanBackendUnavailable(self._reason)
+
+
+def create_backend(settings: Settings) -> PlanBackend:
+    """The configured backend, or one that explains why there isn't one.
+
+    The API client is built bare on purpose: the SDK resolves
+    ``ANTHROPIC_API_KEY``, then ``ANTHROPIC_AUTH_TOKEN``, then an ``ant auth
+    login`` profile. Reading the variable here and passing it in would break
+    the third of those and would put the credential in this process's own reach
+    for no gain — `docs/conventions.md` §6 wants fewer places that can hold a
+    secret, not more. It never fails here: a missing credential is only
+    discovered on the first request, because only the SDK knows whether one of
+    those three sources answered.
+
+    The harness backend *can* fail here, and that failure is captured into
+    :class:`UnavailablePlanBackend` rather than raised.
+    """
+    if settings.planner_backend == "api":
+        return ApiPlanBackend(client=AsyncAnthropic(), settings=settings)
+    try:
+        adapter = create_adapter(settings.planner_harness)
+        return HarnessPlanBackend(adapter=adapter, settings=settings)
+    except (PlanBackendUnavailable, ValueError) as exc:
+        # ValueError is `create_adapter` on a harness name that has no adapter.
+        log.error(
+            "planner.backend_unavailable",
+            planner_backend=settings.planner_backend,
+            planner_harness=settings.planner_harness,
+            error=str(exc),
         )
+        return UnavailablePlanBackend(str(exc))
 
 
 def create_planner(settings: Settings, prices: PriceTable) -> Planner:
-    """A planner on a bare client.
-
-    Bare on purpose: the SDK resolves ``ANTHROPIC_API_KEY``, then
-    ``ANTHROPIC_AUTH_TOKEN``, then an ``ant auth login`` profile. Reading the
-    variable here and passing it in would break the third of those and would
-    put the credential in this process's own reach for no gain —
-    `docs/conventions.md` §6 wants fewer places that can hold a secret, not
-    more. It is also the only credential AgentHub owns: the harnesses
-    authenticate themselves.
-    """
-    return Planner(client=AsyncAnthropic(), settings=settings, prices=prices)
+    """A planner on the configured backend."""
+    return Planner(backend=create_backend(settings), settings=settings, prices=prices)
 
 
 __all__ = [
     "SYSTEM_PROMPT",
+    "ApiPlanBackend",
     "GraphCreator",
+    "HarnessPlanBackend",
+    "PlanBackend",
+    "PlanBackendError",
+    "PlanBackendUnavailable",
     "PlanFailure",
     "PlanFailureKind",
+    "PlanOutcome",
     "PlanProposal",
+    "PlanReply",
     "PlanResponse",
     "PlanResult",
+    "PlanTurn",
     "PlannedActivity",
     "Planner",
     "PlannerUsage",
+    "UnavailablePlanBackend",
     "compose_prompt",
     "correction_prompt",
+    "create_backend",
     "create_planner",
     "harness_catalog",
     "objective_prompt",

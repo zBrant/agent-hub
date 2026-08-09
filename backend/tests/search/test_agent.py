@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
 from anthropic.types import MessageParam, ToolParam
 
 from app.config import Settings
@@ -321,3 +322,67 @@ async def test_each_independent_ceiling_returns_a_partial_result(
         finally:
             await agent.close()
             await database.dispose()
+
+
+class UncredentialedModel:
+    """The SDK's behavior with no credential: a bare `TypeError`, on first use.
+
+    Not a mock of our own interface — the point is the exact shape the real
+    client raises, from a private `_validate_headers` hook with no exception
+    type of its own.
+    """
+
+    def __init__(self, message: str) -> None:
+        self.message = message
+
+    async def complete(self, **_kwargs: object) -> ModelTurn:
+        raise TypeError(self.message)
+
+    async def close(self) -> None:
+        pass
+
+
+async def test_a_missing_credential_is_a_partial_result_not_a_500(
+    tmp_path: Path,
+) -> None:
+    """Code search's chat has the same credential trap the planner had.
+
+    `agent.py` caught `APIError` and not this, so a machine with no
+    `ANTHROPIC_API_KEY` got an opaque 500 from `/api/search/answer`. Reported
+    as `NOT_CONFIGURED` rather than `API_ERROR`: nothing was attempted, so
+    "the API failed" would send the operator hunting for an outage.
+    """
+    model = UncredentialedModel(
+        '"Could not resolve authentication method. Expected one of api_key, '
+        'auth_token, or credentials to be set."'
+    )
+    agent, database, session_id, _ = await agent_target(tmp_path, model)
+    try:
+        result = await agent.answer(session_id, "Where is the scheduler?")
+
+        assert result.complete is False
+        assert result.limit_reason is SearchLimitReason.NOT_CONFIGURED
+        assert "ANTHROPIC_API_KEY" in result.message
+        assert result.usage.requests == 0
+    finally:
+        await agent.close()
+        await database.dispose()
+
+
+async def test_an_unrelated_type_error_still_propagates_from_search(
+    tmp_path: Path,
+) -> None:
+    """The catch is matched on a message, so it must stay narrow.
+
+    A `TypeError` from anywhere else in the call is a bug in this module, and
+    reporting it as "no credential" would send the operator looking for a key
+    that is already set.
+    """
+    model = UncredentialedModel("complete() got an unexpected keyword argument")
+    agent, database, session_id, _ = await agent_target(tmp_path, model)
+    try:
+        with pytest.raises(TypeError, match="unexpected keyword"):
+            await agent.answer(session_id, "Where is the scheduler?")
+    finally:
+        await agent.close()
+        await database.dispose()

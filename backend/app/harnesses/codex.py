@@ -55,6 +55,46 @@ Interruption
 Ctrl-C exits 1 without a terminal JSON event. :meth:`interrupt` records intent
 on the handle before signaling the process group; :meth:`events` can therefore
 distinguish an operator interruption from an ordinary non-zero process exit.
+
+Structured output (``--output-schema``), verified on 0.146.0
+-------------------------------------------------------------
+
+``codex exec --help`` describes ``--output-schema <FILE>`` as "Path to a JSON
+Schema file describing the model's final response shape". Three things the help
+text does not say, all of them established by running it:
+
+1. **There is no structured field.** Claude Code answers a schema with a
+   dedicated ``structured_output`` object; Codex does not. The stream is the
+   ordinary one — ``thread.started``, ``turn.started``,
+   ``item.completed``/``agent_message``, ``turn.completed`` — and the schema's
+   payload is the *text of the final agent message*, raw JSON with no fence and
+   no prose. :func:`structured_result` therefore takes the last
+   :class:`~app.harnesses.events.AssistantText` and parses it, and "missing
+   structured field" means "the run produced no agent message at all".
+
+2. **The schema must be OpenAI-strict, and the CLI does not make it so.** A
+   schema without ``"additionalProperties": false`` on *every* object is
+   rejected by the provider, exit 1, with
+   ``invalid_json_schema: ... 'additionalProperties' is required to be supplied
+   and to be false``; a ``required`` array that does not list every key in
+   ``properties`` is rejected the same way. Both were reproduced here. This
+   adapter passes the schema through byte for byte — rewriting a caller's schema
+   would silently change what "valid" means, and making optional fields
+   mandatory changes the answer. A caller that must work on both harnesses has
+   to emit strict schemas, exactly as it already has to resolve ``$ref``
+   (`base.py`, :class:`~app.harnesses.base.StructuredRequest`). Claude Code
+   accepts strict schemas too, so this is a tightening, not a fork.
+
+3. **There is no system-prompt flag.** ``codex exec`` has no
+   ``--system-prompt``/``--instructions`` of any kind; the only instruction
+   channels are the prompt and ``AGENTS.md``, and writing an ``AGENTS.md`` would
+   mean writing into the caller's directory. :func:`structured_prompt` folds
+   ``system`` into the stdin prompt under a heading instead.
+
+Everything else follows the run path: the prompt goes to stdin via ``-``, the
+schema file is written to a 0700 temp directory and deleted in a ``finally``,
+and ``--sandbox read-only`` replaces ``workspace-write`` because a
+schema-constrained answer has nothing to write.
 """
 
 from __future__ import annotations
@@ -63,7 +103,9 @@ import asyncio
 import contextlib
 import json
 import os
+import shutil
 import signal
+import tempfile
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -71,7 +113,15 @@ from typing import Any
 
 import structlog
 
-from app.harnesses.base import HarnessError, ParseStats, RunHandle, RunSpec
+from app.harnesses.base import (
+    STDERR_TAIL_LINES,
+    HarnessError,
+    ParseStats,
+    RunHandle,
+    RunSpec,
+    StructuredRequest,
+    StructuredResult,
+)
 from app.harnesses.events import (
     AgentEvent,
     AssistantText,
@@ -97,6 +147,17 @@ DEFAULT_MODEL = "gpt-5.6-sol"
 SUPPORTED_MODELS = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
 STREAM_LIMIT = 8 * 1024 * 1024
 PREVIEW_CHARS = 400
+
+# `StructuredRequest` deliberately carries no run_id — a schema-constrained
+# answer is not a node of the graph, and giving it one would let a `usage_event`
+# row be written for something that never ran (base.py). `Usage` still requires
+# the field, so this sentinel states that the tokens belong to no run.
+STRUCTURED_RUN_ID: RunId = "run_structured"
+
+# A provider rejection (a 400 on the schema, say) is reported twice: once as an
+# `error` line and once inside `turn.failed`. The text is a whole nested JSON
+# document, so the HarnessError quotes it bounded rather than whole.
+ERROR_DETAIL_CHARS = 500
 
 TOOL_ITEM_TYPES = frozenset(
     {"command_execution", "file_change", "mcp_tool_call", "web_search"}
@@ -456,6 +517,250 @@ def _as_list(value: object) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# ---------------------------------------------------------------------------
+# Structured output — see the module docstring's `--output-schema` section.
+# ---------------------------------------------------------------------------
+
+
+def structured_model(model: str | None) -> str:
+    """Same catalog check :func:`build_argv` makes, and the same ``ValueError``.
+
+    A model the adapter does not know is a caller mistake, not a harness
+    failure, so it is not a :class:`HarnessError`.
+    """
+    chosen = model or DEFAULT_MODEL
+    if chosen not in SUPPORTED_MODELS:
+        raise ValueError(
+            f"unsupported Codex model {chosen!r}; expected one of {SUPPORTED_MODELS!r}"
+        )
+    return chosen
+
+
+def structured_prompt(request: StructuredRequest) -> str:
+    """``system`` folded into the stdin prompt, because there is no flag for it.
+
+    Verified on 0.146.0: ``codex exec`` has no system-prompt option at all. The
+    heading is what keeps the instruction and the task distinguishable to the
+    model — running the two texts together is how a system prompt gets read as
+    part of the question.
+    """
+    if request.system is None:
+        return request.prompt
+    return f"# Instructions\n\n{request.system}\n\n# Task\n\n{request.prompt}"
+
+
+def build_structured_argv(
+    request: StructuredRequest, *, schema_file: Path
+) -> list[str]:
+    """Full argv for one schema-constrained answer; prompt stays on stdin.
+
+    ``--ephemeral`` because a planner question is not a session anyone resumes,
+    and ``--skip-git-repo-check`` because :class:`StructuredRequest` has no
+    worktree — its ``cwd`` is optional and need not be a repository.
+    """
+    argv = [
+        *request.launcher,
+        CLI_COMMAND,
+        "exec",
+        "--json",
+        "--color",
+        "never",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--skip-git-repo-check",
+        "--ephemeral",
+        "--model",
+        structured_model(request.model),
+        "--output-schema",
+        str(schema_file),
+    ]
+    # Same rule as build_argv: nested sandboxes fail on macOS, so an externally
+    # hardened launcher replaces Codex's own (invariant 8).
+    if request.launcher:
+        argv.append("--dangerously-bypass-approvals-and-sandbox")
+    else:
+        # read-only, not workspace-write: answering a schema writes nothing.
+        argv += ["--sandbox", "read-only"]
+    if request.cwd is not None:
+        argv += ["--cd", str(request.cwd)]
+    argv.append("-")
+    return argv
+
+
+def _sum_usage(usages: list[Usage], model: str) -> Usage | None:
+    """One turn's ``Usage``, or the sum when the CLI took several.
+
+    ``turn.completed.usage`` is per turn (module docstring), so turns add. A
+    structured answer is one turn in every capture so far; summing costs ten
+    lines and removes the assumption.
+    """
+    if not usages:
+        return None
+    if len(usages) == 1:
+        return usages[0]
+    return Usage(
+        run_id=STRUCTURED_RUN_ID,
+        ts=usages[-1].ts,
+        model=model,
+        input_tokens=sum(usage.input_tokens for usage in usages),
+        output_tokens=sum(usage.output_tokens for usage in usages),
+        cache_read_tokens=sum(usage.cache_read_tokens for usage in usages),
+        cache_write_tokens=sum(usage.cache_write_tokens for usage in usages),
+    )
+
+
+def _log_discarded_usage(usage: Usage | None) -> None:
+    """A structured call that failed still burned tokens.
+
+    They cannot be returned — :class:`StructuredResult` is all-or-nothing — but
+    they must not vanish without a trace either.
+    """
+    if usage is not None and usage.total_tokens:
+        log.warning(
+            "harness.structured_usage_discarded",
+            harness=HARNESS_NAME,
+            model=usage.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+        )
+
+
+def structured_result(
+    stdout: str,
+    exit_code: int,
+    *,
+    model: str,
+    cwd: Path,
+    stats: ParseStats,
+) -> StructuredResult:
+    """Translate one ``exec --json --output-schema`` stream, or say what broke.
+
+    Pure, so the golden test can drive it without a process. The stream goes
+    through :func:`parse_stream` rather than a private reader, which is what
+    keeps the four-field accounting single-sourced (invariant 3).
+
+    Every failure names which of the three it was — bad exit, no final message,
+    unparseable final message. None of them quotes the prompt (`conventions` §6);
+    the provider's own rejection text is quoted bounded, because without it a
+    schema 400 is indistinguishable from a network failure.
+    """
+    events = list(
+        parse_stream(
+            stdout, run_id=STRUCTURED_RUN_ID, model=model, cwd=cwd, stats=stats
+        )
+    )
+    usage = _sum_usage([e for e in events if isinstance(e, Usage)], model)
+
+    if exit_code != 0:
+        _log_discarded_usage(usage)
+        raise HarnessError(
+            f"codex exec --output-schema exited {exit_code}{_failure_detail(events)}"
+        )
+    texts = [event.text for event in events if isinstance(event, AssistantText)]
+    if not texts:
+        _log_discarded_usage(usage)
+        raise HarnessError(
+            "codex exec --output-schema returned no agent message, so there is "
+            f"no structured answer to read{_failure_detail(events)}"
+        )
+    try:
+        data = json.loads(texts[-1])
+    except json.JSONDecodeError as exc:
+        _log_discarded_usage(usage)
+        raise HarnessError(
+            "codex exec --output-schema produced an unparseable final message: "
+            f"{exc.msg} at character {exc.pos} of {len(texts[-1])}"
+        ) from exc
+    if not isinstance(data, dict):
+        _log_discarded_usage(usage)
+        raise HarnessError(
+            "codex exec --output-schema produced an unparseable final message: "
+            f"expected a JSON object, got {type(data).__name__}"
+        )
+    return StructuredResult(data=data, usage=usage, model=model)
+
+
+def _failure_detail(events: list[AgentEvent]) -> str:
+    """The harness's own error text, deduplicated and bounded."""
+    messages = list(
+        dict.fromkeys(
+            message
+            for event in events
+            if isinstance(event, TurnFinished)
+            for message in event.errors
+        )
+    )
+    if not messages:
+        return ""
+    detail = "; ".join(messages)
+    if len(detail) > ERROR_DETAIL_CHARS:
+        detail = detail[:ERROR_DETAIL_CHARS] + "…"
+    return f": {detail}"
+
+
+async def _write_private_file(name: str, content: str) -> Path:
+    """A file the CLI must read from disk. ``mkdtemp`` is 0700.
+
+    Blocking I/O, hence the thread (invariant 5).
+    """
+
+    def write() -> Path:
+        directory = Path(tempfile.mkdtemp(prefix="agenthub-structured-"))
+        path = directory / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    return await asyncio.to_thread(write)
+
+
+async def _discard_private_file(path: Path) -> None:
+    def remove() -> None:
+        shutil.rmtree(path.parent, ignore_errors=True)
+
+    await asyncio.to_thread(remove)
+
+
+async def _run_once(
+    argv: list[str], request: StructuredRequest, prompt: str
+) -> tuple[str, str, int]:
+    """Run to completion with the prompt on stdin. Returns stdout, stderr, exit.
+
+    ``communicate`` rather than a hand-rolled reader: one shot, no streaming, and
+    it is the only thing that cannot deadlock between a child filling stdout and
+    us filling its stdin.
+    """
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=request.cwd,
+        env=dict(request.env) if request.env else None,
+        start_new_session=True,
+        limit=STREAM_LIMIT,
+    )
+    log.info(
+        "harness.structured_started",
+        harness=HARNESS_NAME,
+        pid=process.pid,
+        model=request.model,
+        prompt_chars=len(prompt),
+    )
+    try:
+        out, err = await process.communicate(prompt.encode())
+    except asyncio.CancelledError:
+        _signal_process_group(process, signal.SIGKILL)
+        raise
+    exit_code = process.returncode if process.returncode is not None else -1
+    return (
+        out.decode("utf-8", "replace"),
+        err.decode("utf-8", "replace"),
+        exit_code,
+    )
+
+
 class CodexAdapter:
     """Adapter for the stable non-interactive Codex JSONL surface."""
 
@@ -592,6 +897,40 @@ class CodexAdapter:
             summary=state.last_summary,
         )
 
+    async def complete_structured(self, request: StructuredRequest) -> StructuredResult:
+        """One schema-constrained answer (:class:`StructuredCompleter`).
+
+        Independent of :meth:`start`: no ``RunHandle``, no ``RunFinished``, and
+        no worktree. ``self.stats`` is replaced so a caller can still audit the
+        token accounting of the call it just made.
+        """
+        model = structured_model(request.model)
+        prompt = structured_prompt(request)
+        schema_file = await _write_private_file(
+            "output-schema.json", json.dumps(dict(request.schema), sort_keys=True)
+        )
+        try:
+            argv = build_structured_argv(request, schema_file=schema_file)
+            stdout, stderr, exit_code = await _run_once(argv, request, prompt)
+        finally:
+            await _discard_private_file(schema_file)
+
+        if exit_code != 0:
+            log.warning(
+                "harness.structured_failed",
+                harness=HARNESS_NAME,
+                exit_code=exit_code,
+                stderr_tail=stderr.splitlines()[-STDERR_TAIL_LINES:],
+            )
+        self.stats = ParseStats()
+        return structured_result(
+            stdout,
+            exit_code,
+            model=model,
+            cwd=request.cwd or Path.cwd(),
+            stats=self.stats,
+        )
+
     @staticmethod
     async def _stop_tasks(handle: RunHandle) -> None:
         for task in handle.tasks:
@@ -627,7 +966,13 @@ async def _drain_stderr(handle: RunHandle) -> None:
 
 
 def _signal_group(handle: RunHandle, sig: signal.Signals) -> None:
+    _signal_process_group(handle.process, sig)
+
+
+def _signal_process_group(
+    process: asyncio.subprocess.Process, sig: signal.Signals
+) -> None:
     try:
-        os.killpg(os.getpgid(handle.pid), sig)
+        os.killpg(os.getpgid(process.pid), sig)
     except (ProcessLookupError, PermissionError):
         pass

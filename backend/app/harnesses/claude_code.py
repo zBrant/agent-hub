@@ -130,6 +130,52 @@ line ``"[Request interrupted by user]"`` and a proper
 none of that. The capability is advertised in
 ``system/init.capabilities`` as ``interrupt_receipt_v1``, so it is
 feature-detectable rather than assumed.
+
+Structured output (``--json-schema``), verified on 2.1.226
+-----------------------------------------------------------
+
+A second, much smaller surface: one process, one JSON object on stdout, no
+stream. It exists for :class:`~app.harnesses.base.StructuredRequest` and shares
+nothing with the run path except the accounting.
+
+``-p --output-format json --json-schema <inline JSON>``
+    ``--output-format json`` prints exactly one ``result`` object — the same
+    shape the stream ends with, which is why :func:`_structured_usage` can hand
+    it straight to :func:`_translate_payload` instead of inventing a second
+    token accounting (invariant 3).
+``--tools ""``
+    Verified: ``system/init.tools`` becomes ``["StructuredOutput"]``, i.e. every
+    built-in tool is gone and only the schema tool remains. A planner question
+    must not be able to read or write anything. It is last in argv because the
+    option is variadic.
+``--system-prompt-file <FILE>``
+    ``--system-prompt`` exists too and would put the text in ``ps``
+    (`docs/conventions.md` §6). The file is written to a 0700 temp directory and
+    removed in a ``finally``. Verified applied, not merely accepted: a system
+    file saying "always answer with the color BANANA" changes the answer.
+
+The prompt itself is on stdin, as everywhere else. ``--print`` reads it from
+there whenever no positional prompt is given.
+
+What comes back, from a real capture (see
+``tests/harnesses/test_claude_code.py::CAPTURED_STRUCTURED_RESULT``):
+
+``structured_output``
+    The answer as a real object. ``result`` carries the *same* JSON as a string;
+    the object is preferred because re-parsing a string the CLI already parsed
+    is one more place to disagree with it.
+``usage``
+    Per invocation, all four fields, plus the ``cache_creation`` tier split —
+    identical in shape to a streamed ``result``. Not cumulative across calls:
+    each :meth:`ClaudeCodeAdapter.complete_structured` is its own process.
+``modelUsage``
+    Same two-spelling table as the stream. There is **no** top-level ``model``
+    key, so :func:`_structured_model` reads the model off this table, preferring
+    the dated id for the same reason :class:`~app.harnesses.events.Usage` does.
+
+Unlike Codex, Claude Code accepts a schema that is not OpenAI-strict: a nested
+object with neither ``additionalProperties: false`` nor a complete ``required``
+was accepted and answered. The schema is passed through exactly as given.
 """
 
 import asyncio
@@ -137,7 +183,9 @@ import contextlib
 import json
 import os
 import re
+import shutil
 import signal
+import tempfile
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -147,10 +195,13 @@ from typing import Any
 import structlog
 
 from app.harnesses.base import (
+    STDERR_TAIL_LINES,
     HarnessError,
     ParseStats,
     RunHandle,
     RunSpec,
+    StructuredRequest,
+    StructuredResult,
 )
 from app.harnesses.events import (
     AgentEvent,
@@ -174,9 +225,22 @@ log = structlog.get_logger()
 HARNESS_NAME = "claude-code"
 CLI_COMMAND = "claude"
 
-# Every version the fixtures were captured from; the CLI updated mid-capture.
+# Every version the *stream* fixtures were captured from; the CLI updated
+# mid-capture.
 TESTED_CLI_VERSIONS: tuple[str, ...] = ("2.1.222", "2.1.223")
 TESTED_CLI_VERSION = TESTED_CLI_VERSIONS[-1]
+
+# The `--json-schema` surface was verified separately and later, so it gets its
+# own constant rather than being folded into the tuple above: no stream fixture
+# comes from this version and none should start claiming to.
+STRUCTURED_TESTED_CLI_VERSION = "2.1.226"
+
+# `StructuredRequest` deliberately carries no run_id — a schema-constrained
+# answer is not a node of the graph, and giving it one would let a `usage_event`
+# row be written for something that never ran (base.py). `Usage` still requires
+# the field, so this sentinel states that the tokens belong to no run. Anything
+# that persists a row keyed by it is a bug, not a naming accident.
+STRUCTURED_RUN_ID: RunId = "run_structured"
 
 # Model catalog for this harness, keyed the way `pricing.yaml` and design.md §4
 # spell them. Claude Code also accepts dated ids and aliases ("opus", "sonnet");
@@ -807,6 +871,260 @@ def _as_list(value: object) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+# ---------------------------------------------------------------------------
+# Structured output — see the module docstring's `--json-schema` section.
+# ---------------------------------------------------------------------------
+
+
+def structured_cli_args(
+    request: StructuredRequest, *, system_prompt_file: Path | None
+) -> list[str]:
+    """The argv that follows ``claude`` for a schema-constrained answer.
+
+    Neither the prompt nor the system text is here: the first goes on stdin and
+    the second in a file (`docs/conventions.md` §6). The schema is not secret
+    and has no file flag, so it is inlined.
+    """
+    args = [
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(dict(request.schema), sort_keys=True),
+    ]
+    if request.model is not None:
+        args += ["--model", request.model]
+    if system_prompt_file is not None:
+        args += ["--system-prompt-file", str(system_prompt_file)]
+    # Terminal on purpose: --tools is variadic, and nothing following an empty
+    # value can then be mistaken for one of its values.
+    args += ["--tools", ""]
+    return args
+
+
+def build_structured_argv(
+    request: StructuredRequest, *, system_prompt_file: Path | None
+) -> list[str]:
+    """Full argv: sandbox prefix, then ``claude``, then our flags (invariant 8)."""
+    return [
+        *request.launcher,
+        CLI_COMMAND,
+        *structured_cli_args(request, system_prompt_file=system_prompt_file),
+    ]
+
+
+def _structured_failure_taxonomy(stdout: str) -> dict[str, Any]:
+    """The CLI's own words for *why*, from a failed run's stdout.
+
+    Claude Code reports an error as a JSON object on **stdout** and still exits
+    non-zero, so logging only the stderr tail — which is routinely empty —
+    leaves a failure with no diagnosis at all. That is not hypothetical: a real
+    planner run exited 1 after four minutes with an empty tail and nothing
+    anywhere said what happened.
+
+    Only the closed-vocabulary fields are lifted. ``subtype`` and
+    ``api_error_status`` are the CLI's own taxonomy and cannot contain the
+    prompt or the answer; ``result`` deliberately is not, because on some
+    failures it echoes model output (`docs/conventions.md` §6). Returns an
+    empty mapping when stdout is not the object we expect, so a caller can
+    always splat it.
+    """
+    try:
+        payload = json.loads(stdout)
+    except (json.JSONDecodeError, ValueError):
+        return {"stdout_chars": len(stdout)}
+    if not isinstance(payload, dict):
+        return {"stdout_chars": len(stdout)}
+    fields = ("subtype", "is_error", "api_error_status", "num_turns", "stop_reason")
+    return {
+        f"cli_{name}": payload[name]
+        for name in fields
+        if isinstance(payload.get(name), str | int | bool)
+    }
+
+
+def _structured_model(payload: dict[str, Any], fallback: str | None) -> str:
+    """Which model answered. ``--output-format json`` has no ``model`` key.
+
+    ``modelUsage`` is the only place it appears, under up to two spellings. The
+    dated one wins for the same reason it wins in :func:`_on_result`: it is what
+    the API billed against, and pricing normalizes aliases anyway.
+    """
+    model_usage = payload.get("modelUsage")
+    keys = (
+        sorted(str(key) for key in model_usage) if isinstance(model_usage, dict) else []
+    )
+    dated = [key for key in keys if SIDE_CHANNEL_MODEL_KEY.search(key)]
+    if dated:
+        return dated[0]
+    if keys:
+        return keys[0]
+    return fallback or ""
+
+
+def _structured_usage(
+    payload: dict[str, Any], model: str, stats: ParseStats
+) -> Usage | None:
+    """This call's four fields, through the run path's own ``result`` translation.
+
+    Not a second accounting: ``--output-format json`` prints the same ``result``
+    object the stream ends with, so it is handed to :func:`_translate_payload`
+    unchanged. That inherits everything the module docstring argues for —
+    ``result.usage`` primary, the ``modelUsage`` delta only when all four fields
+    are zero, ``source="reconstructed"`` when it fires, and no ``Usage`` at all
+    rather than a wrong one.
+
+    The delta's baseline is zero here, which is correct and not a shortcut: each
+    structured call is its own process, so the session-cumulative counter starts
+    at nothing.
+    """
+    state = _StreamState(run_id=STRUCTURED_RUN_ID)
+    # No `assistant` line exists in this format, so seed the model the same way
+    # one would have: without it every Usage would carry an empty model.
+    state.dated_model = model or None
+    usages = [
+        event
+        for event in _translate_payload(payload, state, stats, now_ms)
+        if isinstance(event, Usage)
+    ]
+    return usages[-1] if usages else None
+
+
+def _log_discarded_usage(usage: Usage | None) -> None:
+    """A structured call that failed still burned tokens.
+
+    They cannot be returned — :class:`StructuredResult` is all-or-nothing — but
+    they must not vanish without a trace either.
+    """
+    if usage is not None and usage.total_tokens:
+        log.warning(
+            "harness.structured_usage_discarded",
+            harness=HARNESS_NAME,
+            model=usage.model,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read_tokens=usage.cache_read_tokens,
+            cache_write_tokens=usage.cache_write_tokens,
+        )
+
+
+def structured_result(
+    request: StructuredRequest,
+    stdout: str,
+    exit_code: int,
+    stats: ParseStats,
+) -> StructuredResult:
+    """Translate one ``--output-format json`` object, or say exactly what broke.
+
+    Pure, so the golden test can drive it without a process. Every failure names
+    which of the three it was — bad exit, unparseable output, missing structured
+    field — and none of them quotes the prompt, the answer or stderr, which is
+    where a credential would be if there were one (`docs/conventions.md` §6).
+    """
+    if exit_code != 0:
+        raise HarnessError(
+            f"claude --json-schema exited {exit_code}; see the "
+            "harness.structured_failed log entry for the stderr tail"
+        )
+    try:
+        payload = json.loads(stdout)
+    except json.JSONDecodeError as exc:
+        raise HarnessError(
+            "claude --json-schema produced unparseable output: "
+            f"{exc.msg} at character {exc.pos} of {len(stdout)}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise HarnessError(
+            "claude --json-schema produced unparseable output: expected a JSON "
+            f"object, got {type(payload).__name__}"
+        )
+
+    model = _structured_model(payload, request.model)
+    usage = _structured_usage(payload, model, stats)
+
+    if payload.get("is_error") or payload.get("subtype") != "success":
+        _log_discarded_usage(usage)
+        raise HarnessError(
+            "claude --json-schema reported failure: "
+            f"subtype={payload.get('subtype')!r}, "
+            f"is_error={payload.get('is_error')!r}, "
+            f"terminal_reason={payload.get('terminal_reason')!r}"
+        )
+    data = payload.get("structured_output")
+    if not isinstance(data, dict):
+        _log_discarded_usage(usage)
+        raise HarnessError(
+            "claude --json-schema returned no `structured_output` object "
+            f"(got {type(data).__name__}); the run succeeded but the schema was "
+            "not satisfied"
+        )
+    return StructuredResult(data=data, usage=usage, model=model)
+
+
+async def _write_private_file(name: str, content: str) -> Path:
+    """Text the CLI must read from disk, kept out of argv (`conventions` §6).
+
+    ``mkdtemp`` is 0700, so the file is unreadable by other users for the few
+    seconds it exists. Blocking I/O, hence the thread (invariant 5).
+    """
+
+    def write() -> Path:
+        directory = Path(tempfile.mkdtemp(prefix="agenthub-structured-"))
+        path = directory / name
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    return await asyncio.to_thread(write)
+
+
+async def _discard_private_file(path: Path) -> None:
+    def remove() -> None:
+        shutil.rmtree(path.parent, ignore_errors=True)
+
+    await asyncio.to_thread(remove)
+
+
+async def _run_once(
+    argv: list[str], request: StructuredRequest
+) -> tuple[str, str, int]:
+    """Run to completion with the prompt on stdin. Returns stdout, stderr, exit.
+
+    ``communicate`` rather than a hand-rolled reader: one shot, no streaming, and
+    it is the only thing that cannot deadlock between a child filling stdout and
+    us filling its stdin.
+    """
+    process = await asyncio.create_subprocess_exec(
+        *argv,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=request.cwd,
+        env=dict(request.env) if request.env else None,
+        # Own process group, so a cancellation takes down the whole tree.
+        start_new_session=True,
+        limit=STREAM_LIMIT,
+    )
+    log.info(
+        "harness.structured_started",
+        harness=HARNESS_NAME,
+        pid=process.pid,
+        model=request.model,
+        # Never the prompt itself (docs/conventions.md §2).
+        prompt_chars=len(request.prompt),
+    )
+    try:
+        out, err = await process.communicate(request.prompt.encode())
+    except asyncio.CancelledError:
+        _signal_process_group(process, signal.SIGKILL)
+        raise
+    exit_code = process.returncode if process.returncode is not None else -1
+    return (
+        out.decode("utf-8", "replace"),
+        err.decode("utf-8", "replace"),
+        exit_code,
+    )
+
+
 class ClaudeCodeAdapter:
     """`design.md` §3 adapter for Claude Code. Channel A only in Phase 0."""
 
@@ -954,6 +1272,36 @@ class ClaudeCodeAdapter:
             summary=state.last_summary,
         )
 
+    async def complete_structured(self, request: StructuredRequest) -> StructuredResult:
+        """One schema-constrained answer (:class:`StructuredCompleter`).
+
+        Independent of :meth:`start`: no ``RunHandle``, no stream, no
+        ``RunFinished``. ``self.stats`` is replaced so a caller can still audit
+        the token accounting of the call it just made.
+        """
+        system_file = (
+            await _write_private_file("system-prompt.txt", request.system)
+            if request.system is not None
+            else None
+        )
+        try:
+            argv = build_structured_argv(request, system_prompt_file=system_file)
+            stdout, stderr, exit_code = await _run_once(argv, request)
+        finally:
+            if system_file is not None:
+                await _discard_private_file(system_file)
+
+        if exit_code != 0:
+            log.warning(
+                "harness.structured_failed",
+                harness=HARNESS_NAME,
+                exit_code=exit_code,
+                stderr_tail=stderr.splitlines()[-STDERR_TAIL_LINES:],
+                **_structured_failure_taxonomy(stdout),
+            )
+        self.stats = ParseStats()
+        return structured_result(request, stdout, exit_code, self.stats)
+
     @staticmethod
     async def _stop_tasks(handle: RunHandle) -> None:
         for task in handle.tasks:
@@ -991,10 +1339,16 @@ async def _drain_stderr(handle: RunHandle) -> None:
 
 
 def _signal_group(handle: RunHandle, sig: signal.Signals) -> None:
+    _signal_process_group(handle.process, sig)
+
+
+def _signal_process_group(
+    process: asyncio.subprocess.Process, sig: signal.Signals
+) -> None:
     try:
-        os.killpg(os.getpgid(handle.pid), sig)
+        os.killpg(os.getpgid(process.pid), sig)
     except (ProcessLookupError, PermissionError):
         # Already reaped, or the group is not ours because start_new_session
         # did not apply. Fall back to the single process.
         with contextlib.suppress(ProcessLookupError):
-            handle.process.kill()
+            process.kill()

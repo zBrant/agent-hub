@@ -140,6 +140,11 @@ def test_plan_endpoint_persists_a_gated_proposal_from_an_objective(
             },
             "cost_usd": 0.00123,
             "price_table_version": 1,
+            # Whether `cost_usd` is money or invariant 7's estimated
+            # equivalent. Asserted here because the route is where a client
+            # learns it, and a client that renders the cost without it will
+            # mislabel one of the two backends.
+            "is_spend": True,
         }
         assert fake.objective == "Build an endpoint and its client"
         assert fake.context == "Keep the transport thin"

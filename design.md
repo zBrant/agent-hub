@@ -435,26 +435,61 @@ completed); the Dashboard shows only active ones.
 2. The planner emits a DAG using **structured output** (JSON Schema) — not
    markdown parsing.
 
-   **The planner calls the Anthropic API directly; it does not go through a
-   harness.** Reusing an already-authenticated `claude -p` would avoid a
-   dependency and a credential, and it is the wrong call: the CLI's
-   `--output-format stream-json` structures the *event envelope*, not the
-   assistant's content. There is no CLI equivalent of `output_config.format`,
-   so routing the planner through a harness means prompting for JSON and
-   parsing prose — exactly what this step rules out. `messages.parse()` with a
-   Pydantic model gives a schema-validated object instead.
+   **The planner has two interchangeable backends: the Anthropic API, or a
+   harness that can return schema-validated content.** Either produces the same
+   parsed object; which one runs is `planner_backend` in configuration, and
+   nothing above the backend seam knows the difference.
 
-   Two consequences worth stating plainly:
+   > **Superseded, 2026-08-08.** This decision used to read "the planner calls
+   > the Anthropic API directly; it does not go through a harness", on the
+   > grounds that "the CLI's `--output-format stream-json` structures the
+   > *event envelope*, not the assistant's content. There is no CLI equivalent
+   > of `output_config.format`, so routing the planner through a harness means
+   > prompting for JSON and parsing prose."
+   >
+   > The first sentence is still true and the conclusion no longer follows,
+   > because both CLIs have since grown a *second* flag that does structure the
+   > content: Claude Code takes `--json-schema <inline>` and returns a
+   > `structured_output` object alongside the result, and Codex takes
+   > `--output-schema <file>`. Neither is prose parsing. The original reasoning
+   > was sound when written and simply went stale; it is recorded here rather
+   > than deleted so nobody re-derives it and reverts this.
 
-   - **The planner is the one component with real per-token billing.**
-     Invariant 7's "estimated equivalent cost" exists because the harnesses run
-     under a subscription. The planner does not: its tokens are spend. It needs
-     its own credential — an `ANTHROPIC_API_KEY`, or an `ant auth login`
-     profile, which a bare client picks up with no environment variable.
+   Keeping the API backend is not sentiment. It is the only one that works with
+   no CLI installed at all, it is what `messages.parse()` validates against a
+   Pydantic model in-process rather than against a hand-built JSON Schema, and
+   an adapter is free not to offer the capability — `OpenCode` may never have
+   it. A harness that cannot return structured content declares so, and
+   selecting it for the planner is a configuration error reported at the seam,
+   not a silent fallback to prose.
+
+   **Invariant 1 still holds, and it is what shapes this.** The two CLIs
+   disagree on everything except the idea: schema inline versus schema in a
+   file, the object on `structured_output` versus in the last message. None of
+   that may reach `orchestrator/`. The capability is part of the adapter
+   contract in `harnesses/`, the planner asks whether an adapter *has* it, and
+   asking "can this adapter do X" is a capability check, not a branch on which
+   harness it is.
+
+   Three consequences worth stating plainly:
+
+   - **Which backend runs decides whether the planner is spend.** Against the
+     API its tokens are real per-token billing and need a credential of their
+     own — an `ANTHROPIC_API_KEY`, or an `ant auth login` profile, which is
+     organization and service-account auth and *not* a route from a Max/Pro
+     plan. Against a harness the planner inherits invariant 7 like everything
+     else: the subscription already paid, and the number is an estimated
+     equivalent. This is the whole practical reason the second backend exists —
+     a subscription with no API credit could not plan at all.
+   - **The backends do not have identical failure modes.** The API reports a
+     refusal and a truncation in `stop_reason`; a CLI reports process exit and
+     whether the structured field arrived. Both map onto the existing
+     `PlanFailureKind` vocabulary, and any kind that one backend can never
+     produce stays unreachable rather than being faked.
    - **A valid schema is not a valid DAG.** Structured output guarantees
      well-formed JSON with the right fields; it cannot express "no cycles". The
      pure DAG core still validates, and the correction loop below is still
-     required.
+     required — for both backends.
 
    Per-node schema:
 

@@ -241,13 +241,22 @@ class PlanGraphRequest(BaseModel):
 
 
 class PlannerUsageResponse(BaseModel):
-    """Metered API usage, distinct from harness equivalent-cost estimates."""
+    """The planner's own usage.
+
+    ``is_spend`` says which kind of number ``cost_usd`` is: True on the `api`
+    backend, where the planner bills per token against its own credential;
+    False on the `harness` backend, where it rides an already-paid
+    subscription and the figure is invariant 7's *estimated equivalent*. A
+    client that renders the cost without reading this will mislabel one of the
+    two.
+    """
 
     model: str
     requests: int
     tokens: TokenCountsResponse
     cost_usd: float | None
     price_table_version: int
+    is_spend: bool
 
     @classmethod
     def from_result(cls, result: PlannerUsage) -> PlannerUsageResponse:
@@ -263,6 +272,7 @@ class PlannerUsageResponse(BaseModel):
                 total_tokens=counts.total,
             ),
             cost_usd=result.cost_usd,
+            is_spend=result.is_spend,
             price_table_version=result.price_table_version,
         )
 

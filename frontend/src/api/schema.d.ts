@@ -1229,11 +1229,20 @@ export interface components {
         };
         /**
          * PlannerUsageResponse
-         * @description Metered API usage, distinct from harness equivalent-cost estimates.
+         * @description The planner's own usage.
+         *
+         *     ``is_spend`` says which kind of number ``cost_usd`` is: True on the `api`
+         *     backend, where the planner bills per token against its own credential;
+         *     False on the `harness` backend, where it rides an already-paid
+         *     subscription and the figure is invariant 7's *estimated equivalent*. A
+         *     client that renders the cost without reading this will mislabel one of the
+         *     two.
          */
         readonly PlannerUsageResponse: {
             /** Cost Usd */
             readonly cost_usd: number | null;
+            /** Is Spend */
+            readonly is_spend: boolean;
             /** Model */
             readonly model: string;
             /** Price Table Version */

@@ -1280,7 +1280,7 @@
         "type": "object"
       },
       "PlannerUsageResponse": {
-        "description": "Metered API usage, distinct from harness equivalent-cost estimates.",
+        "description": "The planner's own usage.\n\n``is_spend`` says which kind of number ``cost_usd`` is: True on the `api`\nbackend, where the planner bills per token against its own credential;\nFalse on the `harness` backend, where it rides an already-paid\nsubscription and the figure is invariant 7's *estimated equivalent*. A\nclient that renders the cost without reading this will mislabel one of the\ntwo.",
         "properties": {
           "cost_usd": {
             "anyOf": [
@@ -1292,6 +1292,10 @@
               }
             ],
             "title": "Cost Usd"
+          },
+          "is_spend": {
+            "title": "Is Spend",
+            "type": "boolean"
           },
           "model": {
             "title": "Model",
@@ -1314,7 +1318,8 @@
           "requests",
           "tokens",
           "cost_usd",
-          "price_table_version"
+          "price_table_version",
+          "is_spend"
         ],
         "title": "PlannerUsageResponse",
         "type": "object"

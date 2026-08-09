@@ -19,6 +19,15 @@ from app.search.semantic import SemanticIndexService
 from app.search.symbols import SymbolIndexService
 from app.search.tools import CodeSearchService, FileLine, SearchError, file_line_hash
 
+# The stable half of the SDK's auth-resolution `TypeError`, which arrives from a
+# private `_validate_headers` hook with no type of its own.
+#
+# Duplicated from `orchestrator/planner.py` rather than shared: the import-
+# linter contract "search/ and metrics/ are isolated verticals" forbids
+# `app.search` from importing `app.orchestrator`, and a four-word constant is a
+# far smaller price than a shared module that erodes that boundary.
+_NO_CREDENTIAL = "Could not resolve authentication method"
+
 SYSTEM_PROMPT = """\
 You answer questions about one repository by navigating it with the supplied
 read-only tools. Do not answer from memory. Search broadly, then read the exact
@@ -43,6 +52,14 @@ class SearchLimitReason(StrEnum):
     API_ERROR = "api_error"
     REFUSED = "refused"
     TRUNCATED = "truncated"
+    NOT_CONFIGURED = "not_configured"
+    """No Anthropic credential resolved, so no request was made.
+
+    Unlike every other reason here, nothing was attempted and nothing was
+    spent. Kept distinct from `API_ERROR` because a retry cannot help — the
+    operator has to supply a credential, and saying "the API failed" sends them
+    looking for an outage instead.
+    """
 
 
 class Citation(BaseModel):
@@ -356,6 +373,27 @@ class SearchAgent:
                     system=SYSTEM_PROMPT,
                     messages=messages,
                     tools=TOOLS,
+                )
+            except TypeError as type_error:
+                # The SDK reports "no credential" as a bare `TypeError` from a
+                # private `_validate_headers` hook, so the message is the only
+                # thing that distinguishes it from a real bug in this call —
+                # which must keep propagating. Same shape as the planner's
+                # handling of the same SDK behavior.
+                if _NO_CREDENTIAL not in str(type_error):
+                    raise
+                return self._partial(
+                    SearchLimitReason.NOT_CONFIGURED,
+                    "agentic search has no Anthropic credential: set "
+                    "ANTHROPIC_API_KEY in the environment that starts the "
+                    "server and restart it. Unlike the harnesses and the "
+                    "planner, this loop has no subscription-backed path — it "
+                    "needs a real tool-use loop, which no CLI exposes.",
+                    evidence,
+                    turns,
+                    tool_calls,
+                    bytes_read,
+                    usage,
                 )
             except APIError as api_error:
                 return self._partial(

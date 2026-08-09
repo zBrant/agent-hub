@@ -88,11 +88,9 @@ the dashboards, and code search.
 - Git
 - [ripgrep](https://github.com/BurntSushi/ripgrep) — code search's text tool
 - An installed and authenticated Codex or Claude Code CLI
-- An Anthropic credential **for the planner only** — `ANTHROPIC_API_KEY`,
-  `ANTHROPIC_AUTH_TOKEN`, or an `ant auth login` profile, in the environment
-  that starts the backend. This is the one credential AgentHub owns; the
-  harnesses authenticate themselves. Without it the planner answers **503** and
-  says so, and everything reachable through the resource API below still works.
+- **No API key.** The planner runs through an already-authenticated harness CLI
+  by default, so a Claude Max/Pro plan is enough for the whole product. See
+  *The planner's backend* below if you would rather it called the API.
 - Optional: [ast-grep](https://ast-grep.github.io/), for structural search.
   Without it that one tool reports itself unavailable and the rest still works.
 
@@ -137,11 +135,10 @@ There are two ways in.
 
 **From the UI.** Open the **Sessions** tab, describe an objective, and select
 *Create proposal*. The planner turns it into a graph and persists it `pending`;
-invariant 6 means nothing runs until you approve it. This is the path that
-needs the Anthropic credential above.
+invariant 6 means nothing runs until you approve it.
 
-**From the resource API**, which needs no credential, because you are writing
-the activity yourself instead of asking a model for one. Replace
+**From the resource API**, when you would rather write the activity yourself
+than ask a model for one. Replace
 `/absolute/repo` with an existing Git repository — an absolute path to a real
 working tree, or the call answers 422 and names what it could not resolve:
 
@@ -174,6 +171,45 @@ curl --request POST http://127.0.0.1:8000/api/sessions/<session_id>/runs
 The page exposes start, kill, retry, approval, event history, all four token
 fields, estimated equivalent cost, and the final diff. With `auto_merge=false`,
 a successful run stops at `awaiting_review` until **Approve** is selected.
+
+### The planner's backend
+
+The planner is the only part of AgentHub that asks a model something on its own
+behalf, and it has two interchangeable backends (`design.md` §8).
+
+**`harness` (default)** drives an already-authenticated CLI with
+`--json-schema` (Claude Code) or `--output-schema` (Codex) and gets back
+schema-validated content, not prose. Nothing to configure, no key, and the
+planner's tokens are an *estimated equivalent* under your subscription like
+every other run — invariant 7 applies to it too.
+
+**`api`** calls the Anthropic API with `messages.parse`. It validates against
+the Pydantic model in-process and reports refusals and truncation through
+`stop_reason`, which no CLI exposes. It also needs a credential of its own and
+its tokens are **real spend**:
+
+```bash
+export AGENTHUB_PLANNER_BACKEND=api
+export ANTHROPIC_API_KEY=sk-ant-...
+```
+
+> A Claude **Max/Pro plan is not API access**, and `ant auth login` is
+> organization and service-account auth — neither is a route from a
+> subscription to the `api` backend. That is precisely why `harness` is the
+> default. Choosing `api` means buying API credit separately from your plan.
+
+Select the harness with `AGENTHUB_PLANNER_HARNESS` (default `claude-code`) and
+optionally pin its model with `AGENTHUB_PLANNER_HARNESS_MODEL`. Naming a
+harness that cannot return structured content does not stop the server: it is
+logged at startup and the planner answers 503 with the reason, so the other
+four features keep working.
+
+> **Code Search's *chat* is the one thing a subscription cannot cover.** The
+> agentic loop needs real tool-use, which no CLI exposes as a library, so
+> `/api/search/answer` requires `ANTHROPIC_API_KEY` regardless of the planner's
+> backend. Without one it returns a partial result explaining that, rather than
+> failing. Every other part of Code Search — ripgrep, ast-grep, symbols,
+> semantic ranking — is local and needs no credential at all.
 
 ### Runtime data and replay
 

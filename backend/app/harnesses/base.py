@@ -19,9 +19,9 @@ from collections import deque
 from collections.abc import AsyncIterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
-from app.harnesses.events import AgentEvent
+from app.harnesses.events import AgentEvent, Usage
 from app.models.ids import RunId
 
 # Kept from the child's stderr for diagnostics when a launch fails. stderr is
@@ -122,6 +122,77 @@ class ParseStats:
         self.unknown[key] = self.unknown.get(key, 0) + 1
 
 
+@dataclass(frozen=True)
+class StructuredRequest:
+    """One shot at a schema-constrained answer. No tools, no worktree, no run.
+
+    Deliberately not a :class:`RunSpec`. A run is a node of the graph: it has a
+    ``run_id``, a worktree, an NDJSON log, and rows in SQLite. This is a
+    question with a shape, used by the planner *before* any of that exists, and
+    giving it a ``run_id`` would put a row in ``usage_event`` for something that
+    is not a node (`design.md` §8's fourth consequence).
+
+    ``schema`` is a JSON Schema object in the **strict, resolved** dialect:
+
+    * no ``$ref`` and no ``$defs`` — Pydantic emits both by default;
+    * every object carries ``additionalProperties: false`` and a ``required``
+      listing every key in ``properties``.
+
+    Both are the caller's job rather than each adapter's. Codex rejects a
+    schema that misses either (``invalid_json_schema``, exit 1) while Claude
+    Code accepts the loose form too, so the strict dialect is the portable one
+    — and normalizing once at the caller keeps that out of the adapters, where
+    it would become a per-harness quirk. An adapter may assume this and does
+    not validate it.
+    """
+
+    prompt: str
+    schema: Mapping[str, object]
+    system: str | None = None
+    model: str | None = None
+    cwd: Path | None = None
+    env: Mapping[str, str] = field(default_factory=dict)
+    launcher: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class StructuredResult:
+    """What came back, plus what it cost.
+
+    ``data`` has been validated against the schema *by the harness*, so a
+    caller still has to validate it against its own model — the CLIs enforce
+    shape, not the caller's Pydantic semantics.
+
+    ``usage`` is the same four fields as everything else (invariant 3), and it
+    is an estimated equivalent rather than spend whenever the harness runs
+    under a subscription (invariant 7). That is the whole point of this path.
+    """
+
+    data: Mapping[str, object]
+    usage: Usage | None
+    model: str
+
+
+@runtime_checkable
+class StructuredCompleter(Protocol):
+    """The optional half of the adapter contract: schema-constrained answers.
+
+    Separate from :class:`BaseHarnessAdapter` because it is genuinely optional.
+    Claude Code has ``--json-schema`` and Codex has ``--output-schema``, but a
+    future adapter may have neither, and the honest way to say so is to not
+    implement this — a stub raising "unsupported" would make every caller check
+    at runtime anyway, and this way mypy checks it.
+
+    Callers ask :func:`supports_structured_output`, which is a *capability*
+    question and not a branch on which harness is running: invariant 1 forbids
+    the second, not the first.
+    """
+
+    async def complete_structured(
+        self, request: StructuredRequest
+    ) -> StructuredResult: ...
+
+
 class BaseHarnessAdapter(Protocol):
     """`design.md` §3. Implementations live one file per harness in this package."""
 
@@ -140,3 +211,12 @@ class BaseHarnessAdapter(Protocol):
     async def kill(self, handle: RunHandle) -> None: ...
 
     def events(self, handle: RunHandle) -> AsyncIterator[AgentEvent]: ...
+
+
+def supports_structured_output(adapter: BaseHarnessAdapter) -> bool:
+    """Whether `adapter` can answer a :class:`StructuredRequest`.
+
+    A capability question, which invariant 1 permits, and not ``adapter.name ==
+    "claude-code"``, which it forbids.
+    """
+    return isinstance(adapter, StructuredCompleter)

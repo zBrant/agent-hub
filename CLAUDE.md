@@ -50,7 +50,9 @@ These are not style preferences. Breaking any of them is an architecture bug:
    Nothing runs before human approval while `auto_merge` is off.
 
 7. **Cost is "estimated equivalent"** when the harness runs under a subscription
-   (Max/Pro). Never label it "spend".
+   (Max/Pro). Never label it "spend". The planner is the one component that can
+   be either: real spend on the `api` backend, estimated equivalent on the
+   `harness` one. Read `planner_backend` — never assume.
 
 8. **Secrets never enter the agent's worktree.**
    ai-jail's `--mask` / `--deny-path` are mandatory, not optional.
@@ -96,9 +98,12 @@ What is deliberately *not* done, so nobody "fixes" it by accident:
 - **No live-provider turn is claimed for Phase 4's agentic loop.** There was no
   API key on the acceptance machine, and `acceptance-phase-4.md` says so rather
   than implying coverage it does not have.
-- **Planner spend is not recorded in `usage_event`.** It structurally cannot be:
+- **Planner usage is not recorded in `usage_event`.** It structurally cannot be:
   `run_id`, `session_id` and `harness` are all `NOT NULL`. Phase 2's C8 result
-  lists the four changes that would make it recordable.
+  lists the four changes that would make it recordable. This is unchanged by
+  the planner's harness backend — a plan is still not a node, and giving it a
+  `run_id` to satisfy the schema would put a row in the dashboard for something
+  that has no worktree and no diff.
 
 Two environment traps that have already cost time here:
 

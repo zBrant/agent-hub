@@ -25,19 +25,30 @@ from typing import Any
 
 import pytest
 
-from app.harnesses.base import ParseStats, RunHandle, RunSpec
+from app.harnesses.base import (
+    HarnessError,
+    ParseStats,
+    RunHandle,
+    RunSpec,
+    StructuredRequest,
+    StructuredResult,
+    supports_structured_output,
+)
 from app.harnesses.claude_code import (
     CLI_COMMAND,
     IGNORED_LINES,
     STREAM_LIMIT,
+    STRUCTURED_TESTED_CLI_VERSION,
     SUPPORTED_MODELS,
     TESTED_CLI_VERSION,
     TESTED_CLI_VERSIONS,
     ClaudeCodeAdapter,
     TokenTotals,
     build_argv,
+    build_structured_argv,
     cumulative_conversation_usage,
     parse_stream,
+    structured_result,
 )
 from app.harnesses.events import (
     AgentEvent,
@@ -52,6 +63,7 @@ from app.harnesses.events import (
     Usage,
     agent_event_adapter,
 )
+from tests.harnesses.fake_cli import fake_cli, read_probe
 
 FIXTURES = Path(__file__).parent.parent / "fixtures" / "claude-code"
 FIXTURE_NAMES = sorted(path.stem for path in FIXTURES.glob("*.ndjson"))
@@ -640,3 +652,372 @@ def test_installed_cli_version_has_not_drifted() -> None:
             f"claude {'.'.join(map(str, installed))} != tested {TESTED_CLI_VERSION}",
             stacklevel=1,
         )
+
+
+# ---------------------------------------------------------------------------
+# Structured output (`--json-schema`). Verified on 2.1.226; see the module
+# docstring's own section for what each flag was checked to do.
+# ---------------------------------------------------------------------------
+
+# A real capture, not a hand-written shape. Produced by:
+#
+#     printf '<prompt>' | claude -p --output-format json \
+#       --model claude-haiku-4-5 --tools "" \
+#       --json-schema '<STRUCTURED_SCHEMA>'
+#
+# Only `session_id` and `uuid` were replaced, and the object was re-indented —
+# the CLI prints it on one line, and `json.loads` cannot tell the difference.
+# It lives here rather than in tests/fixtures/ only because this change was
+# scoped to app/harnesses/ and tests/harnesses/.
+CAPTURED_STRUCTURED_RESULT = r"""
+    {
+      "is_error": false,
+      "duration_api_ms": 4730,
+      "num_turns": 2,
+      "stop_reason": "tool_use",
+      "session_id": "00000000-0000-0000-0000-000000000000",
+      "total_cost_usd": 0.002535,
+      "usage": {
+        "input_tokens": 906,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 206,
+        "server_tool_use": {
+          "web_search_requests": 0,
+          "web_fetch_requests": 0
+        },
+        "service_tier": "standard",
+        "cache_creation": {
+          "ephemeral_1h_input_tokens": 0,
+          "ephemeral_5m_input_tokens": 0
+        },
+        "inference_geo": "not_available",
+        "iterations": [
+          {
+            "input_tokens": 906,
+            "output_tokens": 206,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_creation": {
+              "ephemeral_5m_input_tokens": 0,
+              "ephemeral_1h_input_tokens": 0
+            },
+            "type": "message"
+          }
+        ],
+        "speed": "standard"
+      },
+      "modelUsage": {
+        "claude-haiku-4-5-20251001": {
+          "inputTokens": 524,
+          "outputTokens": 15,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.000599,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        },
+        "claude-haiku-4-5": {
+          "inputTokens": 906,
+          "outputTokens": 206,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0,
+          "webSearchRequests": 0,
+          "costUSD": 0.0019359999999999998,
+          "contextWindow": 200000,
+          "maxOutputTokens": 32000,
+          "canonicalModel": "claude-haiku-4-5",
+          "provider": "firstParty"
+        }
+      },
+      "permission_denials": [],
+      "terminal_reason": "completed",
+      "fast_mode_state": "off",
+      "fast_mode_disabled_reason": "sdk_opt_in_required",
+      "subtype": "success",
+      "api_error_status": null,
+      "result": "{\"color\":\"red\",\"hex\":\"#FF0000\"}",
+      "structured_output": {
+        "color": "red",
+        "hex": "#FF0000"
+      },
+      "ttft_ms": 3124,
+      "ttft_stream_ms": 1306,
+      "time_to_request_ms": 23,
+      "type": "result",
+      "duration_ms": 3387,
+      "uuid": "11111111-1111-1111-1111-111111111111"
+    }
+"""
+
+STRUCTURED_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {"color": {"type": "string"}, "hex": {"type": "string"}},
+    "required": ["color", "hex"],
+    "additionalProperties": False,
+}
+
+# The dated spelling, which is the key `modelUsage` reports and the one
+# `Usage.model` prefers.
+CAPTURED_MODEL = "claude-haiku-4-5-20251001"
+
+STRUCTURED_PROMPT = "Name one primary color and its hex."
+
+
+def _structured_request(**overrides: Any) -> StructuredRequest:
+    fields: dict[str, Any] = {
+        "prompt": STRUCTURED_PROMPT,
+        "schema": STRUCTURED_SCHEMA,
+        "model": "claude-haiku-4-5",
+    }
+    fields.update(overrides)
+    return StructuredRequest(**fields)
+
+
+def _capture(**overrides: Any) -> str:
+    """The real capture with specific keys replaced, so a test says what it broke."""
+    payload = json.loads(CAPTURED_STRUCTURED_RESULT)
+    payload.update(overrides)
+    return json.dumps(payload)
+
+
+def _complete(
+    stdout: str, exit_code: int = 0, **request_overrides: Any
+) -> StructuredResult:
+    return structured_result(
+        _structured_request(**request_overrides), stdout, exit_code, ParseStats()
+    )
+
+
+def test_the_adapter_advertises_the_capability_rather_than_its_name() -> None:
+    assert supports_structured_output(ClaudeCodeAdapter())
+
+
+def test_structured_argv_keeps_prompt_and_system_out_of_ps() -> None:
+    request = _structured_request(
+        system="secret-bearing system prompt",
+        launcher=("ai-jail", "--clean"),
+    )
+    argv = build_structured_argv(request, system_prompt_file=Path("/tmp/sys.txt"))
+
+    assert argv[:3] == ["ai-jail", "--clean", CLI_COMMAND]
+    assert STRUCTURED_PROMPT not in argv
+    assert "secret-bearing system prompt" not in argv
+    assert argv[argv.index("--system-prompt-file") + 1] == "/tmp/sys.txt"
+    assert json.loads(argv[argv.index("--json-schema") + 1]) == STRUCTURED_SCHEMA
+    assert argv[argv.index("--output-format") + 1] == "json"
+    # --tools is variadic, so an empty value has to be last to be unambiguous.
+    assert argv[-2:] == ["--tools", ""]
+
+
+def test_structured_argv_omits_the_flags_it_has_no_value_for() -> None:
+    argv = build_structured_argv(
+        StructuredRequest(prompt="hi", schema=STRUCTURED_SCHEMA),
+        system_prompt_file=None,
+    )
+    assert "--model" not in argv
+    assert "--system-prompt-file" not in argv
+
+
+def test_structured_happy_path_reads_structured_output_not_result() -> None:
+    """`result` is the same JSON as a string; the object is what we trust."""
+    result = _complete(CAPTURED_STRUCTURED_RESULT)
+    assert result.data == {"color": "red", "hex": "#FF0000"}
+    assert result.model == CAPTURED_MODEL
+
+
+def test_structured_usage_carries_all_four_fields() -> None:
+    """Invariant 3. `result.usage` is this invocation's total, not a delta."""
+    usage = _complete(CAPTURED_STRUCTURED_RESULT).usage
+    assert usage is not None
+    assert usage.source == "reported"
+    assert usage.model == CAPTURED_MODEL
+    assert (
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_tokens,
+        usage.cache_write_tokens,
+    ) == (906, 206, 0, 0)
+    assert usage.total_tokens == 1_112
+
+
+def test_structured_usage_maps_the_cache_fields_by_name() -> None:
+    """`cache_creation_input_tokens` is a *write*, `cache_read_input_tokens` a read.
+
+    Swapping them is the mistake that makes the dashboard wrong by ~100x, and a
+    capture with all-zero caches could not catch it.
+    """
+    usage = _complete(
+        _capture(
+            usage={
+                "input_tokens": 11,
+                "output_tokens": 22,
+                "cache_read_input_tokens": 33,
+                "cache_creation_input_tokens": 44,
+                "cache_creation": {
+                    "ephemeral_5m_input_tokens": 4,
+                    "ephemeral_1h_input_tokens": 40,
+                },
+            }
+        )
+    ).usage
+    assert usage is not None
+    assert usage.cache_read_tokens == 33
+    assert usage.cache_write_tokens == 44
+    assert usage.cache_write_5m_tokens == 4
+    assert usage.cache_write_1h_tokens == 40
+    assert usage.total_tokens == 110
+
+
+def test_structured_zero_usage_is_reconstructed_from_model_usage() -> None:
+    """The same recovery the stream path uses, not a second accounting.
+
+    A structured call is its own process, so the cumulative baseline is zero and
+    the delta is the whole call.
+    """
+    stats = ParseStats()
+    result = structured_result(
+        _structured_request(),
+        _capture(
+            usage={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+            }
+        ),
+        0,
+        stats,
+    )
+    usage = result.usage
+    assert usage is not None
+    assert usage.source == "reconstructed"
+    # The undated alias is the conversation; the dated key is the side channel.
+    assert (usage.input_tokens, usage.output_tokens) == (906, 206)
+    assert stats.zero_usage_turns == 1
+
+
+def test_structured_model_falls_back_when_model_usage_is_absent() -> None:
+    result = _complete(_capture(modelUsage={}))
+    assert result.model == "claude-haiku-4-5"
+
+
+def test_structured_nonzero_exit_is_a_harness_error() -> None:
+    with pytest.raises(HarnessError, match="exited 1"):
+        _complete(CAPTURED_STRUCTURED_RESULT, exit_code=1)
+
+
+def test_structured_missing_structured_output_is_a_harness_error() -> None:
+    payload = json.loads(CAPTURED_STRUCTURED_RESULT)
+    del payload["structured_output"]
+    with pytest.raises(HarnessError, match="no `structured_output` object"):
+        _complete(json.dumps(payload))
+
+
+def test_structured_malformed_output_is_a_harness_error() -> None:
+    with pytest.raises(HarnessError, match="unparseable output"):
+        _complete("claude: command not found\n")
+    with pytest.raises(HarnessError, match="expected a JSON object"):
+        _complete("[]")
+
+
+def test_structured_empty_output_is_unparseable_not_a_reported_failure() -> None:
+    """A CLI that printed nothing did not *report* anything either.
+
+    Both spellings raise, so only the message distinguishes them — and "the
+    harness reported failure" would send someone reading it to the wrong place.
+    """
+    with pytest.raises(HarnessError, match="unparseable output"):
+        _complete("")
+
+
+def test_structured_reported_failure_is_a_harness_error() -> None:
+    with pytest.raises(HarnessError, match="reported failure"):
+        _complete(_capture(is_error=True, subtype="error_during_execution"))
+
+
+def test_structured_errors_never_quote_the_prompt_or_the_answer() -> None:
+    """conventions §6: an error message is not a place for untrusted content."""
+    secret = "swordfish-" + "x" * 8
+    for stdout, exit_code in (
+        (secret, 0),
+        (_capture(result=secret, structured_output=None), 0),
+        (_capture(), 1),
+    ):
+        with pytest.raises(HarnessError) as raised:
+            _complete(stdout, exit_code=exit_code, prompt=secret)
+        assert secret not in str(raised.value)
+
+
+async def test_structured_sends_the_prompt_on_stdin_and_cleans_up(
+    tmp_path: Path,
+) -> None:
+    record = tmp_path / "probe.json"
+    request = _structured_request(
+        system="Answer in lowercase.",
+        launcher=fake_cli(stdout=CAPTURED_STRUCTURED_RESULT, record=record),
+    )
+    adapter = ClaudeCodeAdapter()
+    result = await adapter.complete_structured(request)
+    probe = read_probe(record)
+
+    assert result.data == {"color": "red", "hex": "#FF0000"}
+    assert probe.argv[0] == CLI_COMMAND
+    assert probe.stdin == STRUCTURED_PROMPT
+    assert STRUCTURED_PROMPT not in probe.argv
+    assert probe.file_content("--system-prompt-file") == "Answer in lowercase."
+    # The system prompt existed for exactly as long as the process did.
+    assert not probe.path_of("--system-prompt-file").exists()
+    assert adapter.stats.unhandled == 0
+
+
+async def test_structured_reports_a_dead_cli_rather_than_a_half_result(
+    tmp_path: Path,
+) -> None:
+    request = _structured_request(
+        launcher=fake_cli(stdout="", stderr="boom", exit_code=3),
+    )
+    with pytest.raises(HarnessError, match="exited 3"):
+        await ClaudeCodeAdapter().complete_structured(request)
+
+
+@pytest.mark.harness
+async def test_real_claude_answers_a_schema() -> None:
+    """One live turn on the cheapest model. Paid, so it is gated twice."""
+    if not os.environ.get("AGENTHUB_RUN_LIVE_HARNESS"):
+        pytest.skip("set AGENTHUB_RUN_LIVE_HARNESS=1 to spend a real Claude turn")
+    if shutil.which(CLI_COMMAND) is None:
+        pytest.skip(f"{CLI_COMMAND} is not installed")
+
+    adapter = ClaudeCodeAdapter()
+    result = await adapter.complete_structured(
+        StructuredRequest(
+            prompt=STRUCTURED_PROMPT,
+            schema=STRUCTURED_SCHEMA,
+            model="claude-haiku-4-5",
+            system="Answer with the color red.",
+        )
+    )
+    assert set(result.data) == {"color", "hex"}
+    assert isinstance(result.data["hex"], str)
+    assert result.usage is not None
+    assert result.usage.total_tokens > 0
+    assert result.usage.input_tokens > 0
+    assert result.usage.output_tokens > 0
+    assert result.model.startswith("claude-haiku-4-5")
+
+
+@pytest.mark.harness
+def test_structured_flag_still_exists_in_the_installed_cli() -> None:
+    """Cheap and unpaid: `--json-schema` disappearing is the silent breakage."""
+    if shutil.which(CLI_COMMAND) is None:
+        pytest.skip(f"{CLI_COMMAND} is not installed")
+    output = subprocess.run(
+        [CLI_COMMAND, "--help"], capture_output=True, text=True, timeout=60
+    ).stdout
+    assert "--json-schema" in output
+    assert "--system-prompt-file" in output or "--system-prompt[-file]" in output
+    assert STRUCTURED_TESTED_CLI_VERSION.startswith("2.1.")

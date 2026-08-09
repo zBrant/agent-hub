@@ -21,7 +21,7 @@ import os
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar, cast
 from unittest import mock
 
 import httpx
@@ -34,14 +34,22 @@ from app.models.pricing import PriceTable, TokenCounts, load_price_table
 from app.models.status import NodeStatus, SessionStatus
 from app.orchestrator.graph import Dag, DagErrorKind, InvalidDag
 from app.orchestrator.planner import (
+    ApiPlanBackend,
+    HarnessPlanBackend,
+    PlanBackendUnavailable,
     PlanFailure,
     PlanFailureKind,
     PlannedActivity,
     Planner,
     PlanProposal,
     PlanResponse,
+    PlanTurn,
+    UnavailablePlanBackend,
+    _flatten_schema,
+    _strict_schema,
     compose_prompt,
     correction_prompt,
+    create_backend,
     create_planner,
     harness_catalog,
     objective_prompt,
@@ -251,7 +259,7 @@ def make_planner(
         max_retries=0,
     )
     return Planner(
-        client=client,
+        backend=ApiPlanBackend(client=client, settings=settings),
         settings=settings,
         prices=prices,
         catalog=CATALOG if catalog is None else catalog,
@@ -680,16 +688,23 @@ async def test_an_unrelated_type_error_still_propagates(
     module, and reporting it as "no credential" would send the operator to look
     for a key that is already there.
     """
-    planner = make_planner(FakeApi([Reply(body(recorded_plan()))]), settings, prices)
+    api = FakeApi([Reply(body(recorded_plan()))])
+    client = AsyncAnthropic(
+        api_key=CANARY_KEY,
+        base_url="https://api.anthropic.invalid",
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(api.handler)),
+        max_retries=0,
+    )
+    backend = ApiPlanBackend(client=client, settings=settings)
 
-    async def boom(_messages: object) -> object:
+    async def boom(**_kwargs: object) -> object:
         raise TypeError("parse() got an unexpected keyword argument")
 
     with (
-        mock.patch.object(planner, "_request", boom),
+        mock.patch.object(client.messages, "parse", boom),
         pytest.raises(TypeError, match="unexpected keyword"),
     ):
-        await planner.propose(OBJECTIVE)
+        await backend.request([PlanTurn(role="user", text=OBJECTIVE)])
 
 
 async def test_an_empty_objective_is_programmer_error(
@@ -939,15 +954,82 @@ async def test_the_objective_is_never_logged_verbatim(
     assert "objective_sha" in rendered
 
 
-def test_create_planner_does_not_require_an_api_key(
+def test_the_api_backend_is_built_without_reading_the_key(
     monkeypatch: pytest.MonkeyPatch, settings: Settings, prices: PriceTable
 ) -> None:
     """A bare client resolves the key, the auth token, or an `ant auth login`
     profile — reading the variable here would break the third."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
-    planner = create_planner(settings, prices)
+    planner = create_planner(
+        settings.model_copy(update={"planner_backend": "api"}), prices
+    )
     assert set(planner.catalog) == {"claude-code", "codex"}
+
+
+def test_the_harness_backend_is_the_default_and_needs_no_credential(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, prices: PriceTable
+) -> None:
+    """`design.md` §8: the default backend has to work on a subscription.
+
+    A Max/Pro plan is not API access, so an `api` default means the Sessions
+    tab is dead on a fresh machine until somebody buys credit. This is the test
+    that fails if the default is ever flipped back.
+    """
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    assert settings.planner_backend == "harness"
+
+    backend = create_backend(settings)
+
+    # Not merely "it built something": `create_backend` degrades to
+    # `UnavailablePlanBackend` rather than raising, so asserting on the catalog
+    # alone would pass with a planner that answers 503 to everything.
+    assert isinstance(backend, HarnessPlanBackend)
+    assert set(create_planner(settings, prices).catalog) == {"claude-code", "codex"}
+
+
+async def test_an_unbuildable_backend_degrades_instead_of_taking_the_server_down(
+    settings: Settings, prices: PriceTable
+) -> None:
+    """The planner is one feature of five, and must not gate the other four.
+
+    Refusing to boot over a misconfigured planner would take away the
+    scheduler, the dashboards and code search to punish one broken thing. So
+    the failure is deferred to whoever asks for a plan, and arrives as
+    `NOT_CONFIGURED` — a 503 naming the fix — rather than as a dead server.
+    """
+    broken = settings.model_copy(update={"planner_harness": "no-such-harness"})
+
+    backend = create_backend(broken)
+    assert isinstance(backend, UnavailablePlanBackend)
+
+    result = await Planner(
+        backend=backend, settings=broken, prices=prices, catalog=CATALOG
+    ).propose(OBJECTIVE)
+
+    assert isinstance(result, PlanFailure)
+    assert result.kind is PlanFailureKind.NOT_CONFIGURED
+    assert "no-such-harness" in result.message
+    assert result.usage.requests == 0
+
+
+def test_a_harness_without_structured_output_is_refused_at_construction(
+    settings: Settings,
+) -> None:
+    """A misconfiguration fails where it is configured, not on first use.
+
+    Deferring it to the first objective would report "the planner is not
+    configured" to whoever typed the goal, hours after the person who chose the
+    harness had gone.
+    """
+
+    class Mute:
+        name = "mute"
+        supported_models: ClassVar[list[str]] = []
+
+    with pytest.raises(PlanBackendUnavailable, match="cannot return schema-validated"):
+        HarnessPlanBackend(adapter=cast(Any, Mute()), settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -980,3 +1062,59 @@ async def test_live_plan(tmp_path: Path, prices: PriceTable) -> None:
     assert isinstance(result, PlanProposal), getattr(result, "message", result)
     assert result.nodes
     assert isinstance(validate_plan(result.nodes), Dag)
+
+
+def test_the_schema_handed_to_an_adapter_is_strict_and_resolved() -> None:
+    """`StructuredRequest`'s contract, checked at the only place that builds one.
+
+    Codex rejects a schema whose objects omit `additionalProperties: false`
+    (`invalid_json_schema`, exit 1) and Claude Code accepts it, so a planner
+    tested only against Claude would ship broken on Codex. Resolution matters
+    for the same reason: Pydantic emits `$defs`/`$ref` and the CLIs disagree
+    about them.
+    """
+    schema = _strict_schema(_flatten_schema(PlanResponse.model_json_schema()))
+    rendered = json.dumps(schema)
+
+    assert "$ref" not in rendered
+    assert "$defs" not in rendered
+
+    objects = 0
+
+    def check(node: object) -> None:
+        nonlocal objects
+        if isinstance(node, list):
+            for item in node:
+                check(item)
+            return
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "object":
+            objects += 1
+            assert node.get("additionalProperties") is False, node.get("title")
+            assert set(node.get("required", [])) >= set(node.get("properties", {}))
+        for value in node.values():
+            check(value)
+
+    check(schema)
+    # The plan is a root object plus the activity items; if this stops being
+    # true the walk above may be checking nothing.
+    assert objects == 2
+
+
+def test_an_optional_field_is_refused_rather_than_silently_made_required() -> None:
+    """Filling in `required` would change the question, so it is only checked.
+
+    Promoting an optional field to mandatory to satisfy Codex would quietly
+    ask the model for something the schema's author said was optional. Raising
+    here surfaces it at construction, where `create_backend` turns it into a
+    logged startup error and a 503, instead of as a Codex 400 on somebody's
+    first objective.
+    """
+    loose = {
+        "type": "object",
+        "properties": {"title": {"type": "string"}, "note": {"type": "string"}},
+        "required": ["title"],
+    }
+    with pytest.raises(ValueError, match=r"not strict.*'note'"):
+        _strict_schema(loose)
