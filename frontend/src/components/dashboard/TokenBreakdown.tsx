@@ -19,21 +19,28 @@ const categories = [
 
 export function TokenBreakdown({ title, rows }: Props) {
   return (
-    <section className="rounded-lg border border-border bg-surface p-3">
-      <h2 className="mb-3 font-semibold text-ui">{title}</h2>
+    <section className="min-w-0 p-3.5">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <h3 className="font-medium text-meta text-fg-muted">{title}</h3>
+        <span className="font-mono text-badge text-fg-subtle">
+          {rows.length} {rows.length === 1 ? "source" : "sources"}
+        </span>
+      </div>
       {rows.length ? (
-        <div className="grid gap-4">
+        <div className="divide-y divide-border">
           {rows.map((row) => (
-            <div key={row.key}>
-              <div className="mb-1.5 flex items-center justify-between gap-3">
-                <span className="truncate text-ui">{row.key}</span>
+            <div className="py-3 first:pt-0 last:pb-0" key={row.key}>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <span className="truncate font-mono text-code text-fg">
+                  {row.key}
+                </span>
                 <span className="font-mono text-code text-fg-muted">
                   {compact.format(row.tokens.total_tokens)}
                 </span>
               </div>
               <div
                 aria-label={`${row.key} token mix`}
-                className="flex h-2 overflow-hidden rounded-sm bg-inset"
+                className="flex h-1.5 overflow-hidden bg-inset"
                 role="img"
               >
                 {categories.map(([label, key, color]) => {
@@ -48,10 +55,10 @@ export function TokenBreakdown({ title, rows }: Props) {
                   ) : null;
                 })}
               </div>
-              <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+              <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
                 {categories.map(([label, key, color]) => (
                   <div className="flex min-w-0 items-center gap-1.5" key={key}>
-                    <span className={`size-1.5 shrink-0 rounded-xs ${color}`} />
+                    <span className={`size-1.5 shrink-0 ${color}`} />
                     <dt className="truncate text-badge text-fg-subtle">
                       {label}
                     </dt>
@@ -65,7 +72,9 @@ export function TokenBreakdown({ title, rows }: Props) {
           ))}
         </div>
       ) : (
-        <p className="text-meta text-fg-subtle">No usage in this period.</p>
+        <p className="py-2 text-meta text-fg-subtle">
+          No usage in this period.
+        </p>
       )}
     </section>
   );

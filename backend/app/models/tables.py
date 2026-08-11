@@ -194,6 +194,10 @@ class Session(SQLModel, table=True):
     # authored — agenthub/<session_id>/integration. Also derivable from the id,
     # but a stored ref is the historical truth if the naming scheme ever moves.
     integration_branch: str
+    # authored — the durable branch requested by the operator. It is created
+    # only when a successful session is finalized; integration_branch remains
+    # private and temporary while nodes are running.
+    final_branch: str
     # authored — invariant 6: nothing merges without a human while this is off.
     auto_merge: bool = Field(default=False)
     # derived — a projection of the node states below it.
@@ -202,6 +206,55 @@ class Session(SQLModel, table=True):
         sa_column=_status("status", SessionStatus),
     )
     created_ms: int
+    updated_ms: int
+
+
+class AiPreference(SQLModel, table=True):
+    """The operator-authored global defaults for AI-backed features.
+
+    This singleton is not a run projection and therefore has no NDJSON source:
+    like a session objective, it is authored configuration that must survive a
+    process restart. Credentials are deliberately absent; API and CLI
+    authentication remain owned by their existing external mechanisms.
+    """
+
+    __tablename__ = "ai_preference"
+    __table_args__ = (
+        sa.CheckConstraint("id = 1", name="ai_preference_singleton"),
+        sa.CheckConstraint(
+            "planner_backend IN ('api', 'harness')",
+            name="ai_preference_planner_backend",
+        ),
+        sa.CheckConstraint(
+            "search_backend IN ('api', 'harness')",
+            name="ai_preference_search_backend",
+        ),
+        sa.CheckConstraint(
+            "planner_effort IN ('low', 'medium', 'high', 'xhigh', 'max')",
+            name="ai_preference_planner_effort",
+        ),
+        sa.CheckConstraint(
+            "(planner_backend = 'api' AND planner_harness IS NULL "
+            "AND planner_model IS NOT NULL) OR "
+            "(planner_backend = 'harness' AND planner_harness IS NOT NULL)",
+            name="ai_preference_planner_shape",
+        ),
+        sa.CheckConstraint(
+            "(search_backend = 'api' AND search_harness IS NULL "
+            "AND search_model IS NOT NULL) OR "
+            "(search_backend = 'harness' AND search_harness IS NOT NULL)",
+            name="ai_preference_search_shape",
+        ),
+    )
+
+    id: int = Field(default=1, primary_key=True)
+    planner_backend: str
+    planner_harness: str | None = Field(default=None)
+    planner_model: str | None = Field(default=None)
+    search_backend: str
+    search_harness: str | None = Field(default=None)
+    search_model: str | None = Field(default=None)
+    planner_effort: str
     updated_ms: int
 
 

@@ -29,6 +29,7 @@ from app.storage.db import (
 )
 
 EXPECTED_TABLES = {
+    "ai_preference",
     "session",
     "node",
     "node_dependency",
@@ -240,6 +241,9 @@ def test_a_populated_phase_1_database_migrates_forward(settings: Settings) -> No
     # And nothing above or below the node moved.
     assert rows(settings.database_url, "SELECT id, title, status FROM session") == [
         ("sess_1", "add a docstring", "running")
+    ]
+    assert rows(settings.database_url, "SELECT final_branch FROM session") == [
+        ("agenthub/sess_1/result",)
     ]
     assert rows(
         settings.database_url, "SELECT id, attempt, status, event_count FROM run"

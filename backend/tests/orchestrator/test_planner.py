@@ -1270,6 +1270,34 @@ async def test_an_api_choice_builds_a_temporary_backend_and_closes_it(
     assert result.usage.is_spend is True
 
 
+async def test_an_api_choice_can_override_the_persisted_effort(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, prices: PriceTable
+) -> None:
+    api = FakeApi([Reply(body(recorded_plan()))])
+    http = httpx.AsyncClient(transport=httpx.MockTransport(api.handler))
+    client = AsyncAnthropic(
+        api_key=CANARY_KEY,
+        base_url="https://api.anthropic.invalid",
+        http_client=http,
+        max_retries=0,
+    )
+    monkeypatch.setattr("app.orchestrator.planner.AsyncAnthropic", lambda: client)
+    planner = Planner(
+        backend=cast(Any, SpyBackend()),
+        settings=settings,
+        prices=prices,
+        catalog=CATALOG,
+    )
+
+    result = await planner.propose(
+        OBJECTIVE,
+        choice=PlannerChoice(backend="api", effort="max"),
+    )
+
+    assert isinstance(result, PlanProposal)
+    assert api.requests[0]["output_config"]["effort"] == "max"
+
+
 async def test_a_harness_choice_runs_that_adapter_and_is_not_spend(
     registry: None, settings: Settings, prices: PriceTable
 ) -> None:

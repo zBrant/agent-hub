@@ -625,7 +625,13 @@ class GraphCreator(Protocol):
     ``node_dependency`` to grow here.
     """
 
-    async def validate_repo(self, repo_path: Path, *, base_ref: str = ...) -> Path: ...
+    async def validate_repo(
+        self,
+        repo_path: Path,
+        *,
+        base_ref: str = ...,
+        final_branch: str | None = ...,
+    ) -> Path: ...
 
     async def create_graph(
         self,
@@ -635,6 +641,7 @@ class GraphCreator(Protocol):
         title: str | None = ...,
         auto_merge: bool = ...,
         base_ref: str = ...,
+        final_branch: str | None = ...,
     ) -> CreatedGraph: ...
 
 
@@ -1052,7 +1059,7 @@ class PlannerChoiceError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class PlannerChoice:
-    """One plan's backend, harness and model. Every field optional.
+    """One plan's backend, harness, model and API effort. Every field optional.
 
     An absent field falls back to ``Settings``, so a caller that only wants a
     cheaper model for one plan does not have to restate the backend it is
@@ -1062,6 +1069,7 @@ class PlannerChoice:
     backend: PlannerBackendName | None = None
     harness: str | None = None
     model: str | None = None
+    effort: PlannerEffort | None = None
 
     def is_empty(self) -> bool:
         """True when this asks for nothing ``Settings`` does not already say.
@@ -1071,7 +1079,12 @@ class PlannerChoice:
         close it would open and drop an HTTP client per plan for no difference
         in behaviour.
         """
-        return self.backend is None and self.harness is None and self.model is None
+        return (
+            self.backend is None
+            and self.harness is None
+            and self.model is None
+            and self.effort is None
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1224,13 +1237,18 @@ class Planner:
     def catalog(self) -> Mapping[str, Sequence[str]]:
         return self._catalog
 
-    def options(self) -> PlannerOptions:
+    def options(self, choice: PlannerChoice | None = None) -> PlannerOptions:
         """What a plan may choose, and what choosing nothing gets.
 
         Read from the planner's own settings, so what this advertises is what
         :meth:`propose` will actually resolve.
         """
-        return planner_options(self._settings)
+        settings = (
+            self._settings
+            if choice is None or choice.is_empty()
+            else _resolve_choice(self._settings, choice)
+        )
+        return planner_options(settings)
 
     async def close(self) -> None:
         """Release whatever the backend owns, on behalf of the composition root."""
@@ -1464,6 +1482,7 @@ class Planner:
         choice: PlannerChoice | None = None,
         auto_merge: bool = False,
         base_ref: str = "HEAD",
+        final_branch: str | None = None,
     ) -> PlanResult:
         """:meth:`propose`, then persist the proposal ``pending``.
 
@@ -1483,7 +1502,11 @@ class Planner:
         :class:`PlannerChoiceError` before anything is asked of a model. A
         rejected choice therefore also writes nothing.
         """
-        await creator.validate_repo(repo_path, base_ref=base_ref)
+        await creator.validate_repo(
+            repo_path,
+            base_ref=base_ref,
+            final_branch=final_branch,
+        )
         result = await self.propose(objective, context=context, choice=choice)
         if isinstance(result, PlanFailure):
             return result
@@ -1493,6 +1516,7 @@ class Planner:
             title=result.title,
             auto_merge=auto_merge,
             base_ref=base_ref,
+            final_branch=final_branch,
         )
         return replace(result, graph=graph)
 
@@ -1553,6 +1577,8 @@ def _resolve_choice(settings: Settings, choice: PlannerChoice) -> Settings:
         )
 
     update: dict[str, object] = {"planner_backend": backend}
+    if choice.effort is not None:
+        update["planner_effort"] = choice.effort
     if backend == "api":
         if choice.harness is not None:
             raise PlannerChoiceError(

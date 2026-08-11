@@ -235,15 +235,18 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
-    readonly "/api/search/references": {
+    readonly "/api/search/projects": {
         readonly parameters: {
             readonly query?: never;
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
         };
-        /** Find References */
-        readonly get: operations["find_references_api_search_references_get"];
+        /**
+         * List Projects
+         * @description Discover known repositories and their local branches.
+         */
+        readonly get: operations["list_projects_api_search_projects_get"];
         readonly put?: never;
         readonly post?: never;
         readonly delete?: never;
@@ -261,23 +264,6 @@ export interface paths {
         };
         /** Search Structural */
         readonly get: operations["search_structural_api_search_structural_get"];
-        readonly put?: never;
-        readonly post?: never;
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
-    readonly "/api/search/symbols": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        /** Find Symbol */
-        readonly get: operations["find_symbol_api_search_symbols_get"];
         readonly put?: never;
         readonly post?: never;
         readonly delete?: never;
@@ -737,6 +723,24 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/api/settings/ai": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get Ai Settings */
+        readonly get: operations["get_ai_settings_api_settings_ai_get"];
+        /** Put Ai Settings */
+        readonly put: operations["put_ai_settings_api_settings_ai_put"];
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/health": {
         readonly parameters: {
             readonly query?: never;
@@ -844,10 +848,12 @@ export interface components {
         };
         /** AgentSearchRequest */
         readonly AgentSearchRequest: {
+            /** Branch */
+            readonly branch: string;
+            /** Project Id */
+            readonly project_id: string;
             /** Question */
             readonly question: string;
-            /** Session Id */
-            readonly session_id: string;
         };
         /** AgentSearchResponse */
         readonly AgentSearchResponse: {
@@ -890,6 +896,50 @@ export interface components {
             /** Total Tokens */
             readonly total_tokens: number;
         };
+        /** AiOptionResponse */
+        readonly AiOptionResponse: {
+            readonly backend: components["schemas"]["PlannerBackendName"];
+            /** Harness */
+            readonly harness: string | null;
+            /** Is Spend */
+            readonly is_spend: boolean;
+            /** Models */
+            readonly models: readonly string[];
+            /** Supports Effort */
+            readonly supports_effort: boolean;
+        };
+        /** AiRuntimeSelectionRequest */
+        readonly AiRuntimeSelectionRequest: {
+            readonly backend: components["schemas"]["PlannerBackendName"];
+            /** Harness */
+            readonly harness: string | null;
+            /** Model */
+            readonly model: string | null;
+        };
+        /** AiRuntimeSelectionResponse */
+        readonly AiRuntimeSelectionResponse: {
+            readonly backend: components["schemas"]["PlannerBackendName"];
+            /** Harness */
+            readonly harness: string | null;
+            /** Model */
+            readonly model: string | null;
+        };
+        /** AiSettingsRequest */
+        readonly AiSettingsRequest: {
+            readonly planner: components["schemas"]["AiRuntimeSelectionRequest"];
+            readonly planner_effort: components["schemas"]["PlannerEffort"];
+            readonly search: components["schemas"]["AiRuntimeSelectionRequest"];
+        };
+        /** AiSettingsResponse */
+        readonly AiSettingsResponse: {
+            readonly planner: components["schemas"]["AiRuntimeSelectionResponse"];
+            readonly planner_effort: components["schemas"]["PlannerEffort"];
+            /** Planner Options */
+            readonly planner_options: readonly components["schemas"]["AiOptionResponse"][];
+            readonly search: components["schemas"]["AiRuntimeSelectionResponse"];
+            /** Search Options */
+            readonly search_options: readonly components["schemas"]["AiOptionResponse"][];
+        };
         /**
          * CreateGraphRequest
          * @description A whole proposed graph, persisted in one call.
@@ -910,6 +960,8 @@ export interface components {
              * @default HEAD
              */
             readonly base_ref: string;
+            /** Final Branch */
+            readonly final_branch?: string | null;
             /** Nodes */
             readonly nodes: readonly components["schemas"]["PlannedNodeRequest"][];
             /**
@@ -1207,6 +1259,8 @@ export interface components {
             readonly base_ref: string;
             /** Context */
             readonly context?: string | null;
+            /** Final Branch */
+            readonly final_branch?: string | null;
             /** Objective */
             readonly objective: string;
             readonly planner?: components["schemas"]["PlannerChoiceRequest"] | null;
@@ -1326,6 +1380,8 @@ export interface components {
             /** Selectable */
             readonly selectable: boolean;
         };
+        /** @enum {string} */
+        readonly PlannerEffort: "low" | "medium" | "high" | "xhigh" | "max";
         /**
          * PlannerOptionResponse
          * @description One selectable planner backend, and what choosing it means.
@@ -1513,12 +1569,39 @@ export interface components {
             /** Trusted */
             readonly trusted: boolean;
         };
+        /** SearchBranchResponse */
+        readonly SearchBranchResponse: {
+            /** Commit */
+            readonly commit: string;
+            /** Is Head */
+            readonly is_head: boolean;
+            /** Name */
+            readonly name: string;
+        };
+        /** SearchProjectResponse */
+        readonly SearchProjectResponse: {
+            /** Branches */
+            readonly branches: readonly components["schemas"]["SearchBranchResponse"][];
+            /** Id */
+            readonly id: string;
+            /** Name */
+            readonly name: string;
+            /** Repo Path */
+            readonly repo_path: string;
+        };
+        /** SearchProjectsResponse */
+        readonly SearchProjectsResponse: {
+            /** Projects */
+            readonly projects: readonly components["schemas"]["SearchProjectResponse"][];
+        };
         /** SessionResponse */
         readonly SessionResponse: {
             /** Auto Merge */
             readonly auto_merge: boolean;
             /** Created Ms */
             readonly created_ms: number;
+            /** Final Branch */
+            readonly final_branch: string;
             /** Id */
             readonly id: string;
             /** Integration Branch */
@@ -1545,34 +1628,6 @@ export interface components {
          * @enum {string}
          */
         readonly SessionStatus: "planning" | "running" | "paused" | "done" | "failed";
-        /** SymbolMatchResponse */
-        readonly SymbolMatchResponse: {
-            /** Column */
-            readonly column: number;
-            /** End Column */
-            readonly end_column: number;
-            /** End Line */
-            readonly end_line: number;
-            /** Kind */
-            readonly kind: string;
-            /** Language */
-            readonly language: string;
-            /** Line */
-            readonly line: number;
-            /** Name */
-            readonly name: string;
-            /** Path */
-            readonly path: string;
-            /** Role */
-            readonly role: string;
-        };
-        /** SymbolSearchResponse */
-        readonly SymbolSearchResponse: {
-            /** Matches */
-            readonly matches: readonly components["schemas"]["SymbolMatchResponse"][];
-            /** Truncated */
-            readonly truncated: boolean;
-        };
         /** SystemSnapshotResponse */
         readonly SystemSnapshotResponse: {
             /** Cpu Per Core */
@@ -1984,7 +2039,8 @@ export interface operations {
     readonly list_directory_api_search_directory_get: {
         readonly parameters: {
             readonly query: {
-                readonly session_id: string;
+                readonly project_id: string;
+                readonly branch: string;
                 readonly path?: string;
                 readonly limit?: number;
             };
@@ -2017,7 +2073,8 @@ export interface operations {
     readonly read_file_api_search_file_get: {
         readonly parameters: {
             readonly query: {
-                readonly session_id: string;
+                readonly project_id: string;
+                readonly branch: string;
                 readonly path: string;
                 readonly start_line?: number;
                 readonly end_line?: number | null;
@@ -2048,13 +2105,9 @@ export interface operations {
             };
         };
     };
-    readonly find_references_api_search_references_get: {
+    readonly list_projects_api_search_projects_get: {
         readonly parameters: {
-            readonly query: {
-                readonly session_id: string;
-                readonly name: string;
-                readonly limit?: number;
-            };
+            readonly query?: never;
             readonly header?: never;
             readonly path?: never;
             readonly cookie?: never;
@@ -2067,16 +2120,7 @@ export interface operations {
                     readonly [name: string]: unknown;
                 };
                 content: {
-                    readonly "application/json": components["schemas"]["SymbolSearchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            readonly 422: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                    readonly "application/json": components["schemas"]["SearchProjectsResponse"];
                 };
             };
         };
@@ -2084,7 +2128,8 @@ export interface operations {
     readonly search_structural_api_search_structural_get: {
         readonly parameters: {
             readonly query: {
-                readonly session_id: string;
+                readonly project_id: string;
+                readonly branch: string;
                 readonly pattern: string;
                 readonly language: string;
                 readonly limit?: number;
@@ -2115,44 +2160,11 @@ export interface operations {
             };
         };
     };
-    readonly find_symbol_api_search_symbols_get: {
-        readonly parameters: {
-            readonly query: {
-                readonly session_id: string;
-                readonly name: string;
-                readonly kind?: string | null;
-                readonly limit?: number;
-            };
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody?: never;
-        readonly responses: {
-            /** @description Successful Response */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["SymbolSearchResponse"];
-                };
-            };
-            /** @description Validation Error */
-            readonly 422: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     readonly search_text_api_search_text_get: {
         readonly parameters: {
             readonly query: {
-                readonly session_id: string;
+                readonly project_id: string;
+                readonly branch: string;
                 readonly pattern: string;
                 readonly glob?: string | null;
                 readonly case_sensitive?: boolean;
@@ -3150,6 +3162,59 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["RunSummaryResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_ai_settings_api_settings_ai_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AiSettingsResponse"];
+                };
+            };
+        };
+    };
+    readonly put_ai_settings_api_settings_ai_put: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody: {
+            readonly content: {
+                readonly "application/json": components["schemas"]["AiSettingsRequest"];
+            };
+        };
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["AiSettingsResponse"];
                 };
             };
             /** @description Validation Error */

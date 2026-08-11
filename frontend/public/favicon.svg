@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 32 32" width="32" height="32" fill="none">
   <title>AgentHub</title>
-  <rect width="32" height="32" rx="6" fill="#0B0C0E" />
-  <circle cx="16" cy="8" r="3" fill="#4C8DFF" />
-  <circle cx="9" cy="23" r="3" fill="#3DD68C" />
-  <circle cx="23" cy="23" r="3" fill="#38BDF8" />
-  <path d="M16 11v4M16 15l-6 5M16 15l6 5" stroke="#333941" stroke-width="1.75" stroke-linecap="round" />
+  <rect width="32" height="32" rx="4" fill="#0B0E0C" />
+  <rect x="1" y="1" width="30" height="30" rx="3" stroke="#363E37" />
+  <circle cx="16" cy="8" r="3" fill="#B7F36B" />
+  <circle cx="9" cy="23" r="3" fill="#63D69A" />
+  <circle cx="23" cy="23" r="3" fill="#5FCCE5" />
+  <path d="M16 11v4M16 15l-6 5M16 15l6 5" stroke="#69726B" stroke-width="1.75" stroke-linecap="round" />
 </svg>

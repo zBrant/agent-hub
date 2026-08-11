@@ -9,6 +9,8 @@ from contextlib import asynccontextmanager
 import structlog
 from fastapi import FastAPI
 
+from app.ai_runtime import create_runtime_search_agent
+from app.api.ai_settings import router as ai_settings_router
 from app.api.dashboard import router as dashboard_router
 from app.api.graph import router as graph_router
 from app.api.health import router as health_router
@@ -24,9 +26,8 @@ from app.models.tables import Node
 from app.orchestrator.planner import create_planner
 from app.orchestrator.scheduler import GraphScheduler
 from app.orchestrator.service import NodeRunService
-from app.search.agent import create_search_agent
-from app.search.semantic import SemanticIndexService
-from app.search.symbols import SymbolIndexManager, SymbolIndexService
+from app.preferences import AiSettingsService
+from app.search.agent import SearchAgent
 from app.search.tools import CodeSearchService
 from app.storage.db import Database, upgrade_database
 from app.ws.broker import EventBroker
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     broker = EventBroker()
     app.state.database = database
     app.state.broker = broker
+    app.state.ai_settings = AiSettingsService(database=database, settings=settings)
 
     async def publish_transition(node: Node) -> None:
         await broker.publish_node_status(
@@ -75,20 +77,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.dashboard = DashboardService(database)
     code_search = CodeSearchService(database)
     app.state.search = code_search
-    symbols = SymbolIndexService(database)
-    semantic = SemanticIndexService(database)
-    symbol_manager = SymbolIndexManager(database, symbols, secondary=semantic)
-    app.state.symbols = symbols
-    app.state.symbol_manager = symbol_manager
-    app.state.semantic = semantic
-    search_agent = create_search_agent(
-        tools=code_search,
-        symbols=symbols,
-        semantic=semantic,
-        settings=settings,
-        prices=prices,
-    )
-    app.state.search_agent = search_agent
+
+    async def search_agent_factory() -> SearchAgent:
+        preference = await app.state.ai_settings.get()
+        return create_runtime_search_agent(
+            selection=preference.search,
+            tools=code_search,
+            settings=settings,
+            prices=prices,
+        )
+
+    app.state.search_agent_factory = search_agent_factory
     minute_writer = SystemMinuteWriter(database)
 
     async def publish_system_snapshot(snapshot: SystemSnapshot) -> None:
@@ -105,12 +104,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.system_sampler = system_sampler
     app.state.system_minute_writer = minute_writer
     system_sampler.start()
-    symbol_manager.start()
     try:
         yield
     finally:
         await system_sampler.close()
-        await symbol_manager.close()
         try:
             await minute_writer.close()
         except Exception:
@@ -118,7 +115,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             # must not prevent scheduler/planner cleanup or database disposal.
             log.exception("metrics.minute_flush_failed")
         await scheduler.close()
-        await search_agent.close()
         await planner.close()
         await database.dispose()
 
@@ -131,6 +127,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = settings or get_settings()
     application.include_router(health_router)
+    application.include_router(ai_settings_router)
     application.include_router(dashboard_router)
     application.include_router(search_router)
     application.include_router(session_router)

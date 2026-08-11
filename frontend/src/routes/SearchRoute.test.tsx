@@ -11,34 +11,42 @@ import {
 import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentSearch, FileRead, Session } from "@/api/client";
+import type {
+  AgentSearch,
+  FileRead,
+  SearchBranch,
+  SearchProject,
+} from "@/api/client";
 import { SearchRoute } from "@/routes/SearchRoute";
 
 const harness = vi.hoisted(() => ({
-  listSessions: vi.fn(),
+  listSearchProjects: vi.fn(),
   answerSearchQuestion: vi.fn(),
   readSearchFile: vi.fn(),
 }));
 
 vi.mock("@/api/client", () => ({
   api: {
-    listSessions: harness.listSessions,
+    listSearchProjects: harness.listSearchProjects,
     answerSearchQuestion: harness.answerSearchQuestion,
     readSearchFile: harness.readSearchFile,
   },
 }));
 
-const session = {
-  id: "sess_search",
-  title: "Pricing rules",
+const project: SearchProject = {
+  id: "pricing",
+  name: "pricing",
   repo_path: "/repo/pricing",
-  workspace_root: "/workspace",
-  integration_branch: "agenthub/sess_search/integration",
-  auto_merge: false,
-  status: "paused",
-  created_ms: 1,
-  updated_ms: 1,
-} as Session;
+  branches: [branch("feature/pricing", false), branch("main", true)],
+};
+
+function branch(name: string, isHead = false): SearchBranch {
+  return {
+    name,
+    commit: "a".repeat(40),
+    is_head: isHead,
+  };
+}
 
 function answer(citations = true): AgentSearch {
   return {
@@ -126,7 +134,7 @@ describe("code search route", () => {
         disconnect() {}
       },
     });
-    harness.listSessions.mockResolvedValue([session]);
+    harness.listSearchProjects.mockResolvedValue({ projects: [project] });
     harness.answerSearchQuestion.mockResolvedValue(answer());
     harness.readSearchFile.mockResolvedValue(file);
   });
@@ -135,7 +143,9 @@ describe("code search route", () => {
 
   it("opens every claim citation at its exact file and line range", async () => {
     render(<SearchRoute />, { wrapper });
-    await screen.findByRole("option", { name: "Pricing rules" });
+    await screen.findByRole("option", {
+      name: "main — HEAD",
+    });
     await askQuestion();
 
     fireEvent.click(
@@ -145,7 +155,8 @@ describe("code search route", () => {
     expect(source.textContent).toContain("return 0.10");
 
     expect(harness.readSearchFile).toHaveBeenCalledWith(
-      "sess_search",
+      "pricing",
+      "main",
       "rules.py",
       { startLine: 2, endLine: 3 },
     );
@@ -159,7 +170,9 @@ describe("code search route", () => {
       content_hash: "changed-hash",
     });
     render(<SearchRoute />, { wrapper });
-    await screen.findByRole("option", { name: "Pricing rules" });
+    await screen.findByRole("option", {
+      name: "main — HEAD",
+    });
     await askQuestion();
     fireEvent.click(
       screen.getByRole("button", { name: "Open rules.py lines 2-3" }),
@@ -173,7 +186,9 @@ describe("code search route", () => {
   it("refuses to render a server claim without a linked citation", async () => {
     harness.answerSearchQuestion.mockResolvedValue(answer(false));
     render(<SearchRoute />, { wrapper });
-    await screen.findByRole("option", { name: "Pricing rules" });
+    await screen.findByRole("option", {
+      name: "main — HEAD",
+    });
 
     fireEvent.change(screen.getByLabelText("Repository question"), {
       target: { value: "Make an unsupported claim" },
@@ -190,5 +205,59 @@ describe("code search route", () => {
     expect(
       screen.queryByText("Recurring customers receive ten percent off."),
     ).toBeNull();
+  });
+
+  it("discovers projects and searches the selected branch", async () => {
+    const pricingProject: SearchProject = {
+      ...project,
+      branches: [
+        branch("feature/pricing"),
+        branch("experiment"),
+        branch("main", true),
+      ],
+    };
+    const billingProject: SearchProject = {
+      id: "billing",
+      name: "billing",
+      repo_path: "/repo/billing",
+      branches: [branch("release"), branch("main", true)],
+    };
+    harness.listSearchProjects.mockResolvedValue({
+      projects: [pricingProject, billingProject],
+    });
+
+    render(<SearchRoute />, { wrapper });
+
+    const projectSelect = await screen.findByLabelText("Project");
+    const branchSelect = screen.getByLabelText("Branch");
+    await waitFor(() =>
+      expect(projectSelect.querySelectorAll("option")).toHaveLength(2),
+    );
+    await waitFor(() =>
+      expect(branchSelect.querySelectorAll("option")).toHaveLength(3),
+    );
+    fireEvent.change(projectSelect, { target: { value: "billing" } });
+    await waitFor(() =>
+      expect((branchSelect as HTMLSelectElement).value).toBe("main"),
+    );
+    expect(branchSelect.querySelectorAll("option")).toHaveLength(2);
+
+    fireEvent.change(projectSelect, { target: { value: "pricing" } });
+    await waitFor(() =>
+      expect((branchSelect as HTMLSelectElement).value).toBe("main"),
+    );
+    fireEvent.change(branchSelect, {
+      target: { value: "experiment" },
+    });
+    await waitFor(() =>
+      expect((branchSelect as HTMLSelectElement).value).toBe("experiment"),
+    );
+    await askQuestion();
+
+    expect(harness.answerSearchQuestion).toHaveBeenCalledWith(
+      "pricing",
+      "experiment",
+      "What is the recurring discount?",
+    );
   });
 });

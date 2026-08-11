@@ -80,6 +80,13 @@ export function GraphWorkspace({
   const complete =
     graph.nodes.length > 0 &&
     graph.nodes.every((node) => ["done", "skipped"].includes(node.status));
+  const runningCount = graph.nodes.filter(
+    (node) => node.status === "running",
+  ).length;
+  const reviewCount = graph.nodes.filter(
+    (node) => node.status === "awaiting_review",
+  ).length;
+  const doneCount = graph.nodes.filter((node) => node.status === "done").length;
 
   async function perform(action: () => Promise<void>) {
     setBusy(true);
@@ -132,62 +139,99 @@ export function GraphWorkspace({
 
   return (
     <div className="flex min-h-full flex-col bg-bg">
-      <header className="flex min-h-11 items-center gap-3 border-border border-b bg-surface px-4 py-2">
-        <Link
-          aria-label="All sessions"
-          className="text-fg-muted hover:text-fg"
-          to="/sessions"
-        >
-          <ArrowLeft className="size-4" />
-        </Link>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h1 className="truncate font-semibold text-title">
-              {graph.session.title}
-            </h1>
-            <span className="rounded-sm border border-border bg-elevated px-1.5 py-0.5 text-badge text-fg-muted">
-              {graph.nodes.length} nodes · {graph.edges.length} dependencies
-            </span>
-          </div>
-          <p className="text-meta text-fg-muted">
-            {editable
-              ? "Editable proposal — execution remains locked until approval."
-              : "Approved graph — proposal editing is locked."}
-          </p>
-        </div>
-        {!validation.valid ? (
-          <span className="inline-flex items-center gap-1 text-meta text-failed">
-            <AlertTriangle className="size-3" /> Invalid graph
-          </span>
-        ) : (
-          <span className="inline-flex items-center gap-1 text-meta text-done">
-            <Check className="size-3" /> Valid DAG
-          </span>
-        )}
-        <Button
-          disabled={!editable || !validation.valid || busy}
-          onClick={() => void perform(onApprove)}
-          size="sm"
-        >
-          {busy ? (
-            <Loader className="animate-spin" data-motion="essential" />
-          ) : (
-            <Check />
-          )}
-          Approve graph
-        </Button>
-        {complete ? (
-          <Button
-            onClick={() => {
-              setSelectedNodeId(null);
-              setShowResult(true);
-            }}
-            size="sm"
-            variant="secondary"
+      <header className="border-border border-b bg-surface">
+        <div className="flex min-h-14 items-center gap-3 px-4 py-2">
+          <Link
+            aria-label="All sessions"
+            className="flex size-7 items-center justify-center border border-border bg-inset text-fg-muted hover:text-fg"
+            to="/sessions"
           >
-            <FileCode2 /> View generated code
+            <ArrowLeft className="size-4" />
+          </Link>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h1 className="truncate font-semibold text-title">
+                {graph.session.title}
+              </h1>
+              <span className="hidden font-mono text-badge text-fg-subtle sm:inline">
+                {graph.session.id}
+              </span>
+            </div>
+            <p className="text-meta text-fg-muted">
+              {editable
+                ? "Proposal workspace · execution locked"
+                : "Execution workspace · proposal locked"}
+            </p>
+          </div>
+          {!validation.valid ? (
+            <span className="inline-flex items-center gap-1 text-meta text-failed">
+              <AlertTriangle className="size-3" /> Invalid graph
+            </span>
+          ) : (
+            <span className="hidden items-center gap-1 text-meta text-done sm:inline-flex">
+              <Check className="size-3" /> Valid DAG
+            </span>
+          )}
+          <Button
+            disabled={!editable || !validation.valid || busy}
+            onClick={() => void perform(onApprove)}
+            size="sm"
+          >
+            {busy ? (
+              <Loader className="animate-spin" data-motion="essential" />
+            ) : (
+              <Check />
+            )}
+            Approve graph
           </Button>
-        ) : null}
+          {complete ? (
+            <Button
+              onClick={() => {
+                setSelectedNodeId(null);
+                setShowResult(true);
+              }}
+              size="sm"
+              variant="secondary"
+            >
+              <FileCode2 /> View generated code
+            </Button>
+          ) : null}
+        </div>
+        <div className="flex h-8 items-center gap-5 overflow-x-auto border-border border-t bg-bg/45 px-4 text-badge text-fg-muted">
+          <span>
+            <strong className="font-mono font-medium text-fg">
+              {graph.nodes.length}
+            </strong>{" "}
+            nodes
+          </span>
+          <span>
+            <strong className="font-mono font-medium text-fg">
+              {graph.edges.length}
+            </strong>{" "}
+            dependencies
+          </span>
+          <span>
+            <strong className="font-mono font-medium text-running">
+              {runningCount}
+            </strong>{" "}
+            running
+          </span>
+          <span>
+            <strong className="font-mono font-medium text-review">
+              {reviewCount}
+            </strong>{" "}
+            review
+          </span>
+          <span>
+            <strong className="font-mono font-medium text-done">
+              {doneCount}
+            </strong>{" "}
+            integrated
+          </span>
+          <span className="ml-auto hidden text-fg-subtle md:inline">
+            Select a node to inspect its worktree
+          </span>
+        </div>
       </header>
       {(error ?? validation.issues[0]) ? (
         <div
@@ -229,7 +273,7 @@ export function GraphWorkspace({
             ) : null))
           : null}
         {showResult && complete ? (
-          <aside className="flex w-[560px] max-w-[65vw] shrink-0 flex-col border-border border-l bg-elevated">
+          <aside className="flex w-[560px] max-w-[65vw] shrink-0 flex-col border-border border-l bg-elevated shadow-2xl">
             <header className="flex items-start gap-2 border-border border-b px-3 py-2">
               <FileCode2 className="mt-0.5 size-4 text-done" />
               <div className="min-w-0 flex-1">
@@ -252,7 +296,7 @@ export function GraphWorkspace({
               <div>
                 <span className="text-fg-muted">Result branch</span>
                 <code className="mt-1 block break-all text-code">
-                  {resultBranch ?? graph.session.integration_branch}
+                  {resultBranch ?? graph.session.final_branch}
                 </code>
               </div>
               <div>

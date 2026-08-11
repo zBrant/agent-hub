@@ -38,7 +38,7 @@ function time(ts: number): string {
 
 function EventRow({ event }: { event: AgentEvent }) {
   const base =
-    "grid grid-cols-[16px_68px_minmax(0,1fr)] gap-2 border-border border-b px-3 py-2";
+    "group grid grid-cols-[24px_68px_minmax(0,1fr)] gap-2 border-border/70 border-b px-3 py-2.5 hover:bg-elevated/45 [&>svg]:rounded-sm [&>svg]:bg-inset [&>svg]:p-1 [&>svg]:size-6";
   switch (event.type) {
     case "assistant_text":
       return (
@@ -191,11 +191,13 @@ export function EventFeed({ events }: Props) {
       className="min-h-0 flex-1 overflow-auto bg-surface"
       aria-live="polite"
     >
-      <div className="sticky top-0 z-10 flex h-8 items-center justify-between border-border border-b bg-surface px-3">
+      <div className="sticky top-0 z-10 flex h-9 items-center justify-between border-border border-b bg-surface px-3">
         <h2 id="feed-heading" className="font-semibold text-ui">
           Event feed
         </h2>
-        <span className="text-meta text-fg-muted">{events.length} events</span>
+        <span className="font-mono text-badge text-fg-muted">
+          {events.length} events
+        </span>
       </div>
       {hidden > 0 ? (
         <p className="border-border border-b px-3 py-2 text-meta text-fg-muted">

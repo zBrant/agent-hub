@@ -48,6 +48,7 @@ class FakePlanner:
     objective: str | None = None
     context: str | None = None
     choice: PlannerChoice | None = None
+    final_branch: str | None = None
 
     async def plan_graph(
         self,
@@ -59,11 +60,17 @@ class FakePlanner:
         choice: PlannerChoice | None = None,
         auto_merge: bool = False,
         base_ref: str = "HEAD",
+        final_branch: str | None = None,
     ) -> PlanProposal | PlanFailure:
-        await creator.validate_repo(repo_path, base_ref=base_ref)
+        await creator.validate_repo(
+            repo_path,
+            base_ref=base_ref,
+            final_branch=final_branch,
+        )
         self.objective = objective
         self.context = context
         self.choice = choice
+        self.final_branch = final_branch
         if self.failure is not None:
             return self.failure
         nodes = (
@@ -89,6 +96,7 @@ class FakePlanner:
             title="Planner result",
             auto_merge=auto_merge,
             base_ref=base_ref,
+            final_branch=final_branch,
         )
         return PlanProposal(
             title="Planner result",
@@ -201,6 +209,82 @@ def test_plan_endpoint_persists_a_gated_proposal_from_an_objective(
         }
         assert fake.objective == "Build an endpoint and its client"
         assert fake.context == "Keep the transport thin"
+
+
+def test_plan_endpoint_persists_and_forwards_the_requested_final_branch(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        fake = FakePlanner()
+        client.app.state.planner = fake
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={
+                "repo_path": str(target_repo),
+                "objective": "Build it",
+                "final_branch": "deliver/planned-result",
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        session = response.json()["session"]
+        assert session["final_branch"] == "deliver/planned-result"
+        assert session["integration_branch"] != session["final_branch"]
+        assert fake.final_branch == "deliver/planned-result"
+
+
+@pytest.mark.parametrize("branch", ["bad..name", "main"])
+def test_plan_rejects_invalid_or_existing_final_branch_before_the_model(
+    settings: Settings, target_repo: Path, branch: str
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        fake = FakePlanner()
+        client.app.state.planner = fake
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={
+                "repo_path": str(target_repo),
+                "objective": "Build it",
+                "final_branch": branch,
+            },
+        )
+
+        assert response.status_code == 422
+        assert "branch" in response.json()["detail"]
+        assert fake.objective is None
+
+
+def test_active_sessions_reserve_hierarchically_conflicting_final_branches(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        first = client.post(
+            "/api/graphs",
+            json={
+                "repo_path": str(target_repo),
+                "final_branch": "release",
+                "nodes": [node_body("first")],
+            },
+        )
+        assert first.status_code == 201, first.text
+
+        collision = client.post(
+            "/api/graphs",
+            json={
+                "repo_path": str(target_repo),
+                "final_branch": "release/v1",
+                "nodes": [node_body("second")],
+            },
+        )
+
+        assert collision.status_code == 422
+        assert "reserved by non-final session" in collision.json()["detail"]
+        assert len(client.get("/api/sessions").json()) == 1
 
 
 def test_plan_endpoint_rejects_a_non_repository_before_calling_the_planner(
@@ -369,7 +453,10 @@ def test_a_per_plan_choice_reaches_the_planner_intact(
 
         assert response.status_code == 201, response.text
         assert fake.choice == PlannerChoice(
-            backend="api", harness=None, model="claude-haiku-4-5"
+            backend="api",
+            harness=None,
+            model="claude-haiku-4-5",
+            effort=settings.planner_effort,
         )
 
         # Nothing named is nothing chosen: the planner is told `None` and uses
@@ -379,6 +466,45 @@ def test_a_per_plan_choice_reaches_the_planner_intact(
             json={"repo_path": str(target_repo), "objective": "Again"},
         )
         assert fake.choice is None
+
+
+def test_saved_planner_defaults_are_used_without_a_form_override(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        fake = FakePlanner()
+        client.app.state.planner = fake
+        saved = client.put(
+            "/api/settings/ai",
+            json={
+                "planner": {
+                    "backend": "harness",
+                    "harness": "codex",
+                    "model": None,
+                },
+                "search": {
+                    "backend": "harness",
+                    "harness": "codex",
+                    "model": None,
+                },
+                "planner_effort": "max",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={"repo_path": str(target_repo), "objective": "Use my defaults"},
+        )
+
+        assert response.status_code == 201, response.text
+        assert fake.choice == PlannerChoice(
+            backend="harness",
+            harness="codex",
+            model=None,
+            effort="max",
+        )
 
 
 @pytest.mark.parametrize(

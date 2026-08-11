@@ -96,13 +96,16 @@ from app.orchestrator.graph import (
     evaluate_run,
 )
 from app.orchestrator.worktree import (
+    BranchAlreadyExistsError,
     CommitResult,
     FinalizeResult,
+    InvalidBranchNameError,
     MergeResult,
     MergeStatus,
     NotARepositoryError,
     SessionWorkspace,
     init_session_workspace,
+    validate_final_branch,
     validate_repository,
 )
 from app.sandbox.aijail import SandboxPolicy, build_launcher, default_policy
@@ -203,6 +206,7 @@ async def _open_workspace(
     session_id: SessionId,
     workspaces_root: Path | None,
     base_ref: str,
+    final_branch: str | None = None,
 ) -> SessionWorkspace:
     """Create a session's workspace, blaming the request when it is at fault.
 
@@ -225,8 +229,13 @@ async def _open_workspace(
             session_id=session_id,
             workspaces_root=workspaces_root,
             base_ref=base_ref,
+            final_branch=final_branch,
         )
-    except NotARepositoryError as exc:
+    except (
+        BranchAlreadyExistsError,
+        InvalidBranchNameError,
+        NotARepositoryError,
+    ) as exc:
         raise ValueError(str(exc)) from exc
 
 
@@ -596,6 +605,11 @@ class NodeRunService:
         # session finishing together would otherwise both read the pre-write
         # node statuses and the loser would persist a stale projection.
         self._projection_locks: dict[SessionId, asyncio.Lock] = {}
+        # The final ref is not created until successful finalization, so Git
+        # cannot reserve it while two proposals are authored concurrently.
+        # AgentHub is a single-process writer; this lock closes that in-process
+        # read/check/persist race, including hierarchical names, per repository.
+        self._final_branch_locks: dict[Path, asyncio.Lock] = {}
 
     @property
     def limits(self) -> NodeLimits:
@@ -606,12 +620,33 @@ class NodeRunService:
     # Authoring
     # ------------------------------------------------------------------
 
-    async def validate_repo(self, repo_path: Path, *, base_ref: str = "HEAD") -> Path:
-        """Reject an unusable graph target before planning spends a turn."""
+    async def validate_repo(
+        self,
+        repo_path: Path,
+        *,
+        base_ref: str = "HEAD",
+        final_branch: str | None = None,
+    ) -> Path:
+        """Reject an unusable target or occupied final ref before planning."""
         try:
-            return await validate_repository(repo_path, base_ref=base_ref)
-        except NotARepositoryError as exc:
+            resolved = (
+                await validate_repository(repo_path, base_ref=base_ref)
+                if final_branch is None
+                else await validate_final_branch(
+                    repo_path,
+                    final_branch,
+                    base_ref=base_ref,
+                )
+            )
+        except (
+            BranchAlreadyExistsError,
+            InvalidBranchNameError,
+            NotARepositoryError,
+        ) as exc:
             raise ValueError(str(exc)) from exc
+        if final_branch is not None:
+            await self._require_unreserved_final_branch(resolved, final_branch)
+        return resolved
 
     async def create_session(
         self,
@@ -685,6 +720,7 @@ class NodeRunService:
         title: str | None = None,
         auto_merge: bool = False,
         base_ref: str = "HEAD",
+        final_branch: str | None = None,
     ) -> CreatedGraph:
         """Persist a whole proposed graph: session, nodes and edges.
 
@@ -730,44 +766,65 @@ class NodeRunService:
                 )
 
         session_id = new_session_id()
-        workspace = await _open_workspace(
-            repo_path=repo_path,
-            session_id=session_id,
-            workspaces_root=self._settings.workspaces_root,
-            base_ref=base_ref,
+        requested_final_branch = (
+            final_branch
+            if final_branch is not None
+            else f"agenthub/{session_id}/result"
         )
-        async with self._database.session() as db_session:
-            repository = Repository(db_session)
-            session = await repository.create_session(
-                session_id=session_id,
-                title=title or (nodes[0].prompt[:120] if nodes else "graph"),
-                repo_path=workspace.repo_path,
-                workspace_root=workspace.root,
-                integration_branch=workspace.integration_branch,
-                auto_merge=auto_merge,
-                status=SessionStatus.PLANNING,
+        resolved_repo = await self.validate_repo(
+            repo_path,
+            base_ref=base_ref,
+            final_branch=requested_final_branch,
+        )
+        branch_lock = self._final_branch_locks.setdefault(resolved_repo, asyncio.Lock())
+        async with branch_lock:
+            # Repeat under the authoring lock: planning and model validation can
+            # take long enough for another proposal to reserve the same name.
+            await self.validate_repo(
+                resolved_repo,
+                base_ref=base_ref,
+                final_branch=requested_final_branch,
             )
-            created: list[Node] = []
-            for planned in nodes:
-                created.append(
-                    await repository.create_node(
-                        node_id=allocated[planned.name],
-                        session_id=session_id,
-                        name=planned.name,
-                        prompt=planned.prompt,
-                        harness=planned.harness,
-                        model=planned.model,
-                        acceptance_criteria=planned.acceptance_criteria,
-                        touches=planned.touches,
-                        estimated_effort=planned.estimated_effort,
-                        status=NodeStatus.PENDING,
+            workspace = await _open_workspace(
+                repo_path=resolved_repo,
+                session_id=session_id,
+                workspaces_root=self._settings.workspaces_root,
+                base_ref=base_ref,
+                final_branch=requested_final_branch,
+            )
+            async with self._database.session() as db_session:
+                repository = Repository(db_session)
+                session = await repository.create_session(
+                    session_id=session_id,
+                    title=title or (nodes[0].prompt[:120] if nodes else "graph"),
+                    repo_path=workspace.repo_path,
+                    workspace_root=workspace.root,
+                    integration_branch=workspace.integration_branch,
+                    final_branch=requested_final_branch,
+                    auto_merge=auto_merge,
+                    status=SessionStatus.PLANNING,
+                )
+                created: list[Node] = []
+                for planned in nodes:
+                    created.append(
+                        await repository.create_node(
+                            node_id=allocated[planned.name],
+                            session_id=session_id,
+                            name=planned.name,
+                            prompt=planned.prompt,
+                            harness=planned.harness,
+                            model=planned.model,
+                            acceptance_criteria=planned.acceptance_criteria,
+                            touches=planned.touches,
+                            estimated_effort=planned.estimated_effort,
+                            status=NodeStatus.PENDING,
+                        )
                     )
-                )
-            for planned in nodes:
-                await repository.add_dependencies(
-                    allocated[planned.name],
-                    [allocated[name] for name in planned.depends_on],
-                )
+                for planned in nodes:
+                    await repository.add_dependencies(
+                        allocated[planned.name],
+                        [allocated[name] for name in planned.depends_on],
+                    )
         log.info(
             "orchestrator.graph_created",
             session_id=session_id,
@@ -2004,7 +2061,10 @@ class NodeRunService:
                 )
             workspace = self._workspace(graph.session)
             node_ids = tuple(node.id for node in graph.nodes)
-        return await workspace.finalize(node_ids=node_ids)
+        try:
+            return await workspace.finalize(node_ids=node_ids)
+        except BranchAlreadyExistsError as exc:
+            raise InvalidTransitionError(str(exc)) from exc
 
     async def acceptance_results(
         self, node_id: NodeId, *, attempt: int | None = None
@@ -2139,7 +2199,27 @@ class NodeRunService:
             session_id=session.id,
             repo_path=session.repo_path,
             root=session.workspace_root,
+            final_branch=session.final_branch,
         )
+
+    async def _require_unreserved_final_branch(
+        self, repo_path: Path, final_branch: str
+    ) -> None:
+        async with self._database.session() as db_session:
+            active = await Repository(db_session).list_nonfinal_sessions_for_repo(
+                repo_path
+            )
+        for existing in active:
+            reserved = existing.final_branch
+            if (
+                reserved == final_branch
+                or reserved.startswith(f"{final_branch}/")
+                or final_branch.startswith(f"{reserved}/")
+            ):
+                raise ValueError(
+                    f"final branch {final_branch!r} conflicts with branch "
+                    f"{reserved!r} reserved by non-final session {existing.id}"
+                )
 
 
 def _materializable_parents(

@@ -50,15 +50,21 @@ export function ConnectionStatus({ status, attempt, onReconnect }: Props) {
   const offline = status === "reconnecting" || status === "closed";
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 md:flex-col md:gap-1.5">
       <Tooltip>
         <TooltipTrigger
           aria-label={`Event stream: ${visual.label}`}
-          className="flex cursor-default items-center gap-1.5 rounded-sm px-1 text-meta text-fg-muted"
+          className="flex cursor-default items-center gap-1.5 rounded-sm px-1 text-meta text-fg-muted md:flex-col md:gap-1 md:text-badge"
         >
           <span
             aria-hidden="true"
-            className={cn("size-1.5 rounded-full", visual.dot)}
+            className={cn(
+              "size-1.5 rounded-full",
+              visual.dot,
+              status === "connecting" || status === "reconnecting"
+                ? "animate-pulse"
+                : null,
+            )}
           />
           {visual.label}
         </TooltipTrigger>
@@ -69,8 +75,15 @@ export function ConnectionStatus({ status, attempt, onReconnect }: Props) {
       </Tooltip>
 
       {offline ? (
-        <Button size="sm" variant="outline" onClick={onReconnect}>
-          Retry now
+        <Button
+          aria-label="Retry event stream connection now"
+          className="h-7 px-2 text-badge md:w-full md:px-1"
+          size="sm"
+          variant="outline"
+          onClick={onReconnect}
+        >
+          <span className="md:hidden">Retry now</span>
+          <span className="hidden md:inline">Retry</span>
         </Button>
       ) : null}
     </div>

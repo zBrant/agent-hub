@@ -62,12 +62,25 @@
      * body font-size below, not from shrinking the root. */
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    background: var(--color-bg);
   }
 
   body {
     @apply bg-bg text-fg;
+    margin: 0;
     font-size: var(--text-ui);
     line-height: 1.45;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  ::selection {
+    color: var(--color-accent-fg);
+    background: var(--color-accent);
+  }
+
+  * {
+    scrollbar-color: var(--color-border-strong) transparent;
+    scrollbar-width: thin;
   }
 
   code,

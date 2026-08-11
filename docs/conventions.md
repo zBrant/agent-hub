@@ -29,7 +29,7 @@ don't repeat configuration here, configure it there.
 | Lint + format | **Biome** | One binary instead of ESLint + Prettier |
 | Server state | TanStack Query | |
 | Live state | Zustand (one store per WS topic) | |
-| Routing | React Router | `/dashboard`, `/sessions/:id`, `/search` |
+| Routing | React Router | `/dashboard`, `/sessions/:id`, `/search`, `/settings` |
 | Graph | `@xyflow/react` + `elkjs` | |
 | Terminal | `@xterm/xterm` + `@xterm/addon-fit` + `@xterm/addon-webgl` | |
 | Tests | Vitest; Playwright on the main flows only | |
@@ -235,9 +235,10 @@ the tab.
 | Generated git branch | `agenthub/<sess>/<node>` | |
 
 Fixed vocabulary across the codebase, no synonyms: **session, graph, node, run,
-event, harness, model, worktree, integration branch**. If a section calls a `node`
-a "task" or a "step", rename it. Synonyms in a small domain are bugs waiting to
-happen.
+event, harness, model, worktree, integration branch, final branch**. The
+integration branch is AgentHub's temporary merge target; the final branch is
+the operator-named durable result. If a section calls a `node` a "task" or a
+"step", rename it. Synonyms in a small domain are bugs waiting to happen.
 
 ---
 

@@ -28,6 +28,7 @@ from app.orchestrator.service import (
     NodeRunService,
     ResourceNotFoundError,
 )
+from app.preferences import AiSettingsService
 
 
 def service(request: Request) -> NodeRunService:
@@ -40,6 +41,10 @@ def scheduler(request: Request) -> GraphScheduler:
 
 def planner(request: Request) -> Planner:
     return cast(Planner, request.app.state.planner)
+
+
+def ai_settings(request: Request) -> AiSettingsService:
+    return cast(AiSettingsService, request.app.state.ai_settings)
 
 
 async def call[T](operation: Awaitable[T]) -> T:
@@ -105,6 +110,7 @@ async def resolve_node(request: Request, session_id: str, node_id: str) -> Node:
 
 
 __all__ = [
+    "ai_settings",
     "call",
     "planner",
     "resolve_node",

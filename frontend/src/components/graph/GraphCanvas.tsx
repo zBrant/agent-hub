@@ -117,6 +117,7 @@ export function GraphCanvas({
       id,
       source: edge.depends_on_id,
       target: edge.node_id,
+      type: "smoothstep",
       deletable: editable,
       className: cn(
         "graph-edge",
@@ -130,7 +131,7 @@ export function GraphCanvas({
   return (
     <section
       aria-label="Activity graph"
-      className="h-full min-h-[420px] w-full"
+      className="group h-full min-h-[420px] w-full bg-inset/30"
     >
       <ReactFlow<ActivityFlowNode, Edge>
         deleteKeyCode={editable ? ["Backspace", "Delete"] : null}
@@ -156,12 +157,14 @@ export function GraphCanvas({
         }
         onPaneClick={() => onSelectNode(null)}
       >
-        <Background className="graph-background" gap={24} size={1} />
-        <MiniMap
-          className="graph-minimap! border! border-border! bg-inset!"
-          maskColor="var(--color-graph-mask)"
-          nodeColor="var(--color-border-strong)"
-        />
+        <Background className="graph-background" gap={28} size={1} />
+        {nodes.length > 8 ? (
+          <MiniMap
+            className="graph-minimap! border! border-border! bg-inset!"
+            maskColor="var(--color-graph-mask)"
+            nodeColor="var(--color-border-strong)"
+          />
+        ) : null}
         <Controls className="graph-controls!" showInteractive={false} />
       </ReactFlow>
     </section>

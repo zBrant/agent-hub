@@ -18,18 +18,18 @@ function GraphNodeComponent({ data, selected }: NodeProps<ActivityFlowNode>) {
   return (
     <div
       className={cn(
-        "w-60 rounded-md border-[1.5px] bg-surface px-3 py-2 text-fg",
-        visual.border,
-        selected && "border-2 border-accent",
+        "relative w-60 overflow-hidden border border-border bg-surface text-fg shadow-xl",
+        selected && "border-accent ring-1 ring-accent/40",
       )}
     >
+      <span className={cn("absolute inset-y-0 left-0 w-[3px]", visual.fill)} />
       <Handle
-        className="size-2! border-border-strong! bg-elevated!"
+        className="size-2! rounded-[1px]! border-border-strong! bg-elevated! opacity-0 transition-opacity group-hover:opacity-100"
         isConnectable={data.editable}
         position={Position.Top}
         type="target"
       />
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2 px-3 pt-2.5 pb-1">
         <StatusIcon
           aria-hidden="true"
           className={cn(
@@ -42,7 +42,7 @@ function GraphNodeComponent({ data, selected }: NodeProps<ActivityFlowNode>) {
         <span className="min-w-0 flex-1 truncate font-semibold text-ui">
           {data.node.name}
         </span>
-        <span className="inline-flex shrink-0 items-center gap-1 rounded-sm border border-border bg-elevated px-1.5 py-0.5 font-mono text-badge">
+        <span className="inline-flex shrink-0 items-center gap-1 font-mono text-badge text-fg-muted">
           <span
             aria-hidden="true"
             className={cn(
@@ -53,17 +53,14 @@ function GraphNodeComponent({ data, selected }: NodeProps<ActivityFlowNode>) {
           {data.node.harness}
         </span>
       </div>
-      <div className="mt-1 flex items-center justify-between gap-2 text-meta text-fg-muted">
-        <span className="inline-flex items-center gap-1">
-          <span className={cn("size-1.5 rounded-full", visual.fill)} />
-          {visual.label}
-        </span>
+      <div className="flex items-center justify-between gap-2 px-3 pt-1 pb-2.5 text-meta text-fg-muted">
+        <span className="inline-flex items-center gap-1">{visual.label}</span>
         <code className="truncate text-code">
           {data.node.model ?? "default model"}
         </code>
       </div>
       <Handle
-        className="size-2! border-border-strong! bg-elevated!"
+        className="size-2! rounded-[1px]! border-border-strong! bg-elevated!"
         isConnectable={data.editable}
         position={Position.Bottom}
         type="source"

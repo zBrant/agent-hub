@@ -36,6 +36,7 @@ const session = {
   repo_path: "/repo",
   workspace_root: "/workspace",
   integration_branch: "agenthub/sess_one/integration",
+  final_branch: "feature/graph-result",
   auto_merge: false,
   status: "planning",
   created_ms: 1,

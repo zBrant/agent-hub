@@ -5,6 +5,7 @@ import { RootLayout } from "@/routes/RootLayout";
 import { SearchRoute } from "@/routes/SearchRoute";
 import { SessionRoute } from "@/routes/SessionRoute";
 import { SessionsIndexRoute } from "@/routes/SessionsIndexRoute";
+import { SettingsRoute } from "@/routes/SettingsRoute";
 
 /** docs/conventions.md §1: /dashboard, /sessions/:id, /search. */
 export const router = createBrowserRouter([
@@ -17,6 +18,7 @@ export const router = createBrowserRouter([
       { path: "sessions", Component: SessionsIndexRoute },
       { path: "sessions/:id", Component: SessionRoute },
       { path: "search", Component: SearchRoute },
+      { path: "settings", Component: SettingsRoute },
       { path: "*", Component: NotFoundRoute },
     ],
   },

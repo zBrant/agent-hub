@@ -89,6 +89,9 @@ function fillObjective() {
   fireEvent.change(screen.getByLabelText("Repository path"), {
     target: { value: "/repo/project" },
   });
+  fireEvent.change(screen.getByLabelText("Final branch"), {
+    target: { value: "feature/agenthub-result" },
+  });
   fireEvent.change(screen.getByLabelText("Objective"), {
     target: { value: "Build the graph" },
   });
@@ -102,6 +105,12 @@ function submitButton(): HTMLButtonElement {
   const button = screen.getByRole("button", { name: "Create proposal" });
   if (!(button instanceof HTMLButtonElement)) throw new Error("no submit");
   return button;
+}
+
+function expandPlannerOverride() {
+  fireEvent.click(
+    screen.getByRole("button", { name: /Override planner defaults/ }),
+  );
 }
 
 function modelSelect(): HTMLSelectElement {
@@ -137,10 +146,12 @@ describe("sessions planner", () => {
   it("creates a gated proposal from a repository and objective", async () => {
     harness.planGraph.mockResolvedValue({ session: { id: "sess_plan" } });
     render(<SessionsIndexRoute />, { wrapper });
-    await screen.findByRole("radio", { name: /claude-code/ });
 
     fireEvent.change(screen.getByLabelText("Repository path"), {
       target: { value: "  /repo/project  " },
+    });
+    fireEvent.change(screen.getByLabelText("Final branch"), {
+      target: { value: "  feature/agenthub-result  " },
     });
     fireEvent.change(screen.getByLabelText("Objective"), {
       target: { value: "  Build the graph  " },
@@ -150,6 +161,7 @@ describe("sessions planner", () => {
     await waitFor(() => expect(harness.planGraph).toHaveBeenCalled());
     expect(harness.planGraph.mock.calls[0]?.[0]).toEqual({
       repo_path: "/repo/project",
+      final_branch: "feature/agenthub-result",
       objective: "Build the graph",
       auto_merge: false,
       base_ref: "HEAD",
@@ -158,19 +170,14 @@ describe("sessions planner", () => {
     expect(await screen.findByText("Graph proposal")).toBeTruthy();
   });
 
-  it("preselects the server default and sends no planner for it", async () => {
+  it("uses global defaults and sends no planner without an override", async () => {
     harness.planGraph.mockResolvedValue({ session: { id: "sess_plan" } });
     render(<SessionsIndexRoute />, { wrapper });
 
-    await screen.findByRole("radio", { name: /claude-code/ });
-    expect(radio(/claude-code/).checked).toBe(true);
-    expect(radio(/codex/).checked).toBe(false);
-    expect(radio(/Anthropic API/).checked).toBe(false);
-    // `model: null` is the default and a real choice, not an empty state.
-    expect(modelSelect().value).toBe("");
-    expect(modelSelect().selectedOptions[0]?.textContent).toContain(
-      "whatever the CLI is configured for",
-    );
+    expect(screen.queryByRole("radio")).toBeNull();
+    expect(
+      screen.getByText(/Using the global AI runtime settings/),
+    ).toBeTruthy();
 
     fillObjective();
     submit();
@@ -182,6 +189,7 @@ describe("sessions planner", () => {
   it("reconciles the model when the planner backend changes", async () => {
     harness.planGraph.mockResolvedValue({ session: { id: "sess_plan" } });
     render(<SessionsIndexRoute />, { wrapper });
+    expandPlannerOverride();
     await screen.findByRole("radio", { name: /codex/ });
 
     fireEvent.click(radio(/codex/));
@@ -208,6 +216,7 @@ describe("sessions planner", () => {
   it("falls back to the CLI default when a harness lacks the model", async () => {
     harness.planGraph.mockResolvedValue({ session: { id: "sess_plan" } });
     render(<SessionsIndexRoute />, { wrapper });
+    expandPlannerOverride();
     await screen.findByRole("radio", { name: /Anthropic API/ });
 
     fireEvent.click(radio(/Anthropic API/));
@@ -228,6 +237,7 @@ describe("sessions planner", () => {
 
   it("separates API spend from subscription equivalence before submitting", async () => {
     render(<SessionsIndexRoute />, { wrapper });
+    expandPlannerOverride();
     await screen.findByRole("radio", { name: /Anthropic API/ });
 
     // Both meanings are on the options themselves, before anything is picked.
@@ -263,6 +273,7 @@ describe("sessions planner", () => {
     );
     harness.planGraph.mockResolvedValue({ session: { id: "sess_plan" } });
     render(<SessionsIndexRoute />, { wrapper });
+    expandPlannerOverride();
 
     expect((await screen.findByRole("alert")).textContent).toContain(
       "cannot back a plan",
@@ -294,6 +305,7 @@ describe("sessions planner", () => {
     harness.getPlannerOptions.mockRejectedValue(new Error("options offline"));
     harness.planGraph.mockResolvedValue({ session: { id: "sess_plan" } });
     render(<SessionsIndexRoute />, { wrapper });
+    expandPlannerOverride();
 
     expect((await screen.findByRole("status")).textContent).toContain(
       "options offline",
@@ -311,7 +323,6 @@ describe("sessions planner", () => {
   it("renders a safe planner failure message", async () => {
     harness.planGraph.mockRejectedValue(new Error("planner API unavailable"));
     render(<SessionsIndexRoute />, { wrapper });
-    await screen.findByRole("radio", { name: /claude-code/ });
 
     fillObjective();
     submit();

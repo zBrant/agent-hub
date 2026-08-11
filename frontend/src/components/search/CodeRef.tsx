@@ -1,4 +1,4 @@
-import { FileCode2 } from "lucide-react";
+import { ArrowUpRight, FileCode2 } from "lucide-react";
 import type { AgentCitation } from "@/api/client";
 
 type Props = {
@@ -15,13 +15,17 @@ export function CodeRef({ citation, onOpen }: Props) {
   return (
     <button
       aria-label={`Open ${citation.path} lines ${range}`}
-      className="inline-flex h-6 max-w-full items-center gap-1 rounded-sm border border-border bg-inset px-1.5 font-mono text-badge text-accent hover:border-border-strong hover:text-accent-hover"
+      className="group inline-flex h-6 max-w-full items-center gap-1.5 border-border border-b font-mono text-badge text-fg-muted hover:border-accent hover:text-fg"
       onClick={() => onOpen(citation)}
       type="button"
     >
-      <FileCode2 aria-hidden="true" className="size-3 shrink-0" />
+      <FileCode2 aria-hidden="true" className="size-3 shrink-0 text-accent" />
       <span className="truncate">{citation.path}</span>
-      <span className="shrink-0 text-fg-muted">:{range}</span>
+      <span className="shrink-0 text-fg-subtle">:{range}</span>
+      <ArrowUpRight
+        aria-hidden="true"
+        className="size-3 shrink-0 text-fg-subtle group-hover:text-accent"
+      />
     </button>
   );
 }

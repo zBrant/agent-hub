@@ -1,6 +1,8 @@
 # Design system
 
-**Base:** shadcn/ui on [Base UI](https://base-ui.com) + Tailwind v4.
+**Base:** AgentHub-owned components on [Base UI](https://base-ui.com) + Tailwind
+v4. The copied shadcn primitives are an implementation detail, not a visual
+preset: new controls use Base UI behavior and the tokens in this document.
 **Charts:** [Tremor Raw](https://www.tremor.so/) for charts with axes and
 tooltips, copied and adapted with its palette mapped to the tokens here. Compact
 one-row proportional bars stay native HTML/CSS; they do not justify shipping
@@ -9,8 +11,24 @@ Tailwind 4 application.
 **Icons:** `lucide-react`.
 **Theme:** dark-only, high density.
 
-Visual references: Linear (density, keyboard), Sourcegraph Wildcard (code-tool
-vocabulary), Vercel Geist (surfaces and neutrals).
+Visual references: Zed (workspace structure), Sourcegraph Wildcard (code-tool
+vocabulary), and operations consoles (telemetry and attention hierarchy).
+AgentHub's visual metaphor is a graph instrument panel, not a generic SaaS
+dashboard or chat client.
+
+Route composition follows that metaphor. Dashboard is an operational strip over
+an active-graphs/system-health split; token detail opens from its volume metric
+in a modal. Sessions creation is a full-bleed execution brief with a contextual
+planner rail, never a detached form card. Search scopes investigations through
+project then local Git branch, deduplicating projects by canonical repository
+identity. Every local branch is searchable from an isolated commit snapshot;
+sessions and execution worktrees are not Search concepts. Ephemeral AgentHub
+node/integration refs are omitted, but finalized result branches are included.
+Settings is an instrument panel for AI runtimes, not a generic preferences
+dump: Planner defaults and Code Search runtime are parallel sections with
+backend, harness, model, billing meaning, and one explicit save action. Secrets
+are never editable there. The Sessions planner chooser is collapsed as an
+optional per-graph override when the global default is usable.
 
 ---
 
@@ -47,47 +65,47 @@ it's a bug.
 /* frontend/src/styles/tokens.css */
 @theme {
   /* surfaces */
-  --color-bg:            #0B0C0E;   /* application background */
-  --color-surface:       #121417;   /* card, panel, sidebar */
-  --color-elevated:      #191C20;   /* drawer, popover, menu, dialog */
-  --color-inset:         #08090A;   /* terminal, code block, diff */
+  --color-bg:            #0B0E0C;   /* application background */
+  --color-surface:       #111512;   /* panel, sidebar */
+  --color-elevated:      #181D19;   /* drawer, popover, menu, dialog */
+  --color-inset:         #070907;   /* terminal, code block, diff */
 
   /* borders */
-  --color-border:        #24282E;
-  --color-border-strong: #333941;   /* panel divider, inactive focus ring */
+  --color-border:        #252B26;
+  --color-border-strong: #363E37;   /* panel divider, inactive focus ring */
 
   /* text */
-  --color-fg:            #E6E8EB;
-  --color-fg-muted:      #9BA1A9;   /* labels, metadata, timestamps */
-  --color-fg-subtle:     #6B7280;   /* placeholder, disabled text */
+  --color-fg:            #E6EBE7;
+  --color-fg-muted:      #939E96;   /* labels, metadata, timestamps */
+  --color-fg-subtle:     #747D76;   /* placeholder, disabled text */
 
   /* action */
-  --color-accent:        #4C8DFF;
-  --color-accent-hover:  #6BA0FF;
-  --color-accent-fg:     #0B0C0E;
-  --color-focus:         #4C8DFF;
+  --color-accent:        #B7F36B;   /* signal / selection */
+  --color-accent-hover:  #C7FB86;
+  --color-accent-fg:     #10150D;
+  --color-focus:         #B7F36B;
 
   /* state */
-  --color-pending:       #6B7280;
-  --color-ready:         #4C8DFF;
-  --color-running:       #38BDF8;
-  --color-review:        #F5A524;
-  --color-blocked:       #F97066;
-  --color-done:          #3DD68C;
-  --color-failed:        #E5484D;
-  --color-skipped:       #4B5563;
+  --color-pending:       #747D76;
+  --color-ready:         #B7F36B;
+  --color-running:       #5FCCE5;
+  --color-review:        #E8AE4D;
+  --color-blocked:       #F07B62;
+  --color-done:          #63D69A;
+  --color-failed:        #EF6468;
+  --color-skipped:       #747D76;
 
   /* token-series charts */
-  --color-token-cache-read:  #3DD68C;
-  --color-token-cache-write: #F5A524;
-  --color-token-input:       #4C8DFF;
-  --color-token-output:      #7C6BF5;
+  --color-token-cache-read:  #63D69A;
+  --color-token-cache-write: #E8AE4D;
+  --color-token-input:       #5FCCE5;
+  --color-token-output:      #9B8BF4;
 
   /* code search syntax */
-  --color-syntax-keyword: #7C6BF5;
-  --color-syntax-string:  #3DD68C;
-  --color-syntax-number:  #F5A524;
-  --color-syntax-comment: #6B7280;
+  --color-syntax-keyword: #9B8BF4;
+  --color-syntax-string:  #63D69A;
+  --color-syntax-number:  #E8AE4D;
+  --color-syntax-comment: #747D76;
 
   /* typography */
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
@@ -110,6 +128,7 @@ it's a bug.
 | Use | Size | Weight | Family |
 |---|---|---|---|
 | Page title | 18px | 600 | sans |
+| Operational metric | 22px | 500 | mono |
 | Section / card title | 13px | 600 | sans |
 | Body / UI | **13px** | 400 | sans |
 | Label, metadata, timestamp | 12px | 400 | sans, `fg-muted` |
@@ -131,7 +150,8 @@ Scale: **4, 6, 8, 12, 16, 24, 32**. Nothing outside it.
 
 | Element | Height |
 |---|---|
-| Top bar | 44px |
+| Activity rail (desktop) | 84px wide |
+| Mobile top bar | 52px high |
 | List row (session, process, file) | 28px |
 | Input, select | 30px |
 | Button `sm` / `default` | 26px / 30px |
@@ -140,7 +160,7 @@ Scale: **4, 6, 8, 12, 16, 24, 32**. Nothing outside it.
 
 | Panel | Width |
 |---|---|
-| Session sidebar (Tab 2) | 240px, resizable 200–360 |
+| Session index sidebar (Tab 2) | 288px |
 | Graph panel (Tab 2, minimap) | 340px, resizable 280–520 |
 | Node drawer | 480px, resizable up to 60vw |
 | Code panel (Tab 3) | 45% of width |
@@ -210,9 +230,9 @@ export const terminalTheme = {
   background: token("--color-inset"),
   foreground: token("--color-fg"),
   cursor:     token("--color-accent"),
-  selectionBackground: "#4C8DFF33",
-  black: "#0B0C0E",  red: "#E5484D",  green: "#3DD68C",  yellow: "#F5A524",
-  blue:  "#4C8DFF",  magenta: "#B87BF5", cyan: "#38BDF8", white: "#E6E8EB",
+  selectionBackground: "#B7F36B33",
+  black: "#0B0E0C",  red: "#EF6468",  green: "#63D69A",  yellow: "#E8AE4D",
+  blue:  "#5FCCE5",  magenta: "#9B8BF4", cyan: "#5FCCE5", white: "#E6EBE7",
 }
 ```
 
@@ -226,12 +246,10 @@ radius — rounding a terminal corner clips characters.
 
 ## 8. Component inventory
 
-**From shadcn (install, don't rewrite):** Button, Input, Textarea, Select, Dialog,
-Sheet, Tabs, Tooltip, DropdownMenu, Badge, Separator, ScrollArea, Command,
-Progress, Skeleton, Table, Collapsible, Resizable, Sonner (toast).
-
-`pnpm dlx shadcn@latest add <component>` — after that the code is yours and lives
-in `src/components/ui/`. Tune the density (§4) there once, not per call site.
+**Behavior primitives:** Base UI, wrapped in `src/components/ui/`. Button and
+Tooltip currently originated from shadcn's Base UI preset, but their appearance
+is owned here. Do not import a preset palette or paste a generated component
+without remapping it to AgentHub's density and semantic tokens.
 
 **Custom (`src/components/<domain>/`):**
 
@@ -288,7 +306,7 @@ decoration.
 
 ## 11. Accessibility
 
-- Contrast ≥ 4.5:1 for text. `fg-subtle` (#6B7280 on #0B0C0E ≈ 4.6:1) is the floor
+- Contrast ≥ 4.5:1 for text. `fg-subtle` (#747D76 on #0B0E0C ≈ 4.56:1) is the floor
   — don't create anything dimmer.
 - Focus is always visible: `outline: 2px solid var(--color-focus); outline-offset: 2px`.
   Never `outline: none` without a replacement.

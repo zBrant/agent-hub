@@ -26,12 +26,20 @@ export type DashboardPeriod = components["schemas"]["DashboardPeriod"];
 export type MetricUsage = components["schemas"]["MetricUsageResponse"];
 export type TextSearch = components["schemas"]["TextSearchResponse"];
 export type StructuralSearch = components["schemas"]["TextSearchResponse"];
-export type SymbolSearch = components["schemas"]["SymbolSearchResponse"];
 export type FileRead = components["schemas"]["FileReadResponse"];
 export type DirectoryList = components["schemas"]["DirectoryListResponse"];
 export type AgentSearch = components["schemas"]["AgentSearchResponse"];
 export type AgentCitation = components["schemas"]["AgentCitationResponse"];
 export type AgentEvidence = components["schemas"]["AgentEvidenceResponse"];
+export type SearchBranch = components["schemas"]["SearchBranchResponse"];
+export type SearchProject = components["schemas"]["SearchProjectResponse"];
+export type SearchProjects = components["schemas"]["SearchProjectsResponse"];
+export type AISettingsChoice =
+  components["schemas"]["AiRuntimeSelectionResponse"];
+export type AISettingsOption = components["schemas"]["AiOptionResponse"];
+export type PlannerEffort = components["schemas"]["PlannerEffort"];
+export type AISettings = components["schemas"]["AiSettingsResponse"];
+export type UpdateAISettings = components["schemas"]["AiSettingsRequest"];
 
 export class ApiError extends Error {
   readonly status: number;
@@ -116,13 +124,21 @@ function queryString(
 }
 
 export const api = {
-  answerSearchQuestion: (sessionId: string, question: string) =>
+  getAISettings: () => request<AISettings>("/api/settings/ai"),
+  updateAISettings: (body: UpdateAISettings) =>
+    request<AISettings>("/api/settings/ai", {
+      method: "PUT",
+      ...jsonBody(body),
+    }),
+  listSearchProjects: () => request<SearchProjects>("/api/search/projects"),
+  answerSearchQuestion: (projectId: string, branch: string, question: string) =>
     request<AgentSearch>("/api/search/answer", {
       method: "POST",
-      ...jsonBody({ session_id: sessionId, question }),
+      ...jsonBody({ project_id: projectId, branch, question }),
     }),
   searchText: (
-    sessionId: string,
+    projectId: string,
+    branch: string,
     pattern: string,
     options: {
       glob?: string;
@@ -133,7 +149,8 @@ export const api = {
   ) =>
     request<TextSearch>(
       `/api/search/text?${queryString({
-        session_id: sessionId,
+        project_id: projectId,
+        branch,
         pattern,
         glob: options.glob,
         case_sensitive: options.caseSensitive,
@@ -142,57 +159,46 @@ export const api = {
       })}`,
     ),
   searchStructural: (
-    sessionId: string,
+    projectId: string,
+    branch: string,
     pattern: string,
     language: string,
     limit?: number,
   ) =>
     request<StructuralSearch>(
       `/api/search/structural?${queryString({
-        session_id: sessionId,
+        project_id: projectId,
+        branch,
         pattern,
         language,
         limit,
       })}`,
     ),
-  findSymbol: (
-    sessionId: string,
-    name: string,
-    options: { kind?: string; limit?: number } = {},
-  ) =>
-    request<SymbolSearch>(
-      `/api/search/symbols?${queryString({
-        session_id: sessionId,
-        name,
-        kind: options.kind,
-        limit: options.limit,
-      })}`,
-    ),
-  findReferences: (sessionId: string, name: string, limit?: number) =>
-    request<SymbolSearch>(
-      `/api/search/references?${queryString({
-        session_id: sessionId,
-        name,
-        limit,
-      })}`,
-    ),
   readSearchFile: (
-    sessionId: string,
+    projectId: string,
+    branch: string,
     path: string,
     options: { startLine?: number; endLine?: number } = {},
   ) =>
     request<FileRead>(
       `/api/search/file?${queryString({
-        session_id: sessionId,
+        project_id: projectId,
+        branch,
         path,
         start_line: options.startLine,
         end_line: options.endLine,
       })}`,
     ),
-  listSearchDirectory: (sessionId: string, path = ".", limit?: number) =>
+  listSearchDirectory: (
+    projectId: string,
+    branch: string,
+    path = ".",
+    limit?: number,
+  ) =>
     request<DirectoryList>(
       `/api/search/directory?${queryString({
-        session_id: sessionId,
+        project_id: projectId,
+        branch,
         path,
         limit,
       })}`,

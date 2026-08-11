@@ -1,19 +1,35 @@
-"""Bounded lexical and filesystem tools for one integration worktree."""
+"""Bounded lexical and filesystem tools over immutable branch snapshots."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
+import re
 from collections.abc import Callable, Sequence
 from contextlib import suppress
+from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from app.models.ids import SessionId
+from sqlmodel import col, select
+
 from app.models.tables import Session
-from app.storage.db import Database
+from app.storage.db import Database, database_path
+from app.storage.git import (
+    GitMetadataTooLarge,
+    GitReadError,
+    GitReadTimedOut,
+    GitRepository,
+    GitSnapshot,
+    GitSnapshotStore,
+    GitSnapshotTooLarge,
+    GitSnapshotUnsafe,
+    GitUnavailableError,
+    inspect_repository,
+    project_id_for,
+)
 
 MAX_RESULTS = 200
 MAX_STDERR_BYTES = 8_192
@@ -23,6 +39,10 @@ MAX_FILE_BYTES = 128 * 1_024
 MAX_SCAN_BYTES = 2 * 1_024 * 1_024
 MAX_DIRECTORY_ENTRIES = 500
 DEFAULT_TIMEOUT_S = 5.0
+_ULID_PATTERN = r"[0-9A-HJKMNP-TV-Z]{26}"
+_INTERNAL_EXECUTION_BRANCH = re.compile(
+    rf"agenthub/sess_{_ULID_PATTERN}/(?:integration|node_{_ULID_PATTERN})"
+)
 
 
 class SearchError(Exception):
@@ -30,11 +50,11 @@ class SearchError(Exception):
 
 
 class SearchTargetNotFound(SearchError):
-    """The session, integration worktree, or requested path does not exist."""
+    """The project, branch snapshot, or requested path does not exist."""
 
 
 class SearchPathError(SearchError):
-    """A requested path is absolute or escapes the integration worktree."""
+    """A requested path is absolute or escapes the branch snapshot."""
 
 
 class SearchToolUnavailable(SearchError):
@@ -54,7 +74,7 @@ class SearchTimedOut(SearchError):
 
 
 class SearchOutputTooLarge(SearchError):
-    """A search tool emitted one result larger than the stream bound."""
+    """A search result or branch snapshot exceeded a fixed bound."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,8 +118,34 @@ class DirectoryListResult:
     truncated: bool
 
 
+@dataclass(frozen=True, slots=True)
+class ProjectBranch:
+    name: str
+    commit: str
+    is_head: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectTarget:
+    id: str
+    name: str
+    repo_path: Path
+    branches: tuple[ProjectBranch, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectCatalogResult:
+    projects: tuple[ProjectTarget, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ProjectRecord:
+    target: ProjectTarget
+    repository: GitRepository
+
+
 class CodeSearchService:
-    """Resolve a session target, then run bounded read-only search tools."""
+    """Resolve a known project and exact local branch to a read-only snapshot."""
 
     def __init__(
         self,
@@ -108,21 +154,148 @@ class CodeSearchService:
         rg_binary: str = "rg",
         sg_binary: str = "sg",
         timeout_s: float = DEFAULT_TIMEOUT_S,
+        snapshots_root: Path | None = None,
+        snapshot_timeout_s: float = 15.0,
     ) -> None:
-        if timeout_s <= 0:
-            raise ValueError("search timeout must be positive")
+        if timeout_s <= 0 or snapshot_timeout_s <= 0:
+            raise ValueError("search timeouts must be positive")
+        storage_path = database_path(database.url)
+        if snapshots_root is None and storage_path is None:
+            raise ValueError("in-memory databases require an explicit snapshots_root")
+        if snapshots_root is None:
+            assert storage_path is not None
+            cache_root = storage_path.parent / "search-snapshots"
+        else:
+            cache_root = snapshots_root
         self._database = database
         self._rg_binary = rg_binary
         self._sg_binary = sg_binary
         self._timeout_s = timeout_s
+        self._snapshots = GitSnapshotStore(cache_root, timeout_s=snapshot_timeout_s)
+        self._pinned_commits: ContextVar[dict[tuple[str, str], str] | None] = (
+            ContextVar(
+                "search_pinned_commits",
+                default=None,
+            )
+        )
 
-    async def validate_target(self, session_id: SessionId) -> None:
-        """Fail before an agent spends a model turn on an invalid session."""
-        await self._integration_root(session_id)
+    async def list_projects(self) -> ProjectCatalogResult:
+        records = await self._project_records()
+        return ProjectCatalogResult(projects=tuple(record.target for record in records))
+
+    async def validate_target(self, project_id: str, branch: str) -> None:
+        """Resolve and materialize a target before spending a model turn."""
+        snapshot = await self._resolve_snapshot(project_id, branch, use_pin=False)
+        pins = dict(self._pinned_commits.get() or {})
+        pins[(project_id, branch)] = snapshot.commit
+        self._pinned_commits.set(pins)
+
+    async def _project_records(self) -> tuple[_ProjectRecord, ...]:
+        async with self._database.session() as db_session:
+            sessions = (
+                await db_session.exec(select(Session).order_by(col(Session.id).desc()))
+            ).all()
+        paths = await asyncio.to_thread(_known_repository_paths, sessions)
+        by_id: dict[str, _ProjectRecord] = {}
+        for path in paths:
+            try:
+                repository = await inspect_repository(path, timeout_s=self._timeout_s)
+            except GitUnavailableError as error:
+                raise SearchToolUnavailable(str(error)) from error
+            except GitReadTimedOut as error:
+                raise SearchTimedOut(str(error)) from error
+            except GitMetadataTooLarge as error:
+                raise SearchOutputTooLarge(str(error)) from error
+            except GitReadError:
+                # Historical sessions may outlive a deleted or moved repository.
+                continue
+            project_id = project_id_for(repository.common_dir)
+            target = ProjectTarget(
+                id=project_id,
+                name=repository.root.name,
+                repo_path=repository.root,
+                branches=tuple(
+                    ProjectBranch(
+                        name=branch.name,
+                        commit=branch.commit,
+                        is_head=branch.is_head,
+                    )
+                    for branch in repository.branches
+                    if not _INTERNAL_EXECUTION_BRANCH.fullmatch(branch.name)
+                ),
+            )
+            by_id.setdefault(
+                project_id,
+                _ProjectRecord(target=target, repository=repository),
+            )
+        return tuple(
+            sorted(
+                by_id.values(),
+                key=lambda record: (
+                    record.target.name.casefold(),
+                    record.target.name,
+                    record.target.id,
+                ),
+            )
+        )
+
+    async def _snapshot_root(self, project_id: str, branch: str) -> Path:
+        snapshot = await self._resolve_snapshot(project_id, branch, use_pin=True)
+        return snapshot.root
+
+    async def _resolve_snapshot(
+        self,
+        project_id: str,
+        branch: str,
+        *,
+        use_pin: bool,
+    ) -> GitSnapshot:
+        records = await self._project_records()
+        record = next(
+            (item for item in records if item.target.id == project_id),
+            None,
+        )
+        if record is None:
+            raise SearchTargetNotFound(f"no such project: {project_id}")
+        pinned = (
+            (self._pinned_commits.get() or {}).get((project_id, branch))
+            if use_pin
+            else None
+        )
+        if pinned is None:
+            selected = next(
+                (item for item in record.target.branches if item.name == branch),
+                None,
+            )
+            if selected is None:
+                raise SearchTargetNotFound(
+                    f"project {project_id} has no local branch named {branch!r}"
+                )
+            commit = selected.commit
+        else:
+            commit = pinned
+        try:
+            snapshot = await self._snapshots.materialize(
+                project_id=project_id,
+                repository=record.repository.root,
+                commit=commit,
+            )
+        except GitUnavailableError as error:
+            raise SearchToolUnavailable(str(error)) from error
+        except GitReadTimedOut as error:
+            raise SearchTimedOut(str(error)) from error
+        except GitSnapshotTooLarge as error:
+            raise SearchOutputTooLarge(str(error)) from error
+        except (GitSnapshotUnsafe, GitReadError) as error:
+            raise SearchTargetNotFound(
+                f"cannot materialize branch {branch!r} for project {project_id}"
+            ) from error
+        return snapshot
 
     async def search_text(
         self,
-        session_id: SessionId,
+        project_id: str,
+        branch: str,
         pattern: str,
         *,
         glob: str | None = None,
@@ -132,7 +305,7 @@ class CodeSearchService:
     ) -> TextSearchResult:
         if not 1 <= limit <= MAX_RESULTS:
             raise ValueError(f"search limit must be between 1 and {MAX_RESULTS}")
-        root = await self._integration_root(session_id)
+        root = await self._snapshot_root(project_id, branch)
         argv = [
             self._rg_binary,
             "--json",
@@ -164,7 +337,8 @@ class CodeSearchService:
 
     async def search_structural(
         self,
-        session_id: SessionId,
+        project_id: str,
+        branch: str,
         pattern: str,
         *,
         language: str,
@@ -173,7 +347,7 @@ class CodeSearchService:
         """Find ast-grep matches with the same citation shape as text search."""
         if not 1 <= limit <= MAX_RESULTS:
             raise ValueError(f"search limit must be between 1 and {MAX_RESULTS}")
-        root = await self._integration_root(session_id)
+        root = await self._snapshot_root(project_id, branch)
         argv = [
             self._sg_binary,
             "run",
@@ -199,7 +373,8 @@ class CodeSearchService:
 
     async def read_file(
         self,
-        session_id: SessionId,
+        project_id: str,
+        branch: str,
         path: str,
         *,
         start_line: int = 1,
@@ -212,49 +387,36 @@ class CodeSearchService:
             raise ValueError("end_line must not precede start_line")
         if final_line - start_line + 1 > MAX_FILE_LINES:
             raise ValueError(f"file reads are limited to {MAX_FILE_LINES} lines")
-        root = await self._integration_root(session_id)
+        root = await self._snapshot_root(project_id, branch)
         return await asyncio.to_thread(
             _read_file_sync, root, path, start_line, final_line
         )
 
     async def list_directory(
-        self, session_id: SessionId, path: str = ".", *, limit: int = 200
+        self,
+        project_id: str,
+        branch: str,
+        path: str = ".",
+        *,
+        limit: int = 200,
     ) -> DirectoryListResult:
         if not 1 <= limit <= MAX_DIRECTORY_ENTRIES:
             raise ValueError(
                 f"directory limit must be between 1 and {MAX_DIRECTORY_ENTRIES}"
             )
-        root = await self._integration_root(session_id)
+        root = await self._snapshot_root(project_id, branch)
         return await asyncio.to_thread(_list_directory_sync, root, path, limit)
 
-    async def _integration_root(self, session_id: SessionId) -> Path:
-        async with self._database.session() as db_session:
-            session = await db_session.get(Session, session_id)
-        if session is None:
-            raise SearchTargetNotFound(f"no such session: {session_id}")
-        return await asyncio.to_thread(
-            _resolve_integration_root, session.workspace_root
-        )
 
-
-def _resolve_integration_root(workspace_root: Path) -> Path:
-    try:
-        resolved_workspace = workspace_root.resolve(strict=True)
-        resolved = (resolved_workspace / "integration").resolve(strict=True)
-    except FileNotFoundError as error:
-        raise SearchTargetNotFound(
-            f"integration worktree does not exist: {workspace_root / 'integration'}"
-        ) from error
-    if resolved_workspace not in resolved.parents:
-        integration = workspace_root / "integration"
-        raise SearchPathError(
-            f"integration worktree escapes its workspace: {integration}"
-        )
-    if not resolved.is_dir():
-        raise SearchTargetNotFound(
-            f"integration worktree is not a directory: {resolved}"
-        )
-    return resolved
+def _known_repository_paths(sessions: Sequence[Session]) -> tuple[Path, ...]:
+    paths: dict[Path, None] = {}
+    for session in sessions:
+        try:
+            resolved = session.repo_path.resolve(strict=True)
+        except (FileNotFoundError, OSError):
+            continue
+        paths.setdefault(resolved, None)
+    return tuple(paths)
 
 
 def _resolve_relative(root: Path, value: str) -> tuple[Path, str]:
@@ -268,9 +430,7 @@ def _resolve_relative(root: Path, value: str) -> tuple[Path, str]:
     except FileNotFoundError as error:
         raise SearchTargetNotFound(f"no such repository path: {value}") from error
     if candidate != root and root not in candidate.parents:
-        raise SearchPathError(
-            f"repository path escapes the integration worktree: {value}"
-        )
+        raise SearchPathError(f"repository path escapes the branch snapshot: {value}")
     display = "." if candidate == root else candidate.relative_to(root).as_posix()
     return candidate, display
 
@@ -483,6 +643,9 @@ __all__ = [
     "FileReadResult",
     "InvalidSearchPattern",
     "InvalidStructuralPattern",
+    "ProjectBranch",
+    "ProjectCatalogResult",
+    "ProjectTarget",
     "SearchError",
     "SearchOutputTooLarge",
     "SearchPathError",

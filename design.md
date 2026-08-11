@@ -119,15 +119,18 @@ Per-node lifecycle:
    block every other node behind one human. The conflicting paths travel in the
    result, and resolution is an explicit later operation.
 
-When every node is done, finalization creates the durable
-`agenthub/<sess>/result` branch at the integration commit, verifies every
-managed worktree is clean, removes the node and integration worktrees, and
-deletes the superseded integration branch. Node branches remain as review
-history. Cleanup is best-effort and retryable: a dirty worktree preserves all
-worktrees rather than discarding data. The target repository's checked-out
-branch is never moved implicitly. A completed session exposes the aggregate
-diff and result branch in the UI so the operator can inspect the complete
-result before explicitly merging or otherwise applying it.
+When every node is done, finalization creates the durable operator-selected
+final branch at the integration commit, verifies every managed worktree is
+clean, removes the node and integration worktrees, and deletes the superseded
+integration branch. Legacy callers that omit the name retain the
+`agenthub/<sess>/result` fallback. The final name is reserved on the session and
+validated against Git's branch grammar, existing local refs, and non-final
+sessions in the same repository before planning spends a model turn. Node
+branches remain as review history. Cleanup is best-effort and retryable: a dirty
+worktree preserves all worktrees rather than discarding data. The target
+repository's checked-out branch is never moved implicitly. A completed session
+exposes the aggregate diff and final branch in the UI so the operator can
+inspect the complete result before explicitly merging or otherwise applying it.
 
 Two behaviors that exit codes do not express, and that any reimplementation will
 get wrong once: `git merge` exits 0 on "Already up to date", and `git commit`
@@ -396,9 +399,10 @@ Bind to `127.0.0.1` and move on.
 
 ### Tab 1 — Dashboard (overview, active work only)
 
-**KPI strip** (selectable period: today / 7d / 30d)
+**Operational strip** (selectable period: today / 7d / 30d)
 
-- Total tokens, broken down by `model` and by `harness` (stacked bars)
+- Total tokens; a button inside this metric opens the breakdown by `model` and
+  by `harness` in a focused modal
 - Estimated equivalent cost (with the label from §4)
 - Active sessions / running nodes / blocked nodes
 - Node completion rate
@@ -417,23 +421,29 @@ use, accumulated tokens, elapsed time, a badge if any node is `blocked`.
   ~300 points) and persist only 1-minute aggregates. Do not store 1 s metrics in
   SQLite forever.
 
-**Event feed** — the last N meaningful transitions (node completed, node failed,
-permission pending), each deep-linked.
+The overview stays task-oriented: active graphs and system health occupy the
+main two-column workspace. Detailed event history remains inside each session,
+where transitions have the graph and node context needed to act on them.
 
 ### Tab 2 — Sessions / Orchestrator
 
-Three-column layout:
+The orchestrator is a continuous operations workspace. Global navigation lives
+in the application activity rail; Sessions adds a contextual index and the
+selected graph opens an inspector on demand:
+
+Creating a graph uses the same workspace shell rather than a centered modal or
+card: the execution brief owns the main pane, while planner runtime and the
+approval-gated action stay in a fixed contextual rail.
 
 ```
-┌──────────────┬───────────────────────────────┬──────────────────┐
-│ Sessions     │ Chat                          │ Graph (minimap)  │
-│ ─ Active     │                               │   [⤢ expand]     │
-│   · sess A   │  [planning, or node chat]     │   ○──○──○        │
-│   · sess B   │                               │    └──○          │
-│ ─ Completed  │                               │                  │
-│   · sess C   │  ┌─────────────────────────┐  │                  │
-│   · sess D   │  │ input                   │  │                  │
-└──────────────┴───────────────────────────────┴──────────────────┘
+┌──────┬────────────────┬─────────────────────────────┬──────────────┐
+│ Rail │ Session index  │ Graph / proposal workspace  │ Inspector    │
+│      │ ─ Running      │                             │ Overview     │
+│  ◈   │ ─ Review       │       ○────○                │ Activity     │
+│  ◉   │ ─ Blocked      │        └──○────○            │ Diff/review  │
+│  ⌕   │ ─ Completed    │                             │              │
+│ live │                │                             │ sticky CTA   │
+└──────┴────────────────┴─────────────────────────────┴──────────────┘
 ```
 
 The difference from the Dashboard: **all** sessions appear here (active and
@@ -449,9 +459,10 @@ completed); the Dashboard shows only active ones.
    harness that can return schema-validated content.** Either produces the same
    parsed object, and nothing above the backend seam knows the difference.
 
-   **The choice is per plan, not per server.** `planner_backend`,
-   `planner_harness` and `planner_harness_model` are the *default*; a plan
-   request may name its own. The graph's own nodes have always been the
+   **The choice has a persisted global default and an optional per-plan
+   override.** The Settings route owns the default backend, harness and model;
+   `planner_backend`, `planner_harness` and `planner_harness_model` seed it on a
+   fresh database. A plan request may still name its own. The graph's own nodes have always been the
    operator's choice in the editable proposal, and the planner being the one
    thing frozen until a restart was an inconsistency, not a decision — a
    thirty-node migration and a one-flag change do not deserve the same model.
@@ -594,11 +605,8 @@ The model decides what to look for, reads what it needs, and iterates.
 tools = [
     search_text(pattern, glob, case_sensitive),   # ripgrep
     search_structural(pattern, lang),             # ast-grep
-    find_symbol(name, kind),                      # tree-sitter tags index
-    find_references(symbol),
     read_file(path, start_line, end_line),
     list_directory(path),
-    semantic_search(query, k),                    # sqlite-vec — last resort
 ]
 ```
 
@@ -606,11 +614,49 @@ This answers both "where is the tax ID validated?" and "what's the discount rule
 for recurring customers?", because the agent navigates instead of depending on a
 single similarity guess.
 
-UI requirement: every claim must cite a clickable `path/to/file.py:123`, with a
-side panel showing the snippet with syntax highlighting.
+UI requirement: the investigation scope is selected in two stages. First choose
+a project, deduplicated by canonical repository path even when it has several
+sessions; then choose from all of that repository's real local Git branches.
+The target is always `project_id + exact branch name`, never a session or an
+execution worktree. Discovery is read-only and never accepts a filesystem path
+or arbitrary ref from the client. Search materializes a bounded, commit-pinned
+snapshot from Git without switching the project's checkout, so an investigation
+cannot mutate the repository and remains internally consistent while a branch
+moves. Ephemeral `integration` and `node_*` refs owned by the orchestrator stay
+hidden, while durable result branches such as `agenthub/<session>/result` remain
+searchable project history. Every claim must cite a clickable
+`path/to/file.py:123`, with a side panel showing the snippet with syntax
+highlighting.
 
-Indexing: `watchfiles` watching the repo → incrementally reindex only what
-changed. Never reindex everything in the foreground.
+Tree-sitter and semantic indexes may return later only after they are scoped to
+the same project/branch snapshot contract. A session-worktree index must never
+silently answer a project investigation.
+
+The search model has the same two runtime classes as the planner. The API
+backend keeps a native multi-turn tool-use conversation and is real per-token
+spend. The harness backend uses the subscription-authenticated CLI as a
+schema-constrained decision maker: each short-lived CLI process returns exactly
+one next action, AgentHub executes that action through the bounded tools above,
+and the next process receives the bounded transcript. The CLI never receives a
+repository path or filesystem access; only AgentHub touches the pinned snapshot.
+Both backends finish through the same evidence validator, so every citation must
+refer to exact lines returned by `read_file`. The extra CLI process per turn is
+an accepted latency tradeoff for subscription-backed Search without an API key.
+
+### Settings
+
+`/settings` persists the operator's non-secret AI runtime preferences: backend,
+harness and model for Planner and Code Search, plus planner effort where the API
+supports it. These values apply immediately and survive a restart. Environment
+settings seed the singleton on first use; after that, the UI-owned preference is
+the default. Per-plan overrides remain available because one unusually complex
+graph should not require changing the global default.
+
+Credentials are deliberately absent from this form. A Max/Pro CLI login stays
+owned by its harness, and an API credential stays in the server environment (or
+a future macOS Keychain integration), never in SQLite or an HTTP response. The
+UI must label API choices as real spend and harness choices as estimated
+equivalent under an existing subscription.
 
 ---
 

@@ -156,8 +156,25 @@ class Settings(BaseSettings):
     )
 
     # --- agentic code search (`design.md` §8, Phase 4 E4) -------------------
+    # The same backend seam as the planner. These values are deployment
+    # defaults only; the persisted AI preference may override them without
+    # rewriting `.env` or restarting the process.
+    search_backend: PlannerBackendName = Field(default="harness")
+    search_harness: str = Field(default="codex")
+    # None delegates the model choice to the selected CLI.
+    search_harness_model: str | None = Field(default=None)
     # These are independent ceilings: raising one must never disable another.
     search_model: str = Field(default="claude-sonnet-5")
+    # API models are deliberately independent from harness catalogs. A CLI
+    # model name does not imply that the Anthropic API can serve it, and the
+    # two paths have different billing semantics.
+    search_api_models: list[str] = Field(
+        default_factory=lambda: [
+            "claude-opus-5",
+            "claude-sonnet-5",
+            "claude-haiku-4-5",
+        ]
+    )
     search_max_output_tokens: Annotated[int, Field(ge=256, le=16_000)] = Field(
         default=4_096
     )

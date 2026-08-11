@@ -1,5 +1,6 @@
-"""E1 HTTP smoke test over a real integration worktree and ripgrep."""
+"""HTTP smoke tests for project-and-branch code search."""
 
+import asyncio
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -7,31 +8,67 @@ from fastapi.testclient import TestClient
 from app.config import Settings
 from app.main import create_app
 from app.search.tools import CodeSearchService
-from tests.api.conftest import MODEL
+from tests.api.conftest import MODEL, git
 
 
-def test_search_routes_are_typed_and_session_scoped(
+def _register_project(client: TestClient, target_repo: Path, title: str) -> None:
+    response = client.post(
+        "/api/sessions",
+        json={
+            "repo_path": str(target_repo),
+            "prompt": "Register this repository with AgentHub",
+            "title": title,
+            "harness": "codex",
+            "model": MODEL,
+        },
+    )
+    assert response.status_code == 201, response.text
+
+
+def test_search_routes_target_a_deduplicated_project_and_local_branch(
     settings: Settings, target_repo: Path
 ) -> None:
+    asyncio.run(git(target_repo, "checkout", "-qb", "feature/search"))
+    (target_repo / "README.md").write_text("feature only\n", encoding="utf-8")
+    asyncio.run(git(target_repo, "add", "README.md"))
+    asyncio.run(git(target_repo, "commit", "-qm", "feature content"))
+    asyncio.run(git(target_repo, "checkout", "-q", "main"))
+
     app = create_app(settings)
     with TestClient(app) as client:
-        created = client.post(
-            "/api/sessions",
-            json={
-                "repo_path": str(target_repo),
-                "prompt": "Create a search target",
-                "harness": "codex",
-                "model": MODEL,
-            },
+        # Sessions only teach AgentHub that the repository exists. They are not
+        # exposed as Search targets, and duplicates collapse to one project.
+        _register_project(client, target_repo, "First activity")
+        _register_project(client, target_repo, "Second activity")
+
+        catalog = client.get("/api/search/projects")
+        assert catalog.status_code == 200, catalog.text
+        projects = catalog.json()["projects"]
+        assert len(projects) == 1
+        project = projects[0]
+        assert project["name"] == "target"
+        assert project["repo_path"] == str(target_repo)
+        assert {branch["name"] for branch in project["branches"]} == {
+            "feature/search",
+            "main",
+        }
+        assert (
+            next(branch for branch in project["branches"] if branch["name"] == "main")[
+                "is_head"
+            ]
+            is True
         )
-        assert created.status_code == 201, created.text
-        session_id = created.json()["session"]["id"]
+        project_id = project["id"]
 
         found = client.get(
             "/api/search/text",
-            params={"session_id": session_id, "pattern": "original"},
+            params={
+                "project_id": project_id,
+                "branch": "main",
+                "pattern": "original",
+            },
         )
-        assert found.status_code == 200
+        assert found.status_code == 200, found.text
         assert found.json() == {
             "matches": [
                 {
@@ -43,6 +80,17 @@ def test_search_routes_are_typed_and_session_scoped(
             ],
             "truncated": False,
         }
+
+        feature = client.get(
+            "/api/search/text",
+            params={
+                "project_id": project_id,
+                "branch": "feature/search",
+                "pattern": "feature only",
+            },
+        )
+        assert feature.status_code == 200, feature.text
+        assert feature.json()["matches"][0]["preview"] == "feature only"
 
         script = target_repo.parent / "fake-sg"
         script.write_text(
@@ -63,11 +111,15 @@ print(json.dumps({
             encoding="utf-8",
         )
         script.chmod(0o755)
-        app.state.search = CodeSearchService(app.state.database, sg_binary=str(script))
+        app.state.search = CodeSearchService(
+            app.state.database,
+            sg_binary=str(script),
+        )
         structural = client.get(
             "/api/search/structural",
             params={
-                "session_id": session_id,
+                "project_id": project_id,
+                "branch": "main",
                 "pattern": "$VALUE",
                 "language": "python",
             },
@@ -77,43 +129,55 @@ print(json.dumps({
 
         read = client.get(
             "/api/search/file",
-            params={"session_id": session_id, "path": "README.md"},
+            params={
+                "project_id": project_id,
+                "branch": "main",
+                "path": "README.md",
+            },
         )
         assert read.status_code == 200
         assert read.json()["lines"] == [{"line": 1, "text": "original"}]
         assert len(read.json()["content_hash"]) == 64
 
         listing = client.get(
-            "/api/search/directory", params={"session_id": session_id, "path": "."}
+            "/api/search/directory",
+            params={"project_id": project_id, "branch": "main", "path": "."},
         )
         assert listing.status_code == 200
-        assert {entry["path"] for entry in listing.json()["entries"]} >= {
-            ".git",
-            "README.md",
-        }
+        assert listing.json()["entries"] == [{"path": "README.md", "kind": "file"}]
 
-        invalid = client.get(
+        invalid_pattern = client.get(
             "/api/search/text",
-            params={"session_id": session_id, "pattern": "["},
+            params={
+                "project_id": project_id,
+                "branch": "main",
+                "pattern": "[",
+            },
         )
-        assert invalid.status_code == 400
+        assert invalid_pattern.status_code == 400
         assert (
             client.get(
                 "/api/search/text",
-                params={"session_id": "sess_missing", "pattern": "value"},
+                params={
+                    "project_id": project_id,
+                    "branch": "missing",
+                    "pattern": "value",
+                },
             ).status_code
             == 404
         )
         unanswered = client.post(
             "/api/search/answer",
             json={
-                "session_id": "sess_missing",
+                "project_id": "proj_missing",
+                "branch": "main",
                 "question": "Where is the business rule enforced?",
             },
         )
         assert unanswered.status_code == 404
         blank = client.post(
             "/api/search/answer",
-            json={"session_id": session_id, "question": "   "},
+            json={"project_id": project_id, "branch": "main", "question": "   "},
         )
         assert blank.status_code == 422
+        assert client.get("/api/search/branches").status_code == 404

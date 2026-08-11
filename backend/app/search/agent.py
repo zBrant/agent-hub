@@ -1,22 +1,20 @@
-"""Bounded model-driven repository navigation with evidence-only citations."""
+"""Bounded project-branch navigation with evidence-only citations."""
 
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
-from typing import Any, Protocol, cast
+from secrets import token_hex
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from anthropic import APIError, AsyncAnthropic
 from anthropic.types import MessageParam, ToolParam
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config import Settings
-from app.models.ids import SessionId
 from app.models.pricing import PriceTable, TokenCounts
-from app.search.semantic import SemanticIndexService
-from app.search.symbols import SymbolIndexService
 from app.search.tools import CodeSearchService, FileLine, SearchError, file_line_hash
 
 # The stable half of the SDK's auth-resolution `TypeError`, which arrives from a
@@ -29,17 +27,16 @@ from app.search.tools import CodeSearchService, FileLine, SearchError, file_line
 _NO_CREDENTIAL = "Could not resolve authentication method"
 
 SYSTEM_PROMPT = """\
-You answer questions about one repository by navigating it with the supplied
-read-only tools. Do not answer from memory. Search broadly, then read the exact
-lines that support each claim.
+You answer questions about one immutable project branch snapshot by navigating
+it with the supplied read-only tools. Every tool is already bound to that same
+project and branch; do not infer that you can switch targets. Do not answer from
+memory. Search broadly, then read the exact lines that support each claim.
 
 Finish only by calling submit_answer. Every claim needs at least one citation,
 and every cited line must have been returned by read_file in this conversation.
-Search previews and symbol matches help navigation but are not evidence. Keep
-claims atomic: if one sentence needs two locations, cite both. If the evidence
-is incomplete, submit only the claims you can support. Semantic search is an
-expensive last resort: use it only after lexical, structural, or symbol search
-failed to locate the concept.
+Search previews help navigation but are not evidence. Keep claims atomic: if
+one sentence needs two locations, cite both. If the evidence is incomplete,
+submit only the claims you can support.
 """
 
 
@@ -77,6 +74,22 @@ class SubmitAnswerInput(BaseModel):
     claims: list[AnswerClaim] = Field(min_length=1, max_length=30)
 
 
+class HarnessSearchAction(BaseModel):
+    """One backend-owned search action selected by a structured completer."""
+
+    action: str
+    pattern: str | None = None
+    glob: str | None = None
+    case_sensitive: bool | None = None
+    literal: bool | None = None
+    limit: int | None = None
+    language: str | None = None
+    path: str | None = None
+    start_line: int | None = None
+    end_line: int | None = None
+    claims: list[AnswerClaim] | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class ValidatedCitation:
     path: str
@@ -106,12 +119,27 @@ class SearchUsage:
     price_table_version: int
     requests: int = 0
 
-    def with_request(self, counts: TokenCounts, prices: PriceTable) -> SearchUsage:
+    def with_request(
+        self,
+        counts: TokenCounts,
+        prices: PriceTable,
+        *,
+        model: str | None = None,
+    ) -> SearchUsage:
+        resolved_model = model or self.model
         total = self.counts + counts
+        request_cost = prices.cost_usd(resolved_model, counts)
+        cost_usd = (
+            request_cost
+            if self.requests == 0
+            else None
+            if self.cost_usd is None or request_cost is None
+            else self.cost_usd + request_cost
+        )
         return SearchUsage(
-            model=self.model,
+            model=resolved_model,
             counts=total,
-            cost_usd=prices.cost_usd(self.model, total),
+            cost_usd=cost_usd,
             price_table_version=prices.version,
             requests=self.requests + 1,
         )
@@ -143,6 +171,7 @@ class ModelTurn:
     assistant_content: Sequence[Mapping[str, Any]]
     tool_calls: tuple[ModelToolCall, ...]
     counts: TokenCounts
+    model: str | None = None
 
 
 class SearchModelClient(Protocol):
@@ -157,6 +186,228 @@ class SearchModelClient(Protocol):
     ) -> ModelTurn: ...
 
     async def close(self) -> None: ...
+
+
+class SearchModelBackendError(Exception):
+    """A configured model backend could not produce one valid search action."""
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessSearchRequest:
+    """Harness-neutral structured request assembled by the search vertical.
+
+    Composition maps this value to the harness package's concrete request. The
+    search vertical consequently never imports or branches on a harness.
+    """
+
+    prompt: str
+    schema: Mapping[str, object]
+    system: str | None
+    model: str | None
+    cwd: None = None
+    env: Mapping[str, str] = field(default_factory=dict)
+    launcher: tuple[str, ...] = ()
+
+
+RequestT = TypeVar("RequestT", contravariant=True)
+
+
+@runtime_checkable
+class StructuredCompleterLike(Protocol[RequestT]):
+    async def complete_structured(self, request: RequestT) -> Any: ...
+
+
+HARNESS_ACTION_SCHEMA: Mapping[str, object] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": [
+                "search_text",
+                "search_structural",
+                "read_file",
+                "list_directory",
+                "submit_answer",
+            ],
+        },
+        "pattern": {"type": ["string", "null"]},
+        "glob": {"type": ["string", "null"]},
+        "case_sensitive": {"type": ["boolean", "null"]},
+        "literal": {"type": ["boolean", "null"]},
+        "limit": {"type": ["integer", "null"], "minimum": 1, "maximum": 500},
+        "language": {"type": ["string", "null"]},
+        "path": {"type": ["string", "null"]},
+        "start_line": {"type": ["integer", "null"], "minimum": 1},
+        "end_line": {"type": ["integer", "null"], "minimum": 1},
+        "claims": {
+            "type": ["array", "null"],
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "citations": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string"},
+                                "line": {"type": "integer", "minimum": 1},
+                                "end_line": {"type": "integer", "minimum": 1},
+                            },
+                            "required": ["path", "line", "end_line"],
+                            "additionalProperties": False,
+                        },
+                        "minItems": 1,
+                        "maxItems": 12,
+                    },
+                },
+                "required": ["text", "citations"],
+                "additionalProperties": False,
+            },
+            "minItems": 1,
+            "maxItems": 30,
+        },
+    },
+    "required": [
+        "action",
+        "pattern",
+        "glob",
+        "case_sensitive",
+        "literal",
+        "limit",
+        "language",
+        "path",
+        "start_line",
+        "end_line",
+        "claims",
+    ],
+    "additionalProperties": False,
+}
+
+
+class HarnessSearchClient[ConcreteRequestT]:
+    """Stateless adapter from the chat loop to one structured CLI process."""
+
+    def __init__(
+        self,
+        *,
+        completer: StructuredCompleterLike[ConcreteRequestT],
+        request_factory: Callable[[HarnessSearchRequest], ConcreteRequestT],
+        model: str | None,
+        launcher: tuple[str, ...],
+        max_transcript_bytes: int,
+        backend_errors: tuple[type[Exception], ...] = (),
+    ) -> None:
+        self._completer = completer
+        self._request_factory = request_factory
+        self._model = model
+        self._launcher = launcher
+        self._max_transcript_bytes = max_transcript_bytes
+        self._backend_errors = backend_errors
+
+    async def complete(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        system: str,
+        messages: Sequence[MessageParam],
+        tools: Sequence[ToolParam],
+    ) -> ModelTurn:
+        del model, max_tokens
+        transcript = json.dumps(
+            {"messages": messages, "tools": tools},
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        prompt = (
+            "Select exactly one next action for the repository-search loop. "
+            "The application executes it and will provide its result on the "
+            "next turn. Populate fields unrelated to the selected action with "
+            "null; for submit_answer, populate claims and use null elsewhere.\n\n"
+            f"Transcript and available tools:\n{transcript}"
+        )
+        if len(prompt.encode("utf-8")) > self._max_transcript_bytes:
+            raise SearchModelBackendError(
+                "the structured-search transcript exceeded its byte ceiling"
+            )
+        request = self._request_factory(
+            HarnessSearchRequest(
+                prompt=prompt,
+                schema=HARNESS_ACTION_SCHEMA,
+                system=system,
+                # ``None`` is meaningful: let the selected CLI use its own
+                # configured default. The protocol's `model` argument belongs
+                # to the API path and must never leak an Anthropic model name
+                # into Codex or another harness.
+                model=self._model,
+                cwd=None,
+                launcher=self._launcher,
+            )
+        )
+        try:
+            result = await self._completer.complete_structured(request)
+        except self._backend_errors as error:
+            raise SearchModelBackendError(
+                f"the structured search backend failed: {type(error).__name__}"
+            ) from error
+
+        try:
+            action = HarnessSearchAction.model_validate(result.data)
+            name, values = _harness_action_call(action)
+            counts = _structured_token_counts(result.usage)
+            actual_model = str(result.model)
+        except (AttributeError, TypeError, ValueError, ValidationError) as error:
+            raise SearchModelBackendError(
+                "the structured search backend returned an invalid action"
+            ) from error
+
+        call = ModelToolCall(
+            id=f"search_{token_hex(8)}",
+            name=name,
+            input=values,
+        )
+        content: Mapping[str, Any] = {
+            "type": "tool_use",
+            "id": call.id,
+            "name": call.name,
+            "input": dict(call.input),
+        }
+        return ModelTurn(
+            stop_reason="tool_use",
+            assistant_content=(content,),
+            tool_calls=(call,),
+            counts=counts,
+            model=actual_model,
+        )
+
+    async def close(self) -> None:
+        # Structured completers launch one process per request and own no
+        # persistent session for this client to close.
+        return None
+
+
+def create_harness_search_client[ConcreteRequestT](
+    *,
+    completer: StructuredCompleterLike[ConcreteRequestT],
+    request_factory: Callable[[HarnessSearchRequest], ConcreteRequestT],
+    model: str | None,
+    launcher: tuple[str, ...],
+    max_transcript_bytes: int,
+    backend_errors: tuple[type[Exception], ...] = (),
+) -> HarnessSearchClient[ConcreteRequestT]:
+    """Create the subscription-backed client after a capability-only check."""
+    if not isinstance(completer, StructuredCompleterLike):
+        raise ValueError("search adapter does not support structured output")
+    return HarnessSearchClient(
+        completer=completer,
+        request_factory=request_factory,
+        model=model,
+        launcher=launcher,
+        max_transcript_bytes=max_transcript_bytes,
+        backend_errors=backend_errors,
+    )
 
 
 class AnthropicSearchClient:
@@ -195,6 +446,7 @@ class AnthropicSearchClient:
             assistant_content=content,
             tool_calls=calls,
             counts=_token_counts(response.usage),
+            model=response.model,
         )
 
     async def close(self) -> None:
@@ -244,25 +496,6 @@ TOOLS: tuple[ToolParam, ...] = (
         ["pattern", "language", "limit"],
     ),
     _tool(
-        "find_symbol",
-        "Find exact symbol definitions from the incremental Tree-sitter index.",
-        {
-            "name": {"type": "string"},
-            "kind": {"type": ["string", "null"]},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-        },
-        ["name", "limit"],
-    ),
-    _tool(
-        "find_references",
-        "Find exact call references from the incremental Tree-sitter index.",
-        {
-            "name": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
-        },
-        ["name", "limit"],
-    ),
-    _tool(
         "read_file",
         "Read a bounded line range. Only lines returned here may be cited.",
         {
@@ -280,15 +513,6 @@ TOOLS: tuple[ToolParam, ...] = (
             "limit": {"type": "integer", "minimum": 1, "maximum": 500},
         },
         ["path", "limit"],
-    ),
-    _tool(
-        "semantic_search",
-        "Last-resort concept search after other navigation tools miss.",
-        {
-            "query": {"type": "string"},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-        },
-        ["query", "limit"],
     ),
     _tool(
         "submit_answer",
@@ -334,25 +558,21 @@ class SearchAgent:
         *,
         client: SearchModelClient,
         tools: CodeSearchService,
-        symbols: SymbolIndexService,
-        semantic: SemanticIndexService,
         settings: Settings,
         prices: PriceTable,
     ) -> None:
         self._client = client
         self._tools = tools
-        self._symbols = symbols
-        self._semantic = semantic
         self._settings = settings
         self._prices = prices
 
     async def close(self) -> None:
         await self._client.close()
 
-    async def answer(self, session_id: SessionId, question: str) -> SearchAnswer:
+    async def answer(self, project_id: str, branch: str, question: str) -> SearchAnswer:
         if not question.strip():
             raise ValueError("search question must not be empty")
-        await self._tools.validate_target(session_id)
+        await self._tools.validate_target(project_id, branch)
         messages: list[MessageParam] = [{"role": "user", "content": question}]
         evidence: dict[str, dict[int, str]] = {}
         usage = SearchUsage(
@@ -362,7 +582,6 @@ class SearchAgent:
             price_table_version=self._prices.version,
         )
         turns = tool_calls = bytes_read = 0
-        navigation_attempted = False
 
         while turns < self._settings.search_max_turns:
             turns += 1
@@ -384,28 +603,31 @@ class SearchAgent:
                     raise
                 return self._partial(
                     SearchLimitReason.NOT_CONFIGURED,
-                    "agentic search has no Anthropic credential: set "
-                    "ANTHROPIC_API_KEY in the environment that starts the "
-                    "server and restart it. Unlike the harnesses and the "
-                    "planner, this loop has no subscription-backed path — it "
-                    "needs a real tool-use loop, which no CLI exposes.",
+                    "the Anthropic API runtime selected for Code Search has no "
+                    "credential. Select a subscription-backed harness in "
+                    "Settings, or set ANTHROPIC_API_KEY in the environment "
+                    "that starts the server and restart it.",
                     evidence,
                     turns,
                     tool_calls,
                     bytes_read,
                     usage,
                 )
-            except APIError as api_error:
+            except (APIError, SearchModelBackendError) as api_error:
                 return self._partial(
                     SearchLimitReason.API_ERROR,
-                    f"the search model API failed: {type(api_error).__name__}",
+                    f"the search model backend failed: {type(api_error).__name__}",
                     evidence,
                     turns,
                     tool_calls,
                     bytes_read,
                     usage,
                 )
-            usage = usage.with_request(turn.counts, self._prices)
+            usage = usage.with_request(
+                turn.counts,
+                self._prices,
+                model=turn.model,
+            )
             if usage.counts.total > self._settings.search_max_tokens:
                 return self._partial(
                     SearchLimitReason.TOKENS,
@@ -485,17 +707,10 @@ class SearchAgent:
                     read_lines: dict[str, dict[int, str]] = {}
                 else:
                     payload, is_error, read_lines = await self._execute(
-                        session_id,
+                        project_id,
+                        branch,
                         call,
-                        allow_semantic=navigation_attempted,
                     )
-                    if call.name in {
-                        "search_text",
-                        "search_structural",
-                        "find_symbol",
-                        "find_references",
-                    }:
-                        navigation_attempted = True
                 encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True)
                 size = len(encoded.encode("utf-8"))
                 if bytes_read + size > self._settings.search_max_bytes:
@@ -533,41 +748,25 @@ class SearchAgent:
 
     async def _execute(
         self,
-        session_id: SessionId,
+        project_id: str,
+        branch: str,
         call: ModelToolCall,
-        *,
-        allow_semantic: bool,
     ) -> tuple[dict[str, Any], bool, dict[str, dict[int, str]]]:
         values = dict(call.input)
         read: dict[str, dict[int, str]] = {}
         result: Any
         try:
             if call.name == "search_text":
-                result = await self._tools.search_text(session_id, **values)
+                result = await self._tools.search_text(project_id, branch, **values)
             elif call.name == "search_structural":
-                result = await self._tools.search_structural(session_id, **values)
-            elif call.name == "find_symbol":
-                result = await self._symbols.find_symbol(session_id, **values)
-            elif call.name == "find_references":
-                result = await self._symbols.find_references(session_id, **values)
+                result = await self._tools.search_structural(
+                    project_id, branch, **values
+                )
             elif call.name == "read_file":
-                result = await self._tools.read_file(session_id, **values)
+                result = await self._tools.read_file(project_id, branch, **values)
                 read[result.path] = {line.line: line.text for line in result.lines}
             elif call.name == "list_directory":
-                result = await self._tools.list_directory(session_id, **values)
-            elif call.name == "semantic_search":
-                if not allow_semantic:
-                    return (
-                        {
-                            "error": (
-                                "semantic_search is available only after a lexical, "
-                                "structural, symbol, or reference search"
-                            )
-                        },
-                        True,
-                        read,
-                    )
-                result = await self._semantic.search(session_id, **values)
+                result = await self._tools.list_directory(project_id, branch, **values)
             else:
                 return {"error": f"unknown tool: {call.name}"}, True, read
             return asdict(result), False, read
@@ -668,35 +867,94 @@ def _token_counts(usage: Any) -> TokenCounts:
     )
 
 
+def _structured_token_counts(usage: Any) -> TokenCounts:
+    if usage is None:
+        return TokenCounts()
+    return TokenCounts(
+        input_tokens=int(usage.input_tokens),
+        output_tokens=int(usage.output_tokens),
+        cache_read_tokens=int(usage.cache_read_tokens),
+        cache_write_tokens=int(usage.cache_write_tokens),
+        cache_write_5m_tokens=int(getattr(usage, "cache_write_5m_tokens", 0)),
+        cache_write_1h_tokens=int(getattr(usage, "cache_write_1h_tokens", 0)),
+    )
+
+
+def _harness_action_call(
+    action: HarnessSearchAction,
+) -> tuple[str, Mapping[str, Any]]:
+    if action.action == "search_text":
+        if action.pattern is None:
+            raise ValueError("search_text requires pattern")
+        return action.action, {
+            "pattern": action.pattern,
+            "glob": action.glob,
+            "case_sensitive": action.case_sensitive
+            if action.case_sensitive is not None
+            else False,
+            "literal": action.literal if action.literal is not None else True,
+            "limit": action.limit or 50,
+        }
+    if action.action == "search_structural":
+        if action.pattern is None or action.language is None:
+            raise ValueError("search_structural requires pattern and language")
+        return action.action, {
+            "pattern": action.pattern,
+            "language": action.language,
+            "limit": action.limit or 50,
+        }
+    if action.action == "read_file":
+        if action.path is None or action.start_line is None or action.end_line is None:
+            raise ValueError("read_file requires path, start_line, and end_line")
+        return action.action, {
+            "path": action.path,
+            "start_line": action.start_line,
+            "end_line": action.end_line,
+        }
+    if action.action == "list_directory":
+        return action.action, {
+            "path": action.path or ".",
+            "limit": action.limit or 100,
+        }
+    if action.action == "submit_answer":
+        if action.claims is None:
+            raise ValueError("submit_answer requires claims")
+        return action.action, {
+            "claims": [claim.model_dump() for claim in action.claims]
+        }
+    raise ValueError(f"unknown structured search action: {action.action}")
+
+
 def create_search_agent(
     *,
     tools: CodeSearchService,
-    symbols: SymbolIndexService,
-    semantic: SemanticIndexService,
     settings: Settings,
     prices: PriceTable,
 ) -> SearchAgent:
     return SearchAgent(
         client=AnthropicSearchClient(),
         tools=tools,
-        symbols=symbols,
-        semantic=semantic,
         settings=settings,
         prices=prices,
     )
 
 
 __all__ = [
+    "HARNESS_ACTION_SCHEMA",
     "AnswerClaim",
     "Citation",
     "EvidenceSpan",
+    "HarnessSearchClient",
+    "HarnessSearchRequest",
     "ModelToolCall",
     "ModelTurn",
     "SearchAgent",
     "SearchAnswer",
     "SearchLimitReason",
+    "SearchModelBackendError",
     "SearchUsage",
     "ValidatedCitation",
     "ValidatedClaim",
+    "create_harness_search_client",
     "create_search_agent",
 ]

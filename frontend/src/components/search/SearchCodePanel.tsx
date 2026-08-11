@@ -1,4 +1,11 @@
-import { AlertTriangle, FileCode2, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Braces,
+  Check,
+  FileCode2,
+  MousePointer2,
+  X,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import type { FileRead } from "@/api/client";
 
@@ -36,13 +43,21 @@ export function SearchCodePanel({
       aria-label="Citation source"
       className="flex h-full min-h-0 flex-col bg-inset"
     >
-      <header className="flex h-8 shrink-0 items-center gap-2 border-border border-b bg-surface px-3">
-        <FileCode2 className="size-3.5 shrink-0 text-fg-muted" />
-        <span className="min-w-0 flex-1 truncate font-mono text-code">
-          {target
-            ? `${target.path}:${target.line}-${target.endLine}`
-            : "Source"}
-        </span>
+      <header className="flex min-h-12 shrink-0 items-center gap-3 border-border border-b bg-surface px-3 py-2">
+        <FileCode2 className="size-4 shrink-0 text-accent" />
+        <div className="min-w-0 flex-1">
+          <p className="text-badge text-fg-subtle uppercase tracking-[0.12em]">
+            Evidence source
+          </p>
+          <p className="truncate font-mono text-code text-fg">
+            {target ? target.path : "No source selected"}
+          </p>
+        </div>
+        {target ? (
+          <span className="border border-border bg-inset px-1.5 py-0.5 font-mono text-badge text-fg-muted">
+            L{target.line}–{target.endLine}
+          </span>
+        ) : null}
         {target ? (
           <button
             aria-label="Close source panel"
@@ -68,26 +83,51 @@ export function SearchCodePanel({
 
       <div className="min-h-0 flex-1 overflow-auto">
         {!target ? (
-          <div className="flex h-full min-h-48 items-center justify-center p-4 text-center text-fg-subtle text-meta">
-            Open a citation to inspect its exact line range.
+          <div className="flex h-full min-h-48 items-center justify-center p-6">
+            <div className="max-w-72 border-border border-l pl-4">
+              <MousePointer2 className="mb-3 size-5 text-accent" />
+              <p className="font-semibold text-ui text-fg">
+                Inspect supporting code
+              </p>
+              <p className="mt-1 text-fg-muted text-meta leading-relaxed">
+                Select a file reference in the investigation report to open the
+                exact lines used as evidence.
+              </p>
+              <div className="mt-4 grid gap-2 text-badge text-fg-subtle">
+                <p className="flex items-center gap-2">
+                  <Braces className="size-3" /> Syntax-aware preview
+                </p>
+                <p className="flex items-center gap-2">
+                  <Check className="size-3" /> Content hash validation
+                </p>
+              </div>
+            </div>
           </div>
         ) : loading ? (
-          <p className="p-3 text-fg-muted text-meta">Loading source…</p>
+          <div aria-live="polite" className="p-4 text-fg-muted text-meta">
+            Reading evidence snapshot…
+          </div>
         ) : error ? (
-          <div className="flex gap-2 p-3 text-failed text-meta" role="alert">
+          <div
+            className="m-3 flex gap-2 border border-failed bg-surface p-3 text-failed text-meta"
+            role="alert"
+          >
             <AlertTriangle className="size-3.5 shrink-0" />
             The cited file is unavailable or moved. This citation is stale.
           </div>
         ) : file ? (
           <section
             aria-label={`${target.path} lines ${target.line} through ${target.endLine}`}
-            className="min-w-max py-2 font-mono text-code leading-relaxed"
+            className="min-w-max py-3 font-mono text-code leading-relaxed"
           >
             {file.lines.map((line) => (
-              <div className="flex bg-elevated" key={line.line}>
+              <div
+                className="flex border-accent border-l-2 bg-surface"
+                key={line.line}
+              >
                 <span
                   aria-hidden="true"
-                  className="sticky left-0 w-14 shrink-0 select-none border-border border-r bg-surface pr-2 text-right text-fg-subtle"
+                  className="sticky left-0 w-14 shrink-0 select-none border-border border-r bg-inset pr-2 text-right text-fg-subtle"
                 >
                   {line.line}
                 </span>
@@ -99,6 +139,21 @@ export function SearchCodePanel({
           </section>
         ) : null}
       </div>
+      {target && file ? (
+        <footer className="flex h-7 shrink-0 items-center gap-2 border-border border-t bg-surface px-3 text-badge text-fg-subtle">
+          {stale ? (
+            <AlertTriangle className="size-3 text-review" />
+          ) : (
+            <Check className="size-3 text-done" />
+          )}
+          {stale
+            ? "Current file differs from cited snapshot"
+            : "Snapshot verified"}
+          {file.truncated ? (
+            <span className="ml-auto">Range truncated</span>
+          ) : null}
+        </footer>
+      ) : null}
     </aside>
   );
 }

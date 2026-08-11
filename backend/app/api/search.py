@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Annotated, NoReturn, cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field, StringConstraints
 
 from app.search.agent import SearchAgent, SearchAnswer
-from app.search.symbols import SymbolIndexService, SymbolSearchResult
 from app.search.tools import (
     CodeSearchService,
     DirectoryListResult,
     FileReadResult,
     InvalidSearchPattern,
     InvalidStructuralPattern,
+    ProjectCatalogResult,
     SearchOutputTooLarge,
     SearchPathError,
     SearchTargetNotFound,
@@ -53,45 +54,9 @@ class TextSearchResponse(BaseModel):
         )
 
 
-class SymbolMatchResponse(BaseModel):
-    path: str
-    language: str
-    name: str
-    kind: str
-    role: str
-    line: int
-    column: int
-    end_line: int
-    end_column: int
-
-
-class SymbolSearchResponse(BaseModel):
-    matches: tuple[SymbolMatchResponse, ...]
-    truncated: bool
-
-    @classmethod
-    def from_result(cls, result: SymbolSearchResult) -> SymbolSearchResponse:
-        return cls(
-            matches=tuple(
-                SymbolMatchResponse(
-                    path=match.path,
-                    language=match.language,
-                    name=match.name,
-                    kind=match.kind,
-                    role=match.role,
-                    line=match.line,
-                    column=match.column,
-                    end_line=match.end_line,
-                    end_column=match.end_column,
-                )
-                for match in result.matches
-            ),
-            truncated=result.truncated,
-        )
-
-
 class AgentSearchRequest(BaseModel):
-    session_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=128)
+    branch: str = Field(min_length=1, max_length=1_000)
     question: Annotated[
         str, StringConstraints(strip_whitespace=True, min_length=1, max_length=8_000)
     ]
@@ -231,16 +196,53 @@ class DirectoryListResponse(BaseModel):
         )
 
 
+class SearchBranchResponse(BaseModel):
+    name: str
+    commit: str
+    is_head: bool
+
+
+class SearchProjectResponse(BaseModel):
+    id: str
+    name: str
+    repo_path: str
+    branches: tuple[SearchBranchResponse, ...]
+
+
+class SearchProjectsResponse(BaseModel):
+    projects: tuple[SearchProjectResponse, ...]
+
+    @classmethod
+    def from_result(cls, result: ProjectCatalogResult) -> SearchProjectsResponse:
+        return cls(
+            projects=tuple(
+                SearchProjectResponse(
+                    id=project.id,
+                    name=project.name,
+                    repo_path=str(project.repo_path),
+                    branches=tuple(
+                        SearchBranchResponse(
+                            name=branch.name,
+                            commit=branch.commit,
+                            is_head=branch.is_head,
+                        )
+                        for branch in project.branches
+                    ),
+                )
+                for project in result.projects
+            )
+        )
+
+
 def _service(request: Request) -> CodeSearchService:
     return cast(CodeSearchService, request.app.state.search)
 
 
-def _symbols(request: Request) -> SymbolIndexService:
-    return cast(SymbolIndexService, request.app.state.symbols)
-
-
-def _agent(request: Request) -> SearchAgent:
-    return cast(SearchAgent, request.app.state.search_agent)
+def _agent_factory(request: Request) -> Callable[[], Awaitable[SearchAgent]]:
+    return cast(
+        Callable[[], Awaitable[SearchAgent]],
+        request.app.state.search_agent_factory,
+    )
 
 
 def _raise_http(error: Exception) -> NoReturn:
@@ -264,21 +266,48 @@ async def answer_question(
     request: Request, body: AgentSearchRequest
 ) -> AgentSearchResponse:
     try:
-        result = await _agent(request).answer(body.session_id, body.question)
+        agent = await _agent_factory(request)()
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    try:
+        result = await agent.answer(
+            body.project_id,
+            body.branch,
+            body.question,
+        )
     except (
         SearchTargetNotFound,
         SearchPathError,
+        SearchOutputTooLarge,
         SearchToolUnavailable,
         SearchTimedOut,
     ) as error:
         _raise_http(error)
+    finally:
+        await agent.close()
     return AgentSearchResponse.from_result(result)
+
+
+@router.get("/projects", response_model=SearchProjectsResponse)
+async def list_projects(request: Request) -> SearchProjectsResponse:
+    """Discover known repositories and their local branches."""
+    try:
+        result = await _service(request).list_projects()
+    except (
+        SearchTargetNotFound,
+        SearchOutputTooLarge,
+        SearchToolUnavailable,
+        SearchTimedOut,
+    ) as error:
+        _raise_http(error)
+    return SearchProjectsResponse.from_result(result)
 
 
 @router.get("/text", response_model=TextSearchResponse)
 async def search_text(
     request: Request,
-    session_id: Annotated[str, Query(min_length=1, max_length=128)],
+    project_id: Annotated[str, Query(min_length=1, max_length=128)],
+    branch: Annotated[str, Query(min_length=1, max_length=1_000)],
     pattern: Annotated[str, Query(min_length=1, max_length=1_000)],
     glob: Annotated[str | None, Query(max_length=256)] = None,
     case_sensitive: bool = True,
@@ -287,7 +316,8 @@ async def search_text(
 ) -> TextSearchResponse:
     try:
         result = await _service(request).search_text(
-            session_id,
+            project_id,
+            branch,
             pattern,
             glob=glob,
             case_sensitive=case_sensitive,
@@ -306,48 +336,22 @@ async def search_text(
     return TextSearchResponse.from_result(result)
 
 
-@router.get("/symbols", response_model=SymbolSearchResponse)
-async def find_symbol(
-    request: Request,
-    session_id: Annotated[str, Query(min_length=1, max_length=128)],
-    name: Annotated[str, Query(min_length=1, max_length=512)],
-    kind: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
-    limit: Annotated[int, Query(ge=1, le=200)] = 100,
-) -> SymbolSearchResponse:
-    try:
-        result = await _symbols(request).find_symbol(
-            session_id, name, kind=kind, limit=limit
-        )
-    except SearchTargetNotFound as error:
-        _raise_http(error)
-    return SymbolSearchResponse.from_result(result)
-
-
-@router.get("/references", response_model=SymbolSearchResponse)
-async def find_references(
-    request: Request,
-    session_id: Annotated[str, Query(min_length=1, max_length=128)],
-    name: Annotated[str, Query(min_length=1, max_length=512)],
-    limit: Annotated[int, Query(ge=1, le=200)] = 100,
-) -> SymbolSearchResponse:
-    try:
-        result = await _symbols(request).find_references(session_id, name, limit=limit)
-    except SearchTargetNotFound as error:
-        _raise_http(error)
-    return SymbolSearchResponse.from_result(result)
-
-
 @router.get("/structural", response_model=TextSearchResponse)
 async def search_structural(
     request: Request,
-    session_id: Annotated[str, Query(min_length=1, max_length=128)],
+    project_id: Annotated[str, Query(min_length=1, max_length=128)],
+    branch: Annotated[str, Query(min_length=1, max_length=1_000)],
     pattern: Annotated[str, Query(min_length=1, max_length=1_000)],
     language: Annotated[str, Query(min_length=1, max_length=64)],
     limit: Annotated[int, Query(ge=1, le=200)] = 100,
 ) -> TextSearchResponse:
     try:
         result = await _service(request).search_structural(
-            session_id, pattern, language=language, limit=limit
+            project_id,
+            branch,
+            pattern,
+            language=language,
+            limit=limit,
         )
     except (
         SearchTargetNotFound,
@@ -364,19 +368,25 @@ async def search_structural(
 @router.get("/file", response_model=FileReadResponse)
 async def read_file(
     request: Request,
-    session_id: Annotated[str, Query(min_length=1, max_length=128)],
+    project_id: Annotated[str, Query(min_length=1, max_length=128)],
+    branch: Annotated[str, Query(min_length=1, max_length=1_000)],
     path: Annotated[str, Query(min_length=1, max_length=1_000)],
     start_line: Annotated[int, Query(ge=1)] = 1,
     end_line: Annotated[int | None, Query(ge=1)] = None,
 ) -> FileReadResponse:
     try:
         result = await _service(request).read_file(
-            session_id, path, start_line=start_line, end_line=end_line
+            project_id,
+            branch,
+            path,
+            start_line=start_line,
+            end_line=end_line,
         )
     except (
         ValueError,
         SearchTargetNotFound,
         SearchPathError,
+        SearchOutputTooLarge,
         SearchToolUnavailable,
         SearchTimedOut,
     ) as error:
@@ -389,15 +399,22 @@ async def read_file(
 @router.get("/directory", response_model=DirectoryListResponse)
 async def list_directory(
     request: Request,
-    session_id: Annotated[str, Query(min_length=1, max_length=128)],
+    project_id: Annotated[str, Query(min_length=1, max_length=128)],
+    branch: Annotated[str, Query(min_length=1, max_length=1_000)],
     path: Annotated[str, Query(min_length=1, max_length=1_000)] = ".",
     limit: Annotated[int, Query(ge=1, le=500)] = 200,
 ) -> DirectoryListResponse:
     try:
-        result = await _service(request).list_directory(session_id, path, limit=limit)
+        result = await _service(request).list_directory(
+            project_id,
+            branch,
+            path,
+            limit=limit,
+        )
     except (
         SearchTargetNotFound,
         SearchPathError,
+        SearchOutputTooLarge,
         SearchToolUnavailable,
         SearchTimedOut,
     ) as error:

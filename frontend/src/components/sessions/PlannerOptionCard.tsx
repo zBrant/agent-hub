@@ -15,8 +15,10 @@ export function PlannerOptionCard({ active, onChange, option }: Props) {
   return (
     <label
       className={cn(
-        "flex cursor-pointer flex-col gap-1 rounded-md border bg-inset p-2",
-        active ? "border-accent" : "border-border hover:border-border-strong",
+        "relative flex min-h-14 cursor-pointer flex-col justify-center gap-1 bg-inset px-3 py-2 outline-none",
+        active
+          ? "bg-accent/8 shadow-[inset_2px_0_var(--color-accent)]"
+          : "hover:bg-elevated",
       )}
     >
       <span className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { Save, Trash2, X } from "lucide-react";
+import { GitBranch, Save, Trash2, X } from "lucide-react";
 import { useState } from "react";
 import type { Node, UpdateNode } from "@/api/client";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ type Props = {
 };
 
 const CONTROL =
-  "h-[30px] w-full rounded-md border border-border-strong bg-inset px-2 text-ui text-fg outline-none focus:border-focus";
+  "h-[30px] w-full border border-border-strong bg-inset px-2 text-ui text-fg outline-none focus:border-focus";
 
 export function NodeEditor({
   node,
@@ -45,8 +45,12 @@ export function NodeEditor({
   }
 
   return (
-    <aside className="w-[480px] max-w-[60vw] shrink-0 border-border border-l bg-surface p-3">
-      <div className="mb-3 flex items-start gap-2">
+    <aside className="flex w-[480px] max-w-[60vw] shrink-0 flex-col border-border border-l bg-surface shadow-2xl">
+      <div className="flex h-7 items-center border-border border-b bg-inset/55 px-3 font-mono text-badge uppercase tracking-[0.12em] text-fg-subtle">
+        Proposal inspector
+      </div>
+      <div className="flex items-start gap-2 border-border border-b px-3 py-3">
+        <GitBranch className="mt-0.5 size-4 text-accent" />
         <div className="min-w-0 flex-1">
           <h2 className="font-semibold text-ui">Edit proposal node</h2>
           <code className="text-code text-fg-muted">{node.id}</code>
@@ -62,7 +66,7 @@ export function NodeEditor({
           </Button>
         ) : null}
       </div>
-      <div className="space-y-3">
+      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-3">
         <label className="block text-meta text-fg-muted">
           Name
           <input
@@ -77,7 +81,7 @@ export function NodeEditor({
           Prompt
           <textarea
             aria-label="Node prompt"
-            className="mt-1 min-h-32 w-full resize-y rounded-md border border-border-strong bg-inset p-2 text-ui text-fg"
+            className="mt-1 min-h-32 w-full resize-y border border-border-strong bg-inset p-2 text-ui text-fg outline-none focus:border-focus"
             disabled={busy}
             onChange={(event) => setPrompt(event.target.value)}
             value={prompt}
@@ -103,7 +107,7 @@ export function NodeEditor({
           Acceptance criteria, one per line
           <textarea
             aria-label="Node acceptance criteria"
-            className="mt-1 min-h-24 w-full resize-y rounded-md border border-border-strong bg-inset p-2 text-ui text-fg"
+            className="mt-1 min-h-24 w-full resize-y border border-border-strong bg-inset p-2 text-ui text-fg outline-none focus:border-focus"
             disabled={busy}
             onChange={(event) => setCriteria(event.target.value)}
             value={criteria}
@@ -130,23 +134,23 @@ export function NodeEditor({
           Drag from a node's lower handle to another node's upper handle to add
           a dependency. Select an edge and press Delete to remove it.
         </p>
-        <div className="flex items-center justify-between gap-2 border-border border-t pt-3">
-          <Button
-            disabled={busy || !name.trim() || !prompt.trim() || !harness.trim()}
-            onClick={save}
-            size="sm"
-          >
-            <Save /> Save
-          </Button>
-          <Button
-            disabled={busy}
-            onClick={() => onRemove(node.id)}
-            size="sm"
-            variant="destructive"
-          >
-            <Trash2 /> Remove node
-          </Button>
-        </div>
+      </div>
+      <div className="flex items-center justify-between gap-2 border-border border-t bg-elevated px-3 py-3">
+        <Button
+          disabled={busy || !name.trim() || !prompt.trim() || !harness.trim()}
+          onClick={save}
+          size="sm"
+        >
+          <Save /> Save
+        </Button>
+        <Button
+          disabled={busy}
+          onClick={() => onRemove(node.id)}
+          size="sm"
+          variant="destructive"
+        >
+          <Trash2 /> Remove node
+        </Button>
       </div>
     </aside>
   );

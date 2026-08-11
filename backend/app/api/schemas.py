@@ -72,6 +72,7 @@ class SessionResponse(BaseModel):
     repo_path: Path
     workspace_root: Path
     integration_branch: str
+    final_branch: str
     auto_merge: bool
     status: SessionStatus
     created_ms: int
@@ -216,6 +217,7 @@ class CreateGraphRequest(BaseModel):
     title: str | None = None
     auto_merge: bool = False
     base_ref: str = "HEAD"
+    final_branch: str | None = Field(default=None, min_length=1)
 
 
 class CreatedGraphResponse(BaseModel):
@@ -338,6 +340,7 @@ class PlanGraphRequest(BaseModel):
     planner: PlannerChoiceRequest | None = None
     auto_merge: bool = False
     base_ref: str = "HEAD"
+    final_branch: str | None = Field(default=None, min_length=1)
 
     def to_choice(self) -> PlannerChoice | None:
         return None if self.planner is None else self.planner.to_choice()

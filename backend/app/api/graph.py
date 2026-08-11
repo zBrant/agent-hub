@@ -36,7 +36,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Request, status
 
-from app.api.deps import call, planner, scheduler, service
+from app.api.deps import ai_settings, call, planner, scheduler, service
 from app.api.schemas import (
     CreatedGraphResponse,
     CreateGraphRequest,
@@ -48,7 +48,9 @@ from app.api.schemas import (
     PlannerOptionsResponse,
     PlannerUsageResponse,
 )
-from app.orchestrator.planner import PlanFailure
+from app.config import Settings
+from app.orchestrator.planner import PlanFailure, PlannerChoice
+from app.preferences import AiSettingsSnapshot
 
 router = APIRouter(prefix="/api/graphs", tags=["graphs"])
 
@@ -59,6 +61,56 @@ _PLAN_FAILURE_STATUS = {
     "not_configured": 503,
     "timed_out": 504,
 }
+
+
+def _planner_choice(
+    body: PlanGraphRequest,
+    saved: AiSettingsSnapshot,
+    settings: Settings,
+) -> PlannerChoice | None:
+    """Layer a per-plan override over the saved (or deployment) defaults."""
+    requested = body.planner
+    if requested is None:
+        if not saved.is_persisted:
+            # Preserve the configured-backend failure path: invalid deployment
+            # settings become a typed 503, rather than looking like bad input.
+            return None
+        return PlannerChoice(
+            backend=saved.planner.backend,
+            harness=saved.planner.harness,
+            model=saved.planner.model,
+            effort=saved.planner_effort,
+        )
+
+    fields = requested.model_fields_set
+    backend = requested.backend or saved.planner.backend
+    if "harness" in fields:
+        harness = requested.harness
+    elif backend == "harness":
+        harness = (
+            saved.planner.harness
+            if saved.planner.backend == "harness"
+            else settings.planner_harness
+        )
+    else:
+        harness = None
+
+    if "model" in fields:
+        model = requested.model
+    elif backend == saved.planner.backend and harness == saved.planner.harness:
+        model = saved.planner.model
+    elif backend == "api":
+        model = settings.planner_model
+    elif harness == settings.planner_harness:
+        model = settings.planner_harness_model
+    else:
+        model = None
+    return PlannerChoice(
+        backend=backend,
+        harness=harness,
+        model=model,
+        effort=saved.planner_effort,
+    )
 
 
 @router.post(
@@ -77,15 +129,19 @@ async def plan_graph(body: PlanGraphRequest, request: Request) -> PlannedGraphRe
     server that broke. Configuration problems keep arriving as a ``PlanFailure``
     below, where ``not_configured`` is still a 503.
     """
+    saved = await ai_settings(request).get()
+    settings = request.app.state.settings
+    choice = _planner_choice(body, saved, settings)
     result = await call(
         planner(request).plan_graph(
             body.objective,
             repo_path=body.repo_path,
             creator=service(request),
             context=body.context,
-            choice=body.to_choice(),
+            choice=choice,
             auto_merge=body.auto_merge,
             base_ref=body.base_ref,
+            final_branch=body.final_branch,
         )
     )
     if isinstance(result, PlanFailure):
@@ -126,7 +182,16 @@ async def planner_options(request: Request) -> PlannerOptionsResponse:
     for a credential — one of its three sources is not inspectable, so the flag
     would be a guess; a missing credential answers 503 naming the fix.
     """
-    return PlannerOptionsResponse.from_result(planner(request).options())
+    saved = await ai_settings(request).get()
+    if not saved.is_persisted:
+        return PlannerOptionsResponse.from_result(planner(request).options())
+    choice = PlannerChoice(
+        backend=saved.planner.backend,
+        harness=saved.planner.harness,
+        model=saved.planner.model,
+        effort=saved.planner_effort,
+    )
+    return PlannerOptionsResponse.from_result(planner(request).options(choice))
 
 
 @router.post(
@@ -151,6 +216,7 @@ async def create_graph(
             title=body.title,
             auto_merge=body.auto_merge,
             base_ref=body.base_ref,
+            final_branch=body.final_branch,
         )
     )
     return CreatedGraphResponse.from_result(result)

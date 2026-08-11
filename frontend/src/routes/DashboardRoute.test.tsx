@@ -95,6 +95,13 @@ describe("dashboard route", () => {
   it("renders four-field usage, active progress, and partial cost honestly", async () => {
     render(<DashboardRoute />, { wrapper });
 
+    await screen.findByText("Dashboard");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Inspect distribution" }),
+    );
+    expect(
+      await screen.findByRole("dialog", { name: "Token distribution" }),
+    ).toBeTruthy();
     expect((await screen.findAllByText("72.4K")).length).toBeGreaterThanOrEqual(
       3,
     );
@@ -156,7 +163,7 @@ describe("dashboard route", () => {
     expect(screen.getByText("1h 5m")).toBeTruthy();
   });
 
-  it("deep-links a meaningful transition to its graph node", async () => {
+  it("does not render the recent graph activity feed", async () => {
     const data = snapshot("today");
     harness.getDashboard.mockResolvedValue({
       ...data,
@@ -174,11 +181,9 @@ describe("dashboard route", () => {
     });
     render(<DashboardRoute />, { wrapper });
 
-    const link = await screen.findByRole("link", { name: /Run verification/ });
-    expect(link.getAttribute("href")).toBe(
-      "/sessions/sess_phase_two?node=node_failed",
-    );
-    expect(screen.getByText("Failed")).toBeTruthy();
+    await screen.findByText("Dashboard");
+    expect(screen.queryByText("Recent graph activity")).toBeNull();
+    expect(screen.queryByRole("link", { name: /Run verification/ })).toBeNull();
   });
 
   it("renders empty usage without inventing cost", async () => {
@@ -208,6 +213,10 @@ describe("dashboard route", () => {
     render(<DashboardRoute />, { wrapper });
 
     expect(await screen.findByText("No active sessions")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Inspect distribution" }),
+    );
+    await screen.findByRole("dialog", { name: "Token distribution" });
     expect(screen.getAllByText("No usage in this period.")).toHaveLength(2);
     expect(screen.getAllByText("—")).toHaveLength(2);
   });

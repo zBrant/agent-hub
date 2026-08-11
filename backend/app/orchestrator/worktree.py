@@ -129,6 +129,14 @@ class NotARepositoryError(WorktreeError):
     """The target path is not a usable git repository."""
 
 
+class InvalidBranchNameError(WorktreeError):
+    """A user-authored final branch is not a valid local Git branch name."""
+
+
+class BranchAlreadyExistsError(WorktreeError):
+    """A final branch would overwrite or conflict with an existing local ref."""
+
+
 class GitCommandError(WorktreeError):
     def __init__(self, argv: Sequence[str], returncode: int, stderr: str) -> None:
         self.argv = tuple(argv)
@@ -335,6 +343,7 @@ class SessionWorkspace:
     session_id: SessionId
     repo_path: Path
     root: Path
+    final_branch: str | None = None
     identity: GitIdentity = AGENT_IDENTITY
 
     @property
@@ -343,7 +352,7 @@ class SessionWorkspace:
 
     @property
     def result_branch(self) -> str:
-        return f"{BRANCH_NAMESPACE}/{self.session_id}/result"
+        return self.final_branch or f"{BRANCH_NAMESPACE}/{self.session_id}/result"
 
     @property
     def integration_path(self) -> Path:
@@ -501,13 +510,21 @@ class SessionWorkspace:
 
         if await self._ref_exists(cwd, self.integration_branch):
             commit = await self._rev_parse(cwd, self.integration_branch)
-            await self._git(
-                cwd,
-                "branch",
-                "--force",
-                self.result_branch,
-                self.integration_branch,
-            )
+            if await self._ref_exists(cwd, self.result_branch):
+                existing = await self._rev_parse(cwd, self.result_branch)
+                if existing != commit:
+                    raise BranchAlreadyExistsError(
+                        f"final branch {self.result_branch!r} already exists at "
+                        f"a different commit"
+                    )
+            else:
+                await _require_available_branch(cwd, self.result_branch)
+                await self._git(
+                    cwd,
+                    "branch",
+                    self.result_branch,
+                    self.integration_branch,
+                )
         elif await self._ref_exists(cwd, self.result_branch):
             commit = await self._rev_parse(cwd, self.result_branch)
         else:
@@ -869,12 +886,34 @@ async def validate_repository(repo_path: Path, *, base_ref: str = "HEAD") -> Pat
     return (await _repository_target(repo_path, base_ref)).repo
 
 
+async def validate_final_branch(
+    repo_path: Path,
+    final_branch: str,
+    *,
+    base_ref: str = "HEAD",
+) -> Path:
+    """Reject an invalid or already occupied local result ref.
+
+    This is a read-only preflight for planning. Creation repeats the check under
+    the repository registration mutex because the repository can change while
+    the planner is working. ``check-ref-format --branch`` is Git's own grammar;
+    reimplementing its edge cases in Pydantic would eventually disagree with
+    the command that creates the ref.
+    """
+    target = await _repository_target(repo_path, base_ref)
+    await _validate_final_branch_name(target.repo, final_branch)
+    async with _REGISTRY_LOCKS.get(target.common_dir):
+        await _require_available_branch(target.repo, final_branch)
+    return target.repo
+
+
 async def init_session_workspace(
     *,
     repo_path: Path,
     session_id: SessionId,
     workspaces_root: Path | None = None,
     base_ref: str = "HEAD",
+    final_branch: str | None = None,
     identity: GitIdentity = AGENT_IDENTITY,
 ) -> SessionWorkspace:
     """Create ``<workspaces_root>/<session_id>/integration`` and its branch.
@@ -892,8 +931,18 @@ async def init_session_workspace(
         session_id=session_id,
         repo_path=repo,
         root=await _real_path(root),
+        final_branch=final_branch,
         identity=identity,
     )
+    if final_branch is not None and (
+        workspace.integration_branch == final_branch
+        or workspace.integration_branch.startswith(f"{final_branch}/")
+        or final_branch.startswith(f"{workspace.integration_branch}/")
+    ):
+        raise InvalidBranchNameError(
+            f"final branch {final_branch!r} conflicts with AgentHub's internal "
+            f"branch namespace for session {session_id}"
+        )
 
     integration = await _real_path(workspace.integration_path)
     # Check and add under the repository's registration mutex: two sessions
@@ -902,6 +951,10 @@ async def init_session_workspace(
         existing = await _git(repo, "worktree", "list", "--porcelain")
         if integration in _parse_worktree_list(existing.stdout):
             return workspace
+
+        if final_branch is not None:
+            await _validate_final_branch_name(repo, final_branch)
+            await _require_available_branch(repo, final_branch)
 
         await _git(
             repo,
@@ -921,6 +974,39 @@ async def init_session_workspace(
         base=target.base_commit,
     )
     return workspace
+
+
+async def _validate_final_branch_name(repo: Path, branch: str) -> None:
+    checked = await _git(
+        repo,
+        "check-ref-format",
+        "--branch",
+        branch,
+        ok_codes=(0, 128),
+    )
+    if checked.returncode != 0 or checked.stdout.strip() != branch:
+        raise InvalidBranchNameError(f"invalid Git branch name: {branch!r}")
+
+
+async def _require_available_branch(repo: Path, branch: str) -> None:
+    refs = await _git(
+        repo,
+        "for-each-ref",
+        "--format=%(refname:strip=2)",
+        "refs/heads",
+    )
+    for existing in refs.stdout.splitlines():
+        # Git refs are a file tree. Besides an exact name, ``release`` and
+        # ``release/v1`` conflict in either creation order and must be reported
+        # as the same branch collision before ``git branch`` emits a raw 500.
+        if (
+            existing == branch
+            or existing.startswith(f"{branch}/")
+            or branch.startswith(f"{existing}/")
+        ):
+            raise BranchAlreadyExistsError(
+                f"final branch {branch!r} conflicts with existing branch {existing!r}"
+            )
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,10 +5,8 @@ import {
   type CitationTarget,
   SearchCodePanel,
 } from "@/components/search/SearchCodePanel";
-import {
-  SearchConversation,
-  type SearchTurn,
-} from "@/components/search/SearchConversation";
+import { SearchConversation } from "@/components/search/SearchConversation";
+import type { SearchTurn } from "@/components/search/SearchExchange";
 
 type Props = {
   turns: readonly SearchTurn[];
@@ -26,7 +24,7 @@ type Props = {
   onCloseSource: () => void;
 };
 
-const DEFAULT_LAYOUT = { conversation: 55, source: 45 };
+const DEFAULT_LAYOUT = { conversation: 48, source: 52 };
 
 export function SearchWorkspace(props: Props) {
   const narrow = useNarrowLayout();
@@ -44,7 +42,7 @@ export function SearchWorkspace(props: Props) {
       }}
       orientation={orientation}
     >
-      <Panel id="conversation" minSize={narrow ? "240px" : "360px"}>
+      <Panel id="conversation" minSize={narrow ? "240px" : "400px"}>
         <SearchConversation
           disabled={props.disabled}
           onOpenCitation={props.onOpenCitation}
@@ -60,11 +58,20 @@ export function SearchWorkspace(props: Props) {
         aria-label="Resize search and source panels"
         className={
           narrow
-            ? "h-1 bg-border hover:bg-focus focus:bg-focus"
-            : "w-1 bg-border hover:bg-focus focus:bg-focus"
+            ? "group relative h-1 bg-border hover:bg-focus focus:bg-focus"
+            : "group relative w-1 bg-border hover:bg-focus focus:bg-focus"
         }
-      />
-      <Panel id="source" minSize={narrow ? "180px" : "320px"}>
+      >
+        <span
+          aria-hidden="true"
+          className={
+            narrow
+              ? "absolute top-1/2 left-1/2 h-px w-6 -translate-1/2 bg-fg-subtle opacity-0 group-hover:opacity-100"
+              : "absolute top-1/2 left-1/2 h-6 w-px -translate-1/2 bg-fg-subtle opacity-0 group-hover:opacity-100"
+          }
+        />
+      </Separator>
+      <Panel id="source" minSize={narrow ? "180px" : "360px"}>
         <SearchCodePanel
           error={props.sourceError}
           file={props.sourceLoading ? undefined : props.file}

@@ -65,6 +65,7 @@ from app.models.pricing import PriceTable, TokenCounts
 from app.models.status import NodeStatus, RunState, SessionStatus, UsageSource
 from app.models.tables import (
     AcceptanceResult,
+    AiPreference,
     CriterionOutcome,
     Node,
     NodeDependency,
@@ -179,6 +180,7 @@ class Repository:
     async def _persist(
         self,
         *rows: Session
+        | AiPreference
         | Node
         | NodeDependency
         | Run
@@ -198,6 +200,7 @@ class Repository:
         repo_path: Path,
         workspace_root: Path,
         integration_branch: str,
+        final_branch: str | None = None,
         auto_merge: bool = False,
         status: SessionStatus = SessionStatus.PLANNING,
         at_ms: int | None = None,
@@ -209,6 +212,11 @@ class Repository:
             repo_path=repo_path,
             workspace_root=workspace_root,
             integration_branch=integration_branch,
+            final_branch=(
+                final_branch
+                if final_branch is not None
+                else f"agenthub/{session_id}/result"
+            ),
             auto_merge=auto_merge,
             status=status,
             created_ms=stamp,
@@ -220,11 +228,71 @@ class Repository:
     async def get_session(self, session_id: SessionId) -> Session | None:
         return await self._session.get(Session, session_id)
 
+    async def get_ai_preference(self) -> AiPreference | None:
+        """Return the one authored AI preference row, when one was saved."""
+        return await self._session.get(AiPreference, 1)
+
+    async def upsert_ai_preference(
+        self,
+        *,
+        planner_backend: str,
+        planner_harness: str | None,
+        planner_model: str | None,
+        search_backend: str,
+        search_harness: str | None,
+        search_model: str | None,
+        planner_effort: str,
+        at_ms: int | None = None,
+    ) -> AiPreference:
+        """Persist the complete singleton after the caller validates it."""
+        stamp = now_ms() if at_ms is None else at_ms
+        row = await self.get_ai_preference()
+        if row is None:
+            row = AiPreference(
+                id=1,
+                planner_backend=planner_backend,
+                planner_harness=planner_harness,
+                planner_model=planner_model,
+                search_backend=search_backend,
+                search_harness=search_harness,
+                search_model=search_model,
+                planner_effort=planner_effort,
+                updated_ms=stamp,
+            )
+        else:
+            row.planner_backend = planner_backend
+            row.planner_harness = planner_harness
+            row.planner_model = planner_model
+            row.search_backend = search_backend
+            row.search_harness = search_harness
+            row.search_model = search_model
+            row.planner_effort = planner_effort
+            row.updated_ms = stamp
+        await self._persist(row)
+        return row
+
     async def list_sessions(self, *, limit: int | None = None) -> Sequence[Session]:
         """Newest first. ULIDs sort by creation time, so ``id`` is the order."""
         statement = select(Session).order_by(col(Session.id).desc())
         if limit is not None:
             statement = statement.limit(limit)
+        return (await self._session.exec(statement)).all()
+
+    async def list_nonfinal_sessions_for_repo(
+        self, repo_path: Path
+    ) -> Sequence[Session]:
+        """Every live branch reservation in one resolved repository."""
+        statement = select(Session).where(
+            col(Session.repo_path) == repo_path,
+            col(Session.status).in_(
+                [
+                    SessionStatus.PLANNING,
+                    SessionStatus.RUNNING,
+                    SessionStatus.PAUSED,
+                    SessionStatus.FAILED,
+                ]
+            ),
+        )
         return (await self._session.exec(statement)).all()
 
     async def set_session_status(

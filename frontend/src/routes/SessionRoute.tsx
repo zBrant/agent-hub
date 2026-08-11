@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, ArrowLeft, Loader } from "lucide-react";
+import { Activity, AlertTriangle, ArrowLeft, Loader } from "lucide-react";
 import { lazy, Suspense, useEffect } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import {
@@ -330,61 +330,68 @@ export function SessionRoute() {
 
   return (
     <div className="flex min-h-full flex-col bg-bg">
-      <header className="border-border border-b bg-surface px-4 py-3">
-        <div className="flex items-start gap-3">
-          <Link
-            aria-label="All sessions"
-            className="mt-1 text-fg-muted hover:text-fg"
-            to="/sessions"
-          >
-            <ArrowLeft className="size-4" />
-          </Link>
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h1 className="truncate font-semibold text-title">
-                {session.data.title}
-              </h1>
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-sm border border-border bg-elevated px-1.5 py-0.5 text-badge",
-                  visual.text,
-                )}
-              >
-                <StatusIcon
-                  className={cn(
-                    "size-3",
-                    node.data.status === "running" && "animate-spin",
-                  )}
-                  data-motion={
-                    node.data.status === "running" ? "essential" : undefined
-                  }
-                />
-                {visual.label}
-              </span>
-              {unsafe ? (
-                <span className="inline-flex items-center gap-1 rounded-sm border border-blocked px-1.5 py-0.5 text-badge text-blocked">
-                  <AlertTriangle className="size-3" /> Parser drift — unsafe
-                </span>
-              ) : null}
-            </div>
-            <div className="mt-1 flex flex-wrap gap-x-3 text-meta text-fg-muted">
-              <code className="text-code">{session.data.id}</code>
-              <span>{node.data.harness}</span>
-              <code className="text-code">
-                {node.data.model ?? "default model"}
-              </code>
-              {latest ? <span>attempt {latest.attempt}</span> : null}
-            </div>
-          </div>
-          <SessionActions
-            node={node.data}
-            pendingAction={action.isPending ? action.variables : null}
-            onAction={(kind) => action.mutate(kind)}
-          />
+      <header className="border-border border-b bg-surface">
+        <div className="flex h-7 items-center gap-1.5 border-border border-b bg-inset/45 px-4 font-mono text-badge uppercase tracking-[0.12em] text-fg-subtle">
+          <Activity className="size-3 text-accent" /> Run inspector
         </div>
-        {action.error ? (
-          <p className="mt-2 text-meta text-failed">{message(action.error)}</p>
-        ) : null}
+        <div className="px-4 py-3">
+          <div className="flex items-start gap-3">
+            <Link
+              aria-label="All sessions"
+              className="mt-1 text-fg-muted hover:text-fg"
+              to="/sessions"
+            >
+              <ArrowLeft className="size-4" />
+            </Link>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="truncate font-semibold text-title">
+                  {session.data.title}
+                </h1>
+                <span
+                  className={cn(
+                    "inline-flex items-center gap-1 border border-border bg-elevated px-1.5 py-0.5 text-badge",
+                    visual.text,
+                  )}
+                >
+                  <StatusIcon
+                    className={cn(
+                      "size-3",
+                      node.data.status === "running" && "animate-spin",
+                    )}
+                    data-motion={
+                      node.data.status === "running" ? "essential" : undefined
+                    }
+                  />
+                  {visual.label}
+                </span>
+                {unsafe ? (
+                  <span className="inline-flex items-center gap-1 rounded-sm border border-blocked px-1.5 py-0.5 text-badge text-blocked">
+                    <AlertTriangle className="size-3" /> Parser drift — unsafe
+                  </span>
+                ) : null}
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-3 text-meta text-fg-muted">
+                <code className="text-code">{session.data.id}</code>
+                <span>{node.data.harness}</span>
+                <code className="text-code">
+                  {node.data.model ?? "default model"}
+                </code>
+                {latest ? <span>attempt {latest.attempt}</span> : null}
+              </div>
+            </div>
+            <SessionActions
+              node={node.data}
+              pendingAction={action.isPending ? action.variables : null}
+              onAction={(kind) => action.mutate(kind)}
+            />
+          </div>
+          {action.error ? (
+            <p className="mt-2 text-meta text-failed">
+              {message(action.error)}
+            </p>
+          ) : null}
+        </div>
       </header>
 
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1.55fr)_minmax(320px,0.85fr)]">

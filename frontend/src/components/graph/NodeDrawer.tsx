@@ -43,8 +43,11 @@ export function NodeDrawer(props: Props) {
   const StatusIcon = visual.icon;
   const latest = props.runs.at(-1);
   return (
-    <aside className="flex w-[480px] max-w-[60vw] shrink-0 flex-col border-border border-l bg-elevated">
-      <header className="flex min-h-11 items-center gap-2 border-border border-b px-3 py-2">
+    <aside className="flex w-[480px] max-w-[60vw] shrink-0 flex-col border-border border-l bg-elevated shadow-2xl">
+      <div className="flex h-7 items-center border-border border-b bg-inset/55 px-3 font-mono text-badge uppercase tracking-[0.12em] text-fg-subtle">
+        Worktree inspector
+      </div>
+      <header className="flex min-h-12 items-center gap-2 border-border border-b px-3 py-2">
         <StatusIcon
           className={cn(
             "size-4",
@@ -71,6 +74,16 @@ export function NodeDrawer(props: Props) {
           <X />
         </Button>
       </header>
+      <div className="grid grid-cols-2 gap-px border-border border-b bg-border text-badge">
+        <div className="bg-surface px-3 py-1.5">
+          <span className="text-fg-subtle">Harness </span>
+          <code>{node.harness}</code>
+        </div>
+        <div className="bg-surface px-3 py-1.5">
+          <span className="text-fg-subtle">Model </span>
+          <code>{node.model ?? "default"}</code>
+        </div>
+      </div>
       {props.error ? (
         <p
           className="border-failed border-b bg-failed/10 px-3 py-2 text-meta text-failed"

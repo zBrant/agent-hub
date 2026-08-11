@@ -36,8 +36,10 @@ export function PlannerChooser({
       : null;
 
   return (
-    <fieldset className="mt-3 rounded-md border border-border p-3">
-      <legend className="px-1 text-meta text-fg-muted">Planner</legend>
+    <fieldset>
+      <legend className="mb-3 text-badge font-medium uppercase tracking-[0.12em] text-fg-muted">
+        Planner runtime
+      </legend>
 
       {isLoading ? (
         <p className="text-meta text-fg-muted">Loading planner options…</p>
@@ -65,7 +67,7 @@ export function PlannerChooser({
             </p>
           )}
 
-          <div className="grid gap-2 sm:grid-cols-3">
+          <div className="grid grid-cols-1 gap-px overflow-hidden border border-border bg-border">
             {data.options.map((option) => {
               const active =
                 selection !== null &&
@@ -83,7 +85,7 @@ export function PlannerChooser({
           </div>
 
           {chosen && selection ? (
-            <div className="mt-3 grid min-w-0 gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
+            <div className="mt-4 grid min-w-0 grid-cols-1 gap-3 border-border border-t pt-4">
               <label className="grid min-w-0 gap-1 text-meta text-fg-muted">
                 Planner model
                 <select

@@ -16,8 +16,11 @@ export function TokenSummary({ summary }: Props) {
   ] as const;
 
   return (
-    <section aria-labelledby="usage-heading" className="border-border border-b">
-      <div className="flex items-center justify-between px-3 py-2">
+    <section
+      aria-labelledby="usage-heading"
+      className="border-border border-b bg-surface"
+    >
+      <div className="flex items-center justify-between px-3 py-2.5">
         <h2 id="usage-heading" className="font-semibold text-ui">
           Usage
         </h2>
@@ -25,11 +28,11 @@ export function TokenSummary({ summary }: Props) {
           {number.format(tokens?.total_tokens ?? 0)} tokens
         </span>
       </div>
-      <dl className="grid grid-cols-2 border-border border-t sm:grid-cols-4">
+      <dl className="grid grid-cols-2 border-border border-t bg-inset/35 sm:grid-cols-4">
         {values.map(([label, value]) => (
           <div
             key={label}
-            className="border-border border-r px-3 py-2 last:border-r-0"
+            className="border-border border-r px-3 py-2.5 last:border-r-0"
           >
             <dt className="text-meta text-fg-muted">{label}</dt>
             <dd className="font-mono text-code text-fg">

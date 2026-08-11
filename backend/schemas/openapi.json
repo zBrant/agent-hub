@@ -220,21 +220,28 @@
       },
       "AgentSearchRequest": {
         "properties": {
+          "branch": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Branch",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
           "question": {
             "maxLength": 8000,
             "minLength": 1,
             "title": "Question",
             "type": "string"
-          },
-          "session_id": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Session Id",
-            "type": "string"
           }
         },
         "required": [
-          "session_id",
+          "project_id",
+          "branch",
           "question"
         ],
         "title": "AgentSearchRequest",
@@ -365,6 +372,178 @@
         "title": "AgentSearchUsageResponse",
         "type": "object"
       },
+      "AiOptionResponse": {
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/PlannerBackendName"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "is_spend": {
+            "title": "Is Spend",
+            "type": "boolean"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "supports_effort": {
+            "title": "Supports Effort",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "backend",
+          "harness",
+          "models",
+          "is_spend",
+          "supports_effort"
+        ],
+        "title": "AiOptionResponse",
+        "type": "object"
+      },
+      "AiRuntimeSelectionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/PlannerBackendName"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "required": [
+          "backend",
+          "harness",
+          "model"
+        ],
+        "title": "AiRuntimeSelectionRequest",
+        "type": "object"
+      },
+      "AiRuntimeSelectionResponse": {
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/PlannerBackendName"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "required": [
+          "backend",
+          "harness",
+          "model"
+        ],
+        "title": "AiRuntimeSelectionResponse",
+        "type": "object"
+      },
+      "AiSettingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "planner": {
+            "$ref": "#/components/schemas/AiRuntimeSelectionRequest"
+          },
+          "planner_effort": {
+            "$ref": "#/components/schemas/PlannerEffort"
+          },
+          "search": {
+            "$ref": "#/components/schemas/AiRuntimeSelectionRequest"
+          }
+        },
+        "required": [
+          "planner",
+          "search",
+          "planner_effort"
+        ],
+        "title": "AiSettingsRequest",
+        "type": "object"
+      },
+      "AiSettingsResponse": {
+        "properties": {
+          "planner": {
+            "$ref": "#/components/schemas/AiRuntimeSelectionResponse"
+          },
+          "planner_effort": {
+            "$ref": "#/components/schemas/PlannerEffort"
+          },
+          "planner_options": {
+            "items": {
+              "$ref": "#/components/schemas/AiOptionResponse"
+            },
+            "title": "Planner Options",
+            "type": "array"
+          },
+          "search": {
+            "$ref": "#/components/schemas/AiRuntimeSelectionResponse"
+          },
+          "search_options": {
+            "items": {
+              "$ref": "#/components/schemas/AiOptionResponse"
+            },
+            "title": "Search Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "planner",
+          "search",
+          "planner_effort",
+          "planner_options",
+          "search_options"
+        ],
+        "title": "AiSettingsResponse",
+        "type": "object"
+      },
       "CreateGraphRequest": {
         "additionalProperties": false,
         "description": "A whole proposed graph, persisted in one call.\n\nOne call and not \"create session, then POST each node\": a half-written\ngraph is a graph, and a scheduler reading one would happily start the\nfragment it can see. ``create_graph`` validates the DAG before the first row\n(invariant 6 \u2014 this is a proposal, and persisting it starts nothing).",
@@ -378,6 +557,18 @@
             "default": "HEAD",
             "title": "Base Ref",
             "type": "string"
+          },
+          "final_branch": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Branch"
           },
           "nodes": {
             "items": {
@@ -1155,6 +1346,18 @@
             ],
             "title": "Context"
           },
+          "final_branch": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Final Branch"
+          },
           "objective": {
             "minLength": 1,
             "title": "Objective",
@@ -1388,6 +1591,16 @@
         ],
         "title": "PlannerDefaultResponse",
         "type": "object"
+      },
+      "PlannerEffort": {
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "type": "string"
       },
       "PlannerOptionResponse": {
         "description": "One selectable planner backend, and what choosing it means.\n\n``is_spend`` is invariant 7 in advance: True on `api`, where the plan bills\nper token against a credential of its own, False on every harness, where it\nrides an already-paid subscription and the cost is an estimated\nequivalent. ``supports_effort`` is True only on `api`, because\n``planner_effort`` and ``planner_max_tokens`` are ``output_config`` on an\nAPI request and a CLI decides its own depth \u2014 rendering an effort control\nbeside a harness would be showing a knob wired to nothing.",
@@ -1852,6 +2065,76 @@
         "title": "RunSummaryResponse",
         "type": "object"
       },
+      "SearchBranchResponse": {
+        "properties": {
+          "commit": {
+            "title": "Commit",
+            "type": "string"
+          },
+          "is_head": {
+            "title": "Is Head",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "commit",
+          "is_head"
+        ],
+        "title": "SearchBranchResponse",
+        "type": "object"
+      },
+      "SearchProjectResponse": {
+        "properties": {
+          "branches": {
+            "items": {
+              "$ref": "#/components/schemas/SearchBranchResponse"
+            },
+            "title": "Branches",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "repo_path": {
+            "title": "Repo Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "repo_path",
+          "branches"
+        ],
+        "title": "SearchProjectResponse",
+        "type": "object"
+      },
+      "SearchProjectsResponse": {
+        "properties": {
+          "projects": {
+            "items": {
+              "$ref": "#/components/schemas/SearchProjectResponse"
+            },
+            "title": "Projects",
+            "type": "array"
+          }
+        },
+        "required": [
+          "projects"
+        ],
+        "title": "SearchProjectsResponse",
+        "type": "object"
+      },
       "SessionResponse": {
         "properties": {
           "auto_merge": {
@@ -1861,6 +2144,10 @@
           "created_ms": {
             "title": "Created Ms",
             "type": "integer"
+          },
+          "final_branch": {
+            "title": "Final Branch",
+            "type": "string"
           },
           "id": {
             "title": "Id",
@@ -1898,6 +2185,7 @@
           "repo_path",
           "workspace_root",
           "integration_branch",
+          "final_branch",
           "auto_merge",
           "status",
           "created_ms",
@@ -1917,80 +2205,6 @@
         ],
         "title": "SessionStatus",
         "type": "string"
-      },
-      "SymbolMatchResponse": {
-        "properties": {
-          "column": {
-            "title": "Column",
-            "type": "integer"
-          },
-          "end_column": {
-            "title": "End Column",
-            "type": "integer"
-          },
-          "end_line": {
-            "title": "End Line",
-            "type": "integer"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "language": {
-            "title": "Language",
-            "type": "string"
-          },
-          "line": {
-            "title": "Line",
-            "type": "integer"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "path": {
-            "title": "Path",
-            "type": "string"
-          },
-          "role": {
-            "title": "Role",
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "language",
-          "name",
-          "kind",
-          "role",
-          "line",
-          "column",
-          "end_line",
-          "end_column"
-        ],
-        "title": "SymbolMatchResponse",
-        "type": "object"
-      },
-      "SymbolSearchResponse": {
-        "properties": {
-          "matches": {
-            "items": {
-              "$ref": "#/components/schemas/SymbolMatchResponse"
-            },
-            "title": "Matches",
-            "type": "array"
-          },
-          "truncated": {
-            "title": "Truncated",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "matches",
-          "truncated"
-        ],
-        "title": "SymbolSearchResponse",
-        "type": "object"
       },
       "SystemSnapshotResponse": {
         "properties": {
@@ -2674,12 +2888,23 @@
         "parameters": [
           {
             "in": "query",
-            "name": "session_id",
+            "name": "project_id",
             "required": true,
             "schema": {
               "maxLength": 128,
               "minLength": 1,
-              "title": "Session Id",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "required": true,
+            "schema": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Branch",
               "type": "string"
             }
           },
@@ -2742,12 +2967,23 @@
         "parameters": [
           {
             "in": "query",
-            "name": "session_id",
+            "name": "project_id",
             "required": true,
             "schema": {
               "maxLength": 128,
               "minLength": 1,
-              "title": "Session Id",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "required": true,
+            "schema": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Branch",
               "type": "string"
             }
           },
@@ -2819,68 +3055,23 @@
         ]
       }
     },
-    "/api/search/references": {
+    "/api/search/projects": {
       "get": {
-        "operationId": "find_references_api_search_references_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "title": "Session Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "maxLength": 512,
-              "minLength": 1,
-              "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 100,
-              "maximum": 200,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          }
-        ],
+        "description": "Discover known repositories and their local branches.",
+        "operationId": "list_projects_api_search_projects_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SymbolSearchResponse"
+                  "$ref": "#/components/schemas/SearchProjectsResponse"
                 }
               }
             },
             "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
           }
         },
-        "summary": "Find References",
+        "summary": "List Projects",
         "tags": [
           "search"
         ]
@@ -2892,12 +3083,23 @@
         "parameters": [
           {
             "in": "query",
-            "name": "session_id",
+            "name": "project_id",
             "required": true,
             "schema": {
               "maxLength": 128,
               "minLength": 1,
-              "title": "Session Id",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "required": true,
+            "schema": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Branch",
               "type": "string"
             }
           },
@@ -2964,103 +3166,29 @@
         ]
       }
     },
-    "/api/search/symbols": {
-      "get": {
-        "operationId": "find_symbol_api_search_symbols_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "session_id",
-            "required": true,
-            "schema": {
-              "maxLength": 128,
-              "minLength": 1,
-              "title": "Session Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "maxLength": 512,
-              "minLength": 1,
-              "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "kind",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "maxLength": 64,
-                  "minLength": 1,
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Kind"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 100,
-              "maximum": 200,
-              "minimum": 1,
-              "title": "Limit",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SymbolSearchResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Find Symbol",
-        "tags": [
-          "search"
-        ]
-      }
-    },
     "/api/search/text": {
       "get": {
         "operationId": "search_text_api_search_text_get",
         "parameters": [
           {
             "in": "query",
-            "name": "session_id",
+            "name": "project_id",
             "required": true,
             "schema": {
               "maxLength": 128,
               "minLength": 1,
-              "title": "Session Id",
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "branch",
+            "required": true,
+            "schema": {
+              "maxLength": 1000,
+              "minLength": 1,
+              "title": "Branch",
               "type": "string"
             }
           },
@@ -4725,6 +4853,66 @@
         "summary": "Get Run Summary",
         "tags": [
           "sessions"
+        ]
+      }
+    },
+    "/api/settings/ai": {
+      "get": {
+        "operationId": "get_ai_settings_api_settings_ai_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Ai Settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "operationId": "put_ai_settings_api_settings_ai_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AiSettingsRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AiSettingsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Ai Settings",
+        "tags": [
+          "settings"
         ]
       }
     },

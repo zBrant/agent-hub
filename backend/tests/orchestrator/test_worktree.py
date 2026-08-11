@@ -12,8 +12,10 @@ import pytest
 
 from app.models.ids import new_session_id
 from app.orchestrator.worktree import (
+    BranchAlreadyExistsError,
     CommitStatus,
     GitCommandError,
+    InvalidBranchNameError,
     InvalidNameError,
     MergeStatus,
     NotARepositoryError,
@@ -94,6 +96,34 @@ async def test_init_is_idempotent(repo: Path, tmp_path: Path) -> None:
     assert first == second
     listed = await second.list_worktrees()
     assert listed.count(second.integration_path.resolve()) == 1
+
+
+@pytest.mark.parametrize("branch", ["bad..name", "-option", "trailing."])
+async def test_init_rejects_an_invalid_final_branch(
+    repo: Path, tmp_path: Path, branch: str
+) -> None:
+    with pytest.raises(InvalidBranchNameError, match="invalid Git branch name"):
+        await init_session_workspace(
+            repo_path=repo,
+            session_id=new_session_id(),
+            workspaces_root=tmp_path / "workspaces",
+            final_branch=branch,
+        )
+
+
+async def test_init_rejects_an_existing_or_hierarchically_conflicting_branch(
+    repo: Path, tmp_path: Path
+) -> None:
+    await git(repo, "branch", "release/v1")
+
+    for branch in ("release/v1", "release", "release/v1/patch"):
+        with pytest.raises(BranchAlreadyExistsError, match="existing branch"):
+            await init_session_workspace(
+                repo_path=repo,
+                session_id=new_session_id(),
+                workspaces_root=tmp_path / "workspaces",
+                final_branch=branch,
+            )
 
 
 async def test_init_rejects_a_directory_that_is_not_a_repository(
@@ -415,6 +445,54 @@ async def test_finalize_keeps_one_result_branch_and_removes_worktrees(
     repeated = await workspace.finalize(node_ids=("node_a",))
     assert repeated.commit == expected
     assert repeated.removed_worktrees == ()
+
+
+async def test_finalize_uses_the_requested_branch_without_renaming_integration(
+    repo: Path, tmp_path: Path
+) -> None:
+    workspace = await init_session_workspace(
+        repo_path=repo,
+        session_id=new_session_id(),
+        workspaces_root=tmp_path / "workspaces",
+        final_branch="deliver/agent-result",
+    )
+    assert workspace.integration_branch != workspace.result_branch
+    node = await workspace.create_node("node_a")
+    (node.path / "delivered.txt").write_text("requested branch\n")
+    await workspace.commit("node_a", "feat: deliver")
+    await workspace.merge_into_integration("node_a")
+
+    result = await workspace.finalize(node_ids=("node_a",))
+
+    assert result.branch == "deliver/agent-result"
+    assert await git(repo, "show", "deliver/agent-result:delivered.txt") == (
+        "requested branch\n"
+    )
+    assert await git(repo, "branch", "--list", workspace.integration_branch) == ""
+
+
+async def test_finalize_never_overwrites_a_late_final_branch_collision(
+    repo: Path, tmp_path: Path
+) -> None:
+    workspace = await init_session_workspace(
+        repo_path=repo,
+        session_id=new_session_id(),
+        workspaces_root=tmp_path / "workspaces",
+        final_branch="deliver/occupied",
+    )
+    node = await workspace.create_node("node_a")
+    (node.path / "generated.txt").write_text("generated\n")
+    await workspace.commit("node_a", "feat: generated")
+    await workspace.merge_into_integration("node_a")
+    await git(repo, "branch", "deliver/occupied", "main")
+
+    with pytest.raises(BranchAlreadyExistsError, match="different commit"):
+        await workspace.finalize(node_ids=("node_a",))
+
+    assert workspace.integration_path.exists()
+    assert (await git(repo, "rev-parse", "deliver/occupied")).strip() == (
+        await git(repo, "rev-parse", "main")
+    ).strip()
 
 
 async def test_finalize_preserves_every_worktree_when_one_is_dirty(

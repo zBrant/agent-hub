@@ -1,59 +1,59 @@
 /* frontend/src/styles/tokens.css
  *
  * The single source of colour, type and radius for the whole application.
- * Mirrors docs/design-system.md §2 verbatim — the token names are a contract
- * referenced by design-system §5 (node states) and §7 (terminal theme).
+ * The names are a contract referenced by design-system §5 (node states) and
+ * §7 (terminal theme); their values define AgentHub's graphite console theme.
  * Zero raw colour values anywhere else: a `#` in a component is a bug.
  */
 @theme {
   /* surfaces */
-  --color-bg: #0b0c0e; /* application background */
-  --color-surface: #121417; /* card, panel, sidebar */
-  --color-elevated: #191c20; /* drawer, popover, menu, dialog */
-  --color-inset: #08090a; /* terminal, code block, diff */
+  --color-bg: #0b0e0c; /* application background */
+  --color-surface: #111512; /* card, panel, sidebar */
+  --color-elevated: #181d19; /* drawer, popover, menu, dialog */
+  --color-inset: #070907; /* terminal, code block, diff */
 
   /* borders */
-  --color-border: #24282e;
-  --color-border-strong: #333941; /* panel divider, inactive focus ring */
+  --color-border: #252b26;
+  --color-border-strong: #363e37; /* panel divider, inactive focus ring */
 
   /* text */
-  --color-fg: #e6e8eb;
-  --color-fg-muted: #9ba1a9; /* labels, metadata, timestamps */
-  --color-fg-subtle: #6b7280; /* placeholder, disabled text */
+  --color-fg: #e6ebe7;
+  --color-fg-muted: #939e96; /* labels, metadata, timestamps */
+  --color-fg-subtle: #747d76; /* placeholder, disabled text; 4.56:1 on bg */
 
   /* action */
-  --color-accent: #4c8dff;
-  --color-accent-hover: #6ba0ff;
-  --color-accent-fg: #0b0c0e;
-  --color-focus: #4c8dff;
+  --color-accent: #b7f36b;
+  --color-accent-hover: #c7fb86;
+  --color-accent-fg: #10150d;
+  --color-focus: #b7f36b;
 
   /* state */
-  --color-pending: #6b7280;
-  --color-ready: #4c8dff;
-  --color-running: #38bdf8;
-  --color-review: #f5a524;
-  --color-blocked: #f97066;
-  --color-done: #3dd68c;
-  --color-failed: #e5484d;
-  --color-skipped: #4b5563;
+  --color-pending: #747d76;
+  --color-ready: #b7f36b;
+  --color-running: #5fcce5;
+  --color-review: #e8ae4d;
+  --color-blocked: #f07b62;
+  --color-done: #63d69a;
+  --color-failed: #ef6468;
+  --color-skipped: #747d76;
 
   /* harness identity — design-system §6, deliberately far from the state palette */
   --color-harness-claude-code: #d97757;
   --color-harness-codex: #a0a0a0;
   --color-harness-opencode: #7c6bf5;
-  --color-graph-mask: #08090acc;
+  --color-graph-mask: #070907cc;
 
   /* token-series charts — fixed order in design-system §9 */
-  --color-token-cache-read: #3dd68c;
-  --color-token-cache-write: #f5a524;
-  --color-token-input: #4c8dff;
-  --color-token-output: #7c6bf5;
+  --color-token-cache-read: #63d69a;
+  --color-token-cache-write: #e8ae4d;
+  --color-token-input: #5fcce5;
+  --color-token-output: #9b8bf4;
 
   /* code search syntax roles */
-  --color-syntax-keyword: #7c6bf5;
-  --color-syntax-string: #3dd68c;
-  --color-syntax-number: #f5a524;
-  --color-syntax-comment: #6b7280;
+  --color-syntax-keyword: #9b8bf4;
+  --color-syntax-string: #63d69a;
+  --color-syntax-number: #e8ae4d;
+  --color-syntax-comment: #747d76;
 
   /* typography */
   --font-sans: "Inter Variable", "Inter", ui-sans-serif, system-ui, sans-serif;
@@ -64,6 +64,8 @@
   /* type scale — design-system §3, the only sizes that exist */
   --text-title: 18px;
   --text-title--line-height: 1.45;
+  --text-metric: 22px;
+  --text-metric--line-height: 1;
   --text-ui: 13px;
   --text-ui--line-height: 1.45;
   --text-meta: 12px;
