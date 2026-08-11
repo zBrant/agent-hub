@@ -92,15 +92,18 @@ from app.orchestrator.graph import (
     InvalidDag,
     RunBlockReason,
     build_dag,
+    evaluate_graph,
     evaluate_run,
 )
 from app.orchestrator.worktree import (
     CommitResult,
+    FinalizeResult,
     MergeResult,
     MergeStatus,
     NotARepositoryError,
     SessionWorkspace,
     init_session_workspace,
+    validate_repository,
 )
 from app.sandbox.aijail import SandboxPolicy, build_launcher, default_policy
 from app.storage.db import Database
@@ -603,6 +606,13 @@ class NodeRunService:
     # Authoring
     # ------------------------------------------------------------------
 
+    async def validate_repo(self, repo_path: Path, *, base_ref: str = "HEAD") -> Path:
+        """Reject an unusable graph target before planning spends a turn."""
+        try:
+            return await validate_repository(repo_path, base_ref=base_ref)
+        except NotARepositoryError as exc:
+            raise ValueError(str(exc)) from exc
+
     async def create_session(
         self,
         *,
@@ -972,6 +982,60 @@ class NodeRunService:
             causes=list(causes),
         )
         return True
+
+    async def release_resolved_blocks(
+        self, session_id: SessionId
+    ) -> tuple[NodeId, ...]:
+        """Return stale upstream-blocked nodes to the schedulable graph.
+
+        A propagated block is structurally identifiable without a new database
+        column: the dependent never materialized, so it has no worktree. A
+        safety block or a base-merge conflict does have a worktree and must
+        remain gated for a human.
+
+        All unmaterialized candidates are evaluated as ``pending`` together so
+        :func:`evaluate_graph` remains the only implementation of dependency
+        readiness. Candidates that still inherit a failed/blocked ancestor stay
+        blocked; the rest return to ``pending`` and can either wait naturally
+        or become ready on the scheduler's next tick.
+        """
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            graph = await repository.load_graph(session_id)
+            if graph is None:
+                raise ResourceNotFoundError(f"no such session {session_id}")
+            candidates = {
+                node.id
+                for node in graph.nodes
+                if node.status is NodeStatus.BLOCKED and node.worktree_path is None
+            }
+            if not candidates:
+                return ()
+
+            dag = self._validated_dag(graph)
+            hypothetical = {
+                node.id: (NodeStatus.PENDING if node.id in candidates else node.status)
+                for node in graph.nodes
+            }
+            still_obstructed = {
+                blocked.id
+                for blocked in evaluate_graph(dag, hypothetical).blocked_by_upstream
+            }
+            released = tuple(
+                node
+                for node in graph.nodes
+                if node.id in candidates and node.id not in still_obstructed
+            )
+            for node in released:
+                await self._set_node(repository, node, NodeStatus.PENDING)
+
+        if released:
+            log.info(
+                "orchestrator.upstream_blocks_released",
+                session_id=session_id,
+                nodes=[node.id for node in released],
+            )
+        return tuple(node.id for node in released)
 
     async def fail_node(self, node_id: NodeId, *, reason: str) -> bool:
         """Record a failure that has no run of its own to report it.
@@ -1540,7 +1604,11 @@ class NodeRunService:
 
             try:
                 workspace = self._workspace(session)
-                commit = await workspace.commit(node.id, f"agent: {node.prompt[:60]}")
+                commit = await workspace.commit(
+                    node.id,
+                    f"agent: {node.prompt[:60]}",
+                    base_ref=node.base_ref,
+                )
                 disposition = evaluate_run(
                     projected.status,
                     trusted=finalized.trusted,
@@ -1895,6 +1963,48 @@ class NodeRunService:
             if graph is None:
                 raise ResourceNotFoundError(f"no such session {session_id}")
             return graph
+
+    async def get_graph_diff(self, session_id: SessionId) -> str:
+        """Return every generated change currently on the integration branch."""
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            graph = await repository.load_graph(session_id)
+            if graph is None:
+                raise ResourceNotFoundError(f"no such session {session_id}")
+            dependencies = graph.depends_on()
+            root_base_refs = tuple(
+                node.base_ref
+                for node in graph.nodes
+                if not dependencies[node.id] and node.base_ref is not None
+            )
+            if not root_base_refs:
+                raise InvalidTransitionError(
+                    f"graph {session_id} has no materialized root base ref"
+                )
+            workspace = self._workspace(graph.session)
+        return await workspace.integration_diff(base_refs=root_base_refs)
+
+    async def get_graph_result_branch(self, session_id: SessionId) -> str:
+        graph = await self.get_graph(session_id)
+        return self._workspace(graph.session).result_branch
+
+    async def finalize_session(self, session_id: SessionId) -> FinalizeResult:
+        """Create the durable result branch and clean completed worktrees."""
+        async with self._database.session() as db_session:
+            repository = Repository(db_session)
+            graph = await repository.load_graph(session_id)
+            if graph is None:
+                raise ResourceNotFoundError(f"no such session {session_id}")
+            if graph.session.status is not SessionStatus.DONE or any(
+                node.status not in (NodeStatus.DONE, NodeStatus.SKIPPED)
+                for node in graph.nodes
+            ):
+                raise InvalidTransitionError(
+                    f"session {session_id} is not successfully complete"
+                )
+            workspace = self._workspace(graph.session)
+            node_ids = tuple(node.id for node in graph.nodes)
+        return await workspace.finalize(node_ids=node_ids)
 
     async def acceptance_results(
         self, node_id: NodeId, *, attempt: int | None = None

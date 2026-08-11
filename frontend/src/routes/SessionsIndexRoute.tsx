@@ -1,18 +1,19 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Sparkles, Workflow } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { Workflow } from "lucide-react";
 import { Link, useNavigate } from "react-router";
 import { api } from "@/api/client";
 import { EmptyState } from "@/components/layout/EmptyState";
-import { Button } from "@/components/ui/button";
+import { PlanGraphForm } from "@/components/sessions/PlanGraphForm";
 
 export function SessionsIndexRoute() {
   const navigate = useNavigate();
-  const [repoPath, setRepoPath] = useState("");
-  const [objective, setObjective] = useState("");
   const sessions = useQuery({
     queryKey: ["sessions"],
     queryFn: api.listSessions,
+  });
+  const plannerOptions = useQuery({
+    queryKey: ["planner-options"],
+    queryFn: api.getPlannerOptions,
   });
   const plan = useMutation({
     mutationFn: api.planGraph,
@@ -21,69 +22,18 @@ export function SessionsIndexRoute() {
     },
   });
 
-  function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const cleanRepo = repoPath.trim();
-    const cleanObjective = objective.trim();
-    if (!cleanRepo || !cleanObjective) return;
-    plan.mutate({
-      repo_path: cleanRepo,
-      objective: cleanObjective,
-      auto_merge: false,
-      base_ref: "HEAD",
-      context: null,
-    });
-  }
-
   return (
     <div className="mx-auto max-w-5xl p-4">
       <h1 className="mb-3 font-semibold text-title">Sessions</h1>
 
-      <form
-        className="mb-6 rounded-lg border border-border bg-surface p-4"
-        onSubmit={submit}
-      >
-        <div className="mb-3 flex items-center gap-2">
-          <Sparkles className="size-4 text-accent" />
-          <h2 className="font-medium">Plan a graph</h2>
-        </div>
-        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">
-          <label className="grid gap-1 text-meta text-fg-muted">
-            Repository path
-            <input
-              className="h-[30px] rounded-md border border-border bg-inset px-2 text-ui text-fg outline-none focus:border-focus"
-              onChange={(event) => setRepoPath(event.target.value)}
-              placeholder="/Users/me/project"
-              required
-              value={repoPath}
-            />
-          </label>
-          <label className="grid gap-1 text-meta text-fg-muted">
-            Objective
-            <textarea
-              className="min-h-20 resize-y rounded-md border border-border bg-inset px-2 py-1.5 text-ui text-fg outline-none focus:border-focus"
-              onChange={(event) => setObjective(event.target.value)}
-              placeholder="Describe the outcome you want the agents to build…"
-              required
-              value={objective}
-            />
-          </label>
-        </div>
-        <div className="mt-3 flex items-center justify-between gap-3">
-          <p className="text-meta text-fg-subtle">
-            The planner creates a proposal. Nothing runs before you review and
-            approve it.
-          </p>
-          <Button disabled={plan.isPending} type="submit">
-            {plan.isPending ? "Planning…" : "Create proposal"}
-          </Button>
-        </div>
-        {plan.error ? (
-          <p className="mt-3 text-meta text-failed" role="alert">
-            {plan.error.message}
-          </p>
-        ) : null}
-      </form>
+      <PlanGraphForm
+        error={plan.error}
+        isPending={plan.isPending}
+        onSubmit={plan.mutate}
+        options={plannerOptions.data}
+        optionsError={plannerOptions.error}
+        optionsLoading={plannerOptions.isLoading}
+      />
 
       {sessions.isLoading ? (
         <p className="text-meta text-fg-muted">Loading sessions…</p>

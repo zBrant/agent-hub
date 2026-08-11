@@ -18,6 +18,7 @@ from app.orchestrator.worktree import (
     MergeStatus,
     NotARepositoryError,
     SessionWorkspace,
+    WorktreeError,
     default_workspaces_root,
     init_session_workspace,
 )
@@ -162,14 +163,34 @@ async def test_agent_commits_do_not_need_a_global_git_identity(
 async def test_commit_without_changes_is_not_an_error(
     workspace: SessionWorkspace,
 ) -> None:
-    await workspace.create_node("node_a")
+    node = await workspace.create_node("node_a")
 
-    result = await workspace.commit("node_a", "feat: nothing happened")
+    result = await workspace.commit(
+        "node_a", "feat: nothing happened", base_ref=node.base_ref
+    )
 
     assert result.status is CommitStatus.NOTHING_TO_COMMIT
     assert not result.committed
     assert result.commit is None
     assert result.changed_paths == ()
+
+
+async def test_agent_authored_commit_is_a_valid_checkpoint(
+    workspace: SessionWorkspace,
+) -> None:
+    node = await workspace.create_node("node_a")
+    (node.path / "products.html").write_text("kiwi products\n")
+    await git(node.path, "add", "--all", "--")
+    await git(node.path, "commit", "-m", "feat: add products page")
+
+    result = await workspace.commit(
+        "node_a", "agent: add products page", base_ref=node.base_ref
+    )
+
+    assert result.status is CommitStatus.CHECKPOINTED
+    assert result.committed
+    assert result.commit == (await git(node.path, "rev-parse", "HEAD")).strip()
+    assert result.changed_paths == (Path("products.html"),)
 
 
 async def test_conflicting_merge_returns_blocked_and_does_not_raise(
@@ -342,3 +363,71 @@ async def test_diff_survives_integration_merge(workspace: SessionWorkspace) -> N
     assert before == after
     assert "greeting.txt" in after
     assert "+hello" in after
+
+
+async def test_integration_diff_contains_the_aggregate_result(
+    workspace: SessionWorkspace,
+) -> None:
+    first = await workspace.create_node("node_a")
+    (first.path / "header.txt").write_text("kiwi header\n")
+    await workspace.commit("node_a", "feat: header")
+    await workspace.merge_into_integration("node_a")
+
+    second = await workspace.create_node("node_b")
+    (second.path / "products.txt").write_text("kiwi products\n")
+    await workspace.commit("node_b", "feat: products")
+    await workspace.merge_into_integration("node_b")
+
+    patch = await workspace.integration_diff(
+        base_refs=(first.base_ref, second.base_ref)
+    )
+
+    assert "header.txt" in patch
+    assert "+kiwi header" in patch
+    assert "products.txt" in patch
+    assert "+kiwi products" in patch
+
+
+async def test_finalize_keeps_one_result_branch_and_removes_worktrees(
+    workspace: SessionWorkspace,
+    repo: Path,
+) -> None:
+    node = await workspace.create_node("node_a")
+    (node.path / "result.txt").write_text("complete result\n")
+    await workspace.commit("node_a", "feat: result")
+    await workspace.merge_into_integration("node_a")
+    expected = (await git(workspace.integration_path, "rev-parse", "HEAD")).strip()
+
+    result = await workspace.finalize(node_ids=("node_a",))
+
+    assert result.branch == workspace.result_branch
+    assert result.commit == expected
+    assert not node.path.exists()
+    assert not workspace.integration_path.exists()
+    assert (await git(repo, "rev-parse", workspace.result_branch)).strip() == expected
+    assert await git(repo, "show", f"{workspace.result_branch}:result.txt") == (
+        "complete result\n"
+    )
+    assert await git(repo, "branch", "--list", workspace.integration_branch) == ""
+    assert node.branch in await git(repo, "branch", "--list", node.branch)
+    assert (await git(repo, "rev-parse", "HEAD")).strip() != expected
+
+    repeated = await workspace.finalize(node_ids=("node_a",))
+    assert repeated.commit == expected
+    assert repeated.removed_worktrees == ()
+
+
+async def test_finalize_preserves_every_worktree_when_one_is_dirty(
+    workspace: SessionWorkspace,
+) -> None:
+    node = await workspace.create_node("node_a")
+    (node.path / "result.txt").write_text("committed\n")
+    await workspace.commit("node_a", "feat: result")
+    await workspace.merge_into_integration("node_a")
+    (node.path / "scratch.txt").write_text("not committed\n")
+
+    with pytest.raises(WorktreeError, match="dirty worktree"):
+        await workspace.finalize(node_ids=("node_a",))
+
+    assert node.path.exists()
+    assert workspace.integration_path.exists()

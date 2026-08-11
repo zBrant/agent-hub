@@ -20,6 +20,21 @@ tokens are real per-token billing; against a harness it inherits invariant 7
 like everything else, which is what makes the product usable on a subscription
 with no API credit at all.
 
+**The choice is per plan, not per server** (`design.md` §8). ``Settings``
+supplies the default; a request may carry a :class:`PlannerChoice` naming its
+own backend, harness or model, and only the fields it omits fall back. A
+thirty-node migration and a one-flag change do not deserve the same model, and
+every *node* has always been the operator's choice in the editable proposal —
+the planner being the one thing frozen until a restart was an inconsistency.
+
+That splits one failure into two audiences, which is why
+:class:`PlannerChoiceError` exists next to :class:`PlanBackendUnavailable`. A
+harness named in ``Settings`` that cannot back the planner is the operator's
+problem: it stays a logged startup error and a 503 naming the fix. A harness or
+model named in a *request* is the caller's: it is refused before anything is
+built, with the valid values listed, and reaches them as a 422. Answering 503
+to a typo would tell someone the server is broken when their input is.
+
 Three consequences shape everything below.
 
 **A valid schema is not a valid DAG.** Structured output guarantees the fields
@@ -60,6 +75,7 @@ over plain values, testable with no client, no key and no network.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
@@ -73,7 +89,7 @@ from anthropic.types import MessageParam, ParsedMessage
 from anthropic.types import Usage as AnthropicUsage
 from pydantic import BaseModel, Field, ValidationError
 
-from app.config import PlannerEffort, Settings
+from app.config import PlannerBackendName, PlannerEffort, Settings
 from app.harnesses import ADAPTERS, create_adapter
 from app.harnesses.base import (
     BaseHarnessAdapter,
@@ -415,6 +431,9 @@ class PlanFailureKind(StrEnum):
     API_ERROR = "api_error"
     """The request did not produce a usable response at all."""
 
+    TIMED_OUT = "timed_out"
+    """One backend attempt exceeded the configured wall-clock deadline."""
+
     NOT_CONFIGURED = "not_configured"
     """No credential resolved, so no request was ever made.
 
@@ -477,6 +496,16 @@ class PlanBackendUnavailable(Exception):
 
 class PlanBackendError(Exception):
     """A request was attempted and did not come back usable."""
+
+
+#: Whether each backend's tokens are billed per token (invariant 7). Constants
+#: rather than two literals, because the backend answers this at run time and
+#: :func:`planner_options` has to answer the same question *before* a backend
+#: exists — a UI that labelled an `api` plan "estimated equivalent" would be
+#: promising free what is not, and the two answers drifting is how that
+#: happens.
+API_IS_SPEND = True
+HARNESS_IS_SPEND = False
 
 
 class PlanBackend(Protocol):
@@ -595,6 +624,8 @@ class GraphCreator(Protocol):
     and so it stays impossible for a second path into ``node``/
     ``node_dependency`` to grow here.
     """
+
+    async def validate_repo(self, repo_path: Path, *, base_ref: str = ...) -> Path: ...
 
     async def create_graph(
         self,
@@ -762,7 +793,7 @@ class ApiPlanBackend:
     @property
     def is_spend(self) -> bool:
         """Real per-token billing against a credential of the planner's own."""
-        return True
+        return API_IS_SPEND
 
     async def close(self) -> None:
         await self._client.close()
@@ -913,7 +944,7 @@ class HarnessPlanBackend:
         tokens are real, the money was already paid, and the cost is an
         estimated equivalent.
         """
-        return False
+        return HARNESS_IS_SPEND
 
     async def close(self) -> None:
         """Nothing to release: each request is its own process."""
@@ -937,7 +968,12 @@ class HarnessPlanBackend:
                 )
             )
         except HarnessError as exc:
-            raise PlanBackendError(type(exc).__name__) from exc
+            # Structured-completion errors are deliberately safe for display:
+            # adapters omit prompts and answers, bound provider diagnostics,
+            # and keep stderr in logs. Reducing that to only ``HarnessError``
+            # made subscription failures impossible to act on from the UI.
+            detail = str(exc).strip() or type(exc).__name__
+            raise PlanBackendError(detail) from exc
 
         usage = _counts_from_usage(result.usage)
         try:
@@ -991,6 +1027,169 @@ def _counts_from_usage(usage: Usage | None) -> TokenCounts:
     )
 
 
+# ---------------------------------------------------------------------------
+# Choosing a backend per plan (`design.md` §8)
+# ---------------------------------------------------------------------------
+
+
+class PlannerChoiceError(ValueError):
+    """A *request* named a backend, harness or model that cannot be used.
+
+    The same shape of problem as :class:`PlanBackendUnavailable` and a
+    different audience, which is the whole reason both exist. A harness that
+    cannot back the planner is a **configuration** error when ``Settings``
+    names it — the operator who set it is the one who can fix it, so it stays a
+    logged startup error and a 503 — and a **request** error when a body names
+    it, where telling the person who typed it that the server is unavailable
+    sends them looking in the wrong place.
+
+    A ``ValueError`` so :func:`app.api.deps.call` already translates it to 422
+    without the transport learning a second error vocabulary. The message lists
+    what would have been valid; it never carries the objective or a credential
+    (`docs/conventions.md` §6).
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerChoice:
+    """One plan's backend, harness and model. Every field optional.
+
+    An absent field falls back to ``Settings``, so a caller that only wants a
+    cheaper model for one plan does not have to restate the backend it is
+    already on, and a caller that wants none of this sends nothing.
+    """
+
+    backend: PlannerBackendName | None = None
+    harness: str | None = None
+    model: str | None = None
+
+    def is_empty(self) -> bool:
+        """True when this asks for nothing ``Settings`` does not already say.
+
+        Such a choice is answered by the application's own long-lived backend
+        rather than by a temporary copy of it: building one to immediately
+        close it would open and drop an HTTP client per plan for no difference
+        in behaviour.
+        """
+        return self.backend is None and self.harness is None and self.model is None
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerOption:
+    """One selectable backend, and what is true about choosing it.
+
+    ``supports_effort`` is False for every harness, and that is not a gap to be
+    filled later: ``planner_effort`` and ``planner_max_tokens`` are
+    ``output_config`` on an API request, and a CLI decides its own depth. A UI
+    that offered an effort control beside a harness would be showing a knob
+    connected to nothing.
+    """
+
+    backend: PlannerBackendName
+    #: ``None`` on the `api` backend, which runs no harness at all.
+    harness: str | None
+    models: tuple[str, ...]
+    is_spend: bool
+    supports_effort: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerDefault:
+    """What a plan request that names nothing resolves to.
+
+    ``selectable`` says whether that default is also one of the offered
+    options — it is not, when ``Settings`` names a harness with no adapter or a
+    model that harness does not have. It is a **structural** answer, about the
+    registry and the model lists, and never a guess about credentials: see
+    :func:`planner_options`.
+    """
+
+    backend: PlannerBackendName
+    harness: str | None
+    model: str | None
+    selectable: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PlannerOptions:
+    """Everything a client needs to render the choice honestly."""
+
+    default: PlannerDefault
+    options: tuple[PlannerOption, ...]
+
+
+def selectable_harnesses() -> dict[str, tuple[str, ...]]:
+    """Installed adapters that can back the planner, and their models.
+
+    Filtered by :func:`~app.harnesses.base.supports_structured_output` over the
+    registry, never by a list kept here: an adapter that grows the capability
+    appears on its own, one that never has it simply does not appear, and
+    nothing above ``harnesses/`` compares a name to a literal (invariant 1).
+    """
+    catalog: dict[str, tuple[str, ...]] = {}
+    for name in sorted(ADAPTERS):
+        adapter = create_adapter(name)
+        if supports_structured_output(adapter):
+            catalog[name] = tuple(adapter.supported_models)
+    return catalog
+
+
+def planner_options(settings: Settings) -> PlannerOptions:
+    """The selectable backends, and the default a choice-less request gets.
+
+    The `api` backend is **always** listed and is never probed for a
+    credential. The SDK resolves three sources — ``ANTHROPIC_API_KEY``,
+    ``ANTHROPIC_AUTH_TOKEN``, then an ``ant auth login`` profile — and the
+    third is not inspectable from here, so any "available" flag would be a
+    guess that is wrong exactly when it matters. A missing credential already
+    surfaces on use as :attr:`PlanFailureKind.NOT_CONFIGURED`, a 503 naming the
+    fix, which is a better answer than a greyed-out option nobody can explain.
+    """
+    selectable = selectable_harnesses()
+    options = [
+        PlannerOption(
+            backend="api",
+            harness=None,
+            models=tuple(settings.planner_api_models),
+            is_spend=API_IS_SPEND,
+            # The one backend whose depth we set: `output_config` is an API
+            # request field, and no CLI takes one.
+            supports_effort=True,
+        ),
+        *(
+            PlannerOption(
+                backend="harness",
+                harness=name,
+                models=models,
+                is_spend=HARNESS_IS_SPEND,
+                supports_effort=False,
+            )
+            for name, models in selectable.items()
+        ),
+    ]
+
+    if settings.planner_backend == "api":
+        default = PlannerDefault(
+            backend="api",
+            harness=None,
+            model=settings.planner_model,
+            selectable=settings.planner_model in settings.planner_api_models,
+        )
+    else:
+        harness = settings.planner_harness
+        model = settings.planner_harness_model
+        models = selectable.get(harness)
+        default = PlannerDefault(
+            backend="harness",
+            harness=harness,
+            model=model,
+            # `None` is a real value here — "whatever the CLI is configured
+            # for" — and is selectable whenever the harness itself is.
+            selectable=models is not None and (model is None or model in models),
+        )
+    return PlannerOptions(default=default, options=tuple(options))
+
+
 class Planner:
     """Turns an objective into a proposal. Proposes only — invariant 6.
 
@@ -1025,19 +1224,58 @@ class Planner:
     def catalog(self) -> Mapping[str, Sequence[str]]:
         return self._catalog
 
+    def options(self) -> PlannerOptions:
+        """What a plan may choose, and what choosing nothing gets.
+
+        Read from the planner's own settings, so what this advertises is what
+        :meth:`propose` will actually resolve.
+        """
+        return planner_options(self._settings)
+
     async def close(self) -> None:
         """Release whatever the backend owns, on behalf of the composition root."""
         await self._backend.close()
 
     async def propose(
-        self, objective: str, *, context: str | None = None
+        self,
+        objective: str,
+        *,
+        context: str | None = None,
+        choice: PlannerChoice | None = None,
     ) -> PlanResult:
         """Ask for a graph, correct it up to ``planner_max_attempts`` times.
 
-        Persists nothing. The correction loop appends to one conversation — the
-        rejected plan as the assistant turn, :func:`correction_prompt` as the
-        next user turn — so the model corrects its own text rather than
-        re-planning from scratch and losing the parts that were right.
+        With no ``choice`` this runs on the long-lived backend the application
+        owns and **does not close it** — it belongs to the composition root,
+        and closing it here would break every plan after the first. A choice
+        gets a backend of its own for the duration of the call, closed in a
+        ``finally`` because the API backend holds an ``httpx`` client and one
+        left open per plan is a real leak.
+
+        A choice that names something unusable raises
+        :class:`PlannerChoiceError` **before** a backend is built: nothing is
+        spent, and the caller hears that their input was wrong rather than that
+        the planner is unavailable.
+        """
+        if choice is None or choice.is_empty():
+            return await self._propose(
+                objective, context=context, backend=self._backend
+            )
+        backend = create_backend(self._settings, choice)
+        try:
+            return await self._propose(objective, context=context, backend=backend)
+        finally:
+            await backend.close()
+
+    async def _propose(
+        self, objective: str, *, context: str | None, backend: PlanBackend
+    ) -> PlanResult:
+        """The correction loop, over whichever backend this plan resolved to.
+
+        Persists nothing. It appends to one conversation — the rejected plan as
+        the assistant turn, :func:`correction_prompt` as the next user turn —
+        so the model corrects its own text rather than re-planning from scratch
+        and losing the parts that were right.
         """
         if not objective.strip():
             raise ValueError("objective must not be empty")
@@ -1045,11 +1283,14 @@ class Planner:
         usage = PlannerUsage(
             # A placeholder until the first reply says what actually answered:
             # the harness backend does not use `planner_model` at all.
-            model=self._backend.model,
+            model=backend.model,
             counts=TokenCounts(),
             cost_usd=None,
+            # Read from whichever backend this plan resolved to, so a
+            # per-request `api` choice is labelled spend and a per-request
+            # harness choice is invariant 7's estimated equivalent.
+            is_spend=backend.is_spend,
             price_table_version=self._prices.version,
-            is_spend=self._backend.is_spend,
         )
         messages: list[PlanTurn] = [
             PlanTurn(
@@ -1060,7 +1301,7 @@ class Planner:
             )
         ]
         bound = log.bind(
-            planner_model=self._backend.model,
+            planner_model=backend.model,
             objective_sha=_digest(objective),
             objective_chars=len(objective),
         )
@@ -1070,7 +1311,23 @@ class Planner:
         while attempt < self._settings.planner_max_attempts:
             attempt += 1
             try:
-                reply = await self._backend.request(messages)
+                async with asyncio.timeout(self._settings.planner_timeout_s):
+                    reply = await backend.request(messages)
+            except TimeoutError:
+                seconds = self._settings.planner_timeout_s
+                bound.warning(
+                    "planner.timed_out", attempt=attempt, timeout_seconds=seconds
+                )
+                return PlanFailure(
+                    kind=PlanFailureKind.TIMED_OUT,
+                    message=(
+                        f"the planner request exceeded {seconds:g} seconds; "
+                        "retry, choose another model, or raise "
+                        "AGENTHUB_PLANNER_TIMEOUT_S"
+                    ),
+                    usage=usage,
+                    attempts=attempt,
+                )
             except PlanBackendUnavailable as exc:
                 # Nothing was attempted and nothing was spent. The fix is on
                 # this machine, which is why it is not `API_ERROR`.
@@ -1204,18 +1461,30 @@ class Planner:
         repo_path: Path,
         creator: GraphCreator,
         context: str | None = None,
+        choice: PlannerChoice | None = None,
         auto_merge: bool = False,
         base_ref: str = "HEAD",
     ) -> PlanResult:
         """:meth:`propose`, then persist the proposal ``pending``.
+
+        The repository and base ref are preflighted before :meth:`propose`.
+        Planning may spend tokens or occupy a subscription turn, and doing so
+        for a path that can never host invariant 2's worktrees is pure waste.
+        Creation validates them again after the model returns because the
+        repository can change in between.
 
         Nothing is materialized and nothing runs: ``create_graph`` leaves every
         node ``pending`` with no worktree, which is what invariant 6 requires of
         a proposal a human has not yet approved. On any failure the return is
         the failure and **no row is written** — the validation that would have
         caught it happened before this call.
+
+        ``choice`` behaves exactly as in :meth:`propose`, including raising
+        :class:`PlannerChoiceError` before anything is asked of a model. A
+        rejected choice therefore also writes nothing.
         """
-        result = await self.propose(objective, context=context)
+        await creator.validate_repo(repo_path, base_ref=base_ref)
+        result = await self.propose(objective, context=context, choice=choice)
         if isinstance(result, PlanFailure):
             return result
         graph = await creator.create_graph(
@@ -1262,7 +1531,79 @@ class UnavailablePlanBackend:
         raise PlanBackendUnavailable(self._reason)
 
 
-def create_backend(settings: Settings) -> PlanBackend:
+def _resolve_choice(settings: Settings, choice: PlannerChoice) -> Settings:
+    """Fold a request's choice into a copy of ``settings``, or refuse it.
+
+    Returning settings rather than a backend is what keeps both constructors
+    exactly as they were: there is still one configuration object that a
+    backend reads, and no second path by which a harness or a model reaches
+    one.
+
+    Only what the *request* named is validated here, and that asymmetry is the
+    point. A model the request supplied is checked against the harness it will
+    actually run on, so a typo is a 422 listing that harness's models. A
+    harness the *settings* named is left alone even when it is broken, so it
+    keeps degrading through :class:`UnavailablePlanBackend` into the 503 that
+    tells the operator to fix their configuration.
+    """
+    backend = choice.backend or settings.planner_backend
+    if backend not in ("harness", "api"):
+        raise PlannerChoiceError(
+            f"unknown planner backend {backend!r}; valid: ['api', 'harness']"
+        )
+
+    update: dict[str, object] = {"planner_backend": backend}
+    if backend == "api":
+        if choice.harness is not None:
+            raise PlannerChoiceError(
+                "the `api` planner backend runs no harness, so it cannot be "
+                f"combined with harness {choice.harness!r}; drop the harness, "
+                "or choose the `harness` backend"
+            )
+        if choice.model is not None:
+            if choice.model not in settings.planner_api_models:
+                raise PlannerChoiceError(
+                    f"model {choice.model!r} is not selectable for the `api` "
+                    f"planner backend; valid: {list(settings.planner_api_models)}"
+                )
+            update["planner_model"] = choice.model
+        return settings.model_copy(update=update)
+
+    selectable = selectable_harnesses()
+    harness = choice.harness or settings.planner_harness
+    if choice.harness is not None:
+        if harness not in ADAPTERS:
+            raise PlannerChoiceError(
+                f"unknown harness {harness!r}; the planner can use: "
+                f"{sorted(selectable)}"
+            )
+        if harness not in selectable:
+            raise PlannerChoiceError(
+                f"harness {harness!r} cannot return schema-validated content, "
+                f"so it cannot back the planner; the planner can use: "
+                f"{sorted(selectable)}"
+            )
+    model = choice.model
+    if model is not None and harness in selectable and model not in selectable[harness]:
+        raise PlannerChoiceError(
+            f"model {model!r} is not one of harness {harness!r}'s models; "
+            f"valid: {list(selectable[harness])}"
+        )
+    if model is None:
+        # A pinned `planner_harness_model` belongs to the harness it was pinned
+        # for. Carrying it onto a *different* one the request asked for would
+        # turn a valid request into a 503 about a model nobody named here.
+        model = settings.planner_harness_model
+        if choice.harness is not None and model not in selectable.get(harness, ()):
+            model = None
+    update["planner_harness"] = harness
+    update["planner_harness_model"] = model
+    return settings.model_copy(update=update)
+
+
+def create_backend(
+    settings: Settings, choice: PlannerChoice | None = None
+) -> PlanBackend:
     """The configured backend, or one that explains why there isn't one.
 
     The API client is built bare on purpose: the SDK resolves
@@ -1276,18 +1617,30 @@ def create_backend(settings: Settings) -> PlanBackend:
 
     The harness backend *can* fail here, and that failure is captured into
     :class:`UnavailablePlanBackend` rather than raised.
+
+    ``choice`` is one request's override of `design.md` §8's three settings.
+    Anything it names is validated first and refused with
+    :class:`PlannerChoiceError`, which does **not** degrade: the deferral above
+    exists so a misconfigured server still boots its other four features, and
+    it is the wrong answer to a body somebody just typed. With no choice — or
+    one that names nothing — the behaviour below is exactly what it was.
     """
-    if settings.planner_backend == "api":
-        return ApiPlanBackend(client=AsyncAnthropic(), settings=settings)
+    resolved = (
+        settings
+        if choice is None or choice.is_empty()
+        else _resolve_choice(settings, choice)
+    )
+    if resolved.planner_backend == "api":
+        return ApiPlanBackend(client=AsyncAnthropic(), settings=resolved)
     try:
-        adapter = create_adapter(settings.planner_harness)
-        return HarnessPlanBackend(adapter=adapter, settings=settings)
+        adapter = create_adapter(resolved.planner_harness)
+        return HarnessPlanBackend(adapter=adapter, settings=resolved)
     except (PlanBackendUnavailable, ValueError) as exc:
         # ValueError is `create_adapter` on a harness name that has no adapter.
         log.error(
             "planner.backend_unavailable",
-            planner_backend=settings.planner_backend,
-            planner_harness=settings.planner_harness,
+            planner_backend=resolved.planner_backend,
+            planner_harness=resolved.planner_harness,
             error=str(exc),
         )
         return UnavailablePlanBackend(str(exc))
@@ -1299,6 +1652,8 @@ def create_planner(settings: Settings, prices: PriceTable) -> Planner:
 
 
 __all__ = [
+    "API_IS_SPEND",
+    "HARNESS_IS_SPEND",
     "SYSTEM_PROMPT",
     "ApiPlanBackend",
     "GraphCreator",
@@ -1316,6 +1671,11 @@ __all__ = [
     "PlanTurn",
     "PlannedActivity",
     "Planner",
+    "PlannerChoice",
+    "PlannerChoiceError",
+    "PlannerDefault",
+    "PlannerOption",
+    "PlannerOptions",
     "PlannerUsage",
     "UnavailablePlanBackend",
     "compose_prompt",
@@ -1324,6 +1684,8 @@ __all__ = [
     "create_planner",
     "harness_catalog",
     "objective_prompt",
+    "planner_options",
+    "selectable_harnesses",
     "to_planned_nodes",
     "validate_plan",
 ]

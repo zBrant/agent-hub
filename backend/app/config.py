@@ -26,6 +26,13 @@ DEFAULT_PRICING_PATH = Path(__file__).resolve().parents[2] / "pricing.yaml"
 #: has to know which vendor library the planner uses.
 type PlannerEffort = Literal["low", "medium", "high", "xhigh", "max"]
 
+#: `design.md` §8's backend seam, as a name. Two values and no third: a plan
+#: comes from the Anthropic API or from a harness adapter that can return
+#: schema-validated content. Named here rather than in `orchestrator/planner.py`
+#: so the settings field, the per-request choice and the wire schema all spell
+#: it once.
+type PlannerBackendName = Literal["harness", "api"]
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -100,6 +107,12 @@ class Settings(BaseSettings):
     # plan plus two corrections. A model that cannot close a two-node cycle in
     # three tries will not close it in thirty, and each try is real money.
     planner_max_attempts: Annotated[int, Field(ge=1, le=5)] = Field(default=3)
+    # A provider or CLI that never closes its turn must not leave the HTTP
+    # request — and the Sessions form's only action — pending forever. This is
+    # per attempt so a correction receives the same bounded opportunity as the
+    # first plan. Cancellation propagates into harness adapters, which kill the
+    # whole child process group before returning a typed timeout failure.
+    planner_timeout_s: Annotated[float, Field(gt=0, le=3600)] = Field(default=120.0)
     # Which adapter a node gets when the planner suggests a harness that is not
     # installed. A configured *value*, not a conditional: nothing branches on
     # it (invariant 1), and `design.md` §8 makes the harness the operator's
@@ -118,11 +131,29 @@ class Settings(BaseSettings):
     # A value, never a conditional: nothing branches on which harness this
     # names (invariant 1). The adapter is asked whether it supports structured
     # output, and one that does not is a configuration error at startup.
-    planner_backend: Literal["harness", "api"] = Field(default="harness")
+    #
+    # These three are the *default*, not a lock: `design.md` §8 makes the
+    # backend, the harness and the model a per-plan choice, so a request may
+    # name its own and only what it leaves out falls back here.
+    planner_backend: PlannerBackendName = Field(default="harness")
     planner_harness: str = Field(default="claude-code")
     # None lets the CLI use whatever it is already configured for. Pinning it
     # here is for reproducibility, not capability.
     planner_harness_model: str | None = Field(default=None)
+    # Which models a plan request may select on the `api` backend.
+    #
+    # An explicit list, and deliberately neither of the two things it could
+    # have been derived from. Not `pricing.yaml`: that prices everything the
+    # dashboards may ever see, including OpenAI models, and no amount of
+    # pricing data makes a model reachable through `messages.parse`. Not the
+    # claude-code adapter's `supported_models` either: the API backend is not
+    # that harness — it needs a credential of its own, it bills per token
+    # (invariant 7's other half), and a CLI's release cadence is not the API's.
+    # The harness backend's models *are* read from its adapter, because there
+    # the adapter is the thing that will run.
+    planner_api_models: list[str] = Field(
+        default_factory=lambda: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]
+    )
 
     # --- agentic code search (`design.md` §8, Phase 4 E4) -------------------
     # These are independent ceilings: raising one must never disable another.

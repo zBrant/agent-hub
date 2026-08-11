@@ -19,6 +19,13 @@ gated. The planner route builds the same
 loop stays inside the planner, and a graph that is still invalid fails with
 typed defects and no partial graph.
 
+``POST /api/graphs/plan`` also carries an optional per-plan ``planner`` choice
+(`design.md` §8) and ``GET /api/graphs/planner-options`` says what may be
+chosen. Neither route decides anything about it: the options come from the
+adapter registry's capabilities through ``orchestrator/``, and a choice this
+transport cannot serve is refused *there* — 422 for a body that named it, 503
+for settings that did.
+
 **Invariant 6 holds by construction here.** ``create_graph`` writes every node
 ``pending`` and materializes nothing: persisting a proposal starts no worktree
 and no agent. Editing remains node-addressed, and approval plus scheduling call
@@ -33,10 +40,12 @@ from app.api.deps import call, planner, scheduler, service
 from app.api.schemas import (
     CreatedGraphResponse,
     CreateGraphRequest,
+    DiffResponse,
     GraphResponse,
     GraphRunResponse,
     PlanGraphRequest,
     PlannedGraphResponse,
+    PlannerOptionsResponse,
     PlannerUsageResponse,
 )
 from app.orchestrator.planner import PlanFailure
@@ -45,7 +54,11 @@ router = APIRouter(prefix="/api/graphs", tags=["graphs"])
 
 # Everything not listed is 422: the model answered, and what came back is
 # unprocessable rather than a transport or configuration problem.
-_PLAN_FAILURE_STATUS = {"api_error": 502, "not_configured": 503}
+_PLAN_FAILURE_STATUS = {
+    "api_error": 502,
+    "not_configured": 503,
+    "timed_out": 504,
+}
 
 
 @router.post(
@@ -54,14 +67,26 @@ _PLAN_FAILURE_STATUS = {"api_error": 502, "not_configured": 503}
     status_code=status.HTTP_201_CREATED,
 )
 async def plan_graph(body: PlanGraphRequest, request: Request) -> PlannedGraphResponse:
-    """Plan and persist an objective as a proposal; never approve or run it."""
-    result = await planner(request).plan_graph(
-        body.objective,
-        repo_path=body.repo_path,
-        creator=service(request),
-        context=body.context,
-        auto_merge=body.auto_merge,
-        base_ref=body.base_ref,
+    """Plan and persist an objective as a proposal; never approve or run it.
+
+    Through :func:`~app.api.deps.call` for one reason beyond consistency: a
+    ``body.planner`` naming a harness or model that cannot back the planner
+    raises ``PlannerChoiceError``, a ``ValueError``, and ``call`` is what turns
+    that into the 422 the caller deserves. Without it the same typo would be a
+    500, and a body the server rejected on purpose must never look like a
+    server that broke. Configuration problems keep arriving as a ``PlanFailure``
+    below, where ``not_configured`` is still a 503.
+    """
+    result = await call(
+        planner(request).plan_graph(
+            body.objective,
+            repo_path=body.repo_path,
+            creator=service(request),
+            context=body.context,
+            choice=body.to_choice(),
+            auto_merge=body.auto_merge,
+            base_ref=body.base_ref,
+        )
     )
     if isinstance(result, PlanFailure):
         detail = {
@@ -86,6 +111,22 @@ async def plan_graph(body: PlanGraphRequest, request: Request) -> PlannedGraphRe
         code = _PLAN_FAILURE_STATUS.get(result.kind.value, 422)
         raise HTTPException(status_code=code, detail=detail)
     return PlannedGraphResponse.from_proposal(result)
+
+
+# Declared before `/{session_id}`: FastAPI matches in declaration order, and a
+# literal path registered after the parameterized one would be read as a
+# session id and answer 404.
+@router.get("/planner-options", response_model=PlannerOptionsResponse)
+async def planner_options(request: Request) -> PlannerOptionsResponse:
+    """What `POST /plan` may choose, and what it uses when it chooses nothing.
+
+    The harness list is the structured-output capability over the adapter
+    registry, so a harness that cannot back the planner is absent rather than
+    offered-and-refused. The `api` option is always present and is never probed
+    for a credential — one of its three sources is not inspectable, so the flag
+    would be a guess; a missing credential answers 503 naming the fix.
+    """
+    return PlannerOptionsResponse.from_result(planner(request).options())
 
 
 @router.post(
@@ -118,6 +159,15 @@ async def create_graph(
 @router.get("/{session_id}", response_model=GraphResponse)
 async def get_graph(session_id: str, request: Request) -> GraphResponse:
     return GraphResponse.from_result(await call(service(request).get_graph(session_id)))
+
+
+@router.get("/{session_id}/diff", response_model=DiffResponse)
+async def get_graph_diff(session_id: str, request: Request) -> DiffResponse:
+    lifecycle = service(request)
+    return DiffResponse(
+        patch=await call(lifecycle.get_graph_diff(session_id)),
+        branch=await call(lifecycle.get_graph_result_branch(session_id)),
+    )
 
 
 @router.post("/{session_id}/approve", response_model=GraphResponse)

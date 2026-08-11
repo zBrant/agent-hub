@@ -21,7 +21,7 @@ type Props = {
 type NodeAction =
   | { kind: "run" }
   | { kind: "kill" }
-  | { kind: "retry" }
+  | { kind: "retry"; feedback: string | undefined }
   | {
       kind: "approve";
       outcomes: Readonly<Record<number, CriterionOutcome>>;
@@ -55,7 +55,7 @@ export function NodeDrawerRoute({
         case "kill":
           return api.killNode(sessionId, node.id);
         case "retry":
-          return api.retryNode(sessionId, node.id);
+          return api.retryNode(sessionId, node.id, operation.feedback);
         case "approve":
           return api.approveNode(sessionId, node.id, operation.outcomes);
         case "reject":
@@ -105,7 +105,7 @@ export function NodeDrawerRoute({
       onReject={(feedback, outcomes) =>
         action.mutate({ kind: "reject", feedback, outcomes })
       }
-      onRetry={() => action.mutate({ kind: "retry" })}
+      onRetry={(feedback) => action.mutate({ kind: "retry", feedback })}
       onRun={() => action.mutate({ kind: "run" })}
       patch={data.patch}
       pendingAction={action.isPending ? (action.variables?.kind ?? null) : null}

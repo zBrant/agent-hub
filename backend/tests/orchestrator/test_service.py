@@ -113,6 +113,7 @@ class FakeAdapter:
         permission_denials: int = 0,
         trusted: bool = True,
         release: asyncio.Event | None = None,
+        commit_change: bool = False,
     ) -> None:
         self.name = name
         self.supported_models = [MODEL]
@@ -120,6 +121,7 @@ class FakeAdapter:
         self.change = change
         self.permission_denials = permission_denials
         self.release = release
+        self.commit_change = commit_change
         self.stats = ParseStats(
             unknown={} if trusted else {"future-event": 1},
         )
@@ -141,6 +143,9 @@ class FakeAdapter:
             (spec.cwd / "agent.txt").write_text(
                 f"made by fake adapter: {self.status}\n{spec.prompt}\n"
             )
+            if self.commit_change:
+                await git(spec.cwd, "add", "--all", "--")
+                await git(spec.cwd, "commit", "-m", "feat: agent checkpoint")
         return cast(
             RunHandle,
             FakeHandle(spec=spec, argv=tuple(self.build_argv(spec))),
@@ -368,6 +373,35 @@ async def test_human_gate_waits_then_approve_merges(
     assert await persisted(
         database, created.session.id, created.node.id, outcome.run_id
     ) == (SessionStatus.DONE, NodeStatus.DONE, RunState.SUCCESS, 0)
+
+
+async def test_agent_authored_commit_reaches_review_instead_of_blocking(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    adapter = FakeAdapter(name="fake", commit_change=True)
+    service = service_for(
+        database=database,
+        settings=settings,
+        prices=prices,
+        adapter=adapter,
+    )
+    created = await service.create_session(
+        repo_path=target_repo,
+        prompt="commit the work yourself",
+        harness=adapter.name,
+        model=MODEL,
+    )
+
+    outcome = await service.run(created.session.id)
+
+    assert outcome.run_status is RunState.SUCCESS
+    assert outcome.node_status is NodeStatus.AWAITING_REVIEW
+    assert outcome.block_reason is None
+    assert outcome.commit.status is CommitStatus.CHECKPOINTED
+    assert outcome.commit.changed_paths == (Path("agent.txt"),)
 
 
 @pytest.mark.parametrize(

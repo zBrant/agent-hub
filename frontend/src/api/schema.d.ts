@@ -74,8 +74,42 @@ export interface paths {
         /**
          * Plan Graph
          * @description Plan and persist an objective as a proposal; never approve or run it.
+         *
+         *     Through :func:`~app.api.deps.call` for one reason beyond consistency: a
+         *     ``body.planner`` naming a harness or model that cannot back the planner
+         *     raises ``PlannerChoiceError``, a ``ValueError``, and ``call`` is what turns
+         *     that into the 422 the caller deserves. Without it the same typo would be a
+         *     500, and a body the server rejected on purpose must never look like a
+         *     server that broke. Configuration problems keep arriving as a ``PlanFailure``
+         *     below, where ``not_configured`` is still a 503.
          */
         readonly post: operations["plan_graph_api_graphs_plan_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/graphs/planner-options": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /**
+         * Planner Options
+         * @description What `POST /plan` may choose, and what it uses when it chooses nothing.
+         *
+         *     The harness list is the structured-output capability over the adapter
+         *     registry, so a harness that cannot back the planner is absent rather than
+         *     offered-and-refused. The `api` option is always present and is never probed
+         *     for a credential — one of its three sources is not inspectable, so the flag
+         *     would be a guess; a missing credential answers 503 naming the fix.
+         */
+        readonly get: operations["planner_options_api_graphs_planner_options_get"];
+        readonly put?: never;
+        readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -110,6 +144,23 @@ export interface paths {
         readonly put?: never;
         /** Approve Graph */
         readonly post: operations["approve_graph_api_graphs__session_id__approve_post"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/api/graphs/{session_id}/diff": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Get Graph Diff */
+        readonly get: operations["get_graph_diff_api_graphs__session_id__diff_get"];
+        readonly put?: never;
+        readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
         readonly head?: never;
@@ -985,6 +1036,8 @@ export interface components {
         };
         /** DiffResponse */
         readonly DiffResponse: {
+            /** Branch */
+            readonly branch?: string | null;
             /** Patch */
             readonly patch: string;
         };
@@ -1156,6 +1209,7 @@ export interface components {
             readonly context?: string | null;
             /** Objective */
             readonly objective: string;
+            readonly planner?: components["schemas"]["PlannerChoiceRequest"] | null;
             /**
              * Repo Path
              * Format: path
@@ -1226,6 +1280,80 @@ export interface components {
              * @default []
              */
             readonly touches: readonly string[];
+        };
+        /** @enum {string} */
+        readonly PlannerBackendName: "harness" | "api";
+        /**
+         * PlannerChoiceRequest
+         * @description Which backend, harness and model to plan *this* objective with.
+         *
+         *     Every field optional, and an absent one falls back to the server's
+         *     configured default (`design.md` §8): a client that only wants a cheaper
+         *     model for one plan sends ``{"model": ...}`` and nothing else. Sending the
+         *     whole object is optional too — omit it and the plan runs on the default,
+         *     which is what every caller did before this existed.
+         *
+         *     ``backend`` is a closed set here, so an unknown name is refused by this
+         *     schema. An unknown *harness* or *model* cannot be: both come from the
+         *     adapter registry and the configured model list, so they are checked in
+         *     ``orchestrator/`` and arrive as a 422 listing what is valid — see
+         *     ``GET /api/graphs/planner-options`` for the same lists up front.
+         */
+        readonly PlannerChoiceRequest: {
+            readonly backend?: components["schemas"]["PlannerBackendName"] | null;
+            /** Harness */
+            readonly harness?: string | null;
+            /** Model */
+            readonly model?: string | null;
+        };
+        /**
+         * PlannerDefaultResponse
+         * @description What a plan request that chooses nothing will use.
+         *
+         *     ``selectable`` is False when the configured default is not among the
+         *     options — a harness with no adapter, one that cannot return
+         *     schema-validated content, or a model that is not in its list. It is
+         *     structural, and never a claim about credentials: the `api` backend is
+         *     always offered because its three credential sources cannot all be
+         *     inspected, and a missing one surfaces as a 503 naming the fix.
+         */
+        readonly PlannerDefaultResponse: {
+            readonly backend: components["schemas"]["PlannerBackendName"];
+            /** Harness */
+            readonly harness: string | null;
+            /** Model */
+            readonly model: string | null;
+            /** Selectable */
+            readonly selectable: boolean;
+        };
+        /**
+         * PlannerOptionResponse
+         * @description One selectable planner backend, and what choosing it means.
+         *
+         *     ``is_spend`` is invariant 7 in advance: True on `api`, where the plan bills
+         *     per token against a credential of its own, False on every harness, where it
+         *     rides an already-paid subscription and the cost is an estimated
+         *     equivalent. ``supports_effort`` is True only on `api`, because
+         *     ``planner_effort`` and ``planner_max_tokens`` are ``output_config`` on an
+         *     API request and a CLI decides its own depth — rendering an effort control
+         *     beside a harness would be showing a knob wired to nothing.
+         */
+        readonly PlannerOptionResponse: {
+            readonly backend: components["schemas"]["PlannerBackendName"];
+            /** Harness */
+            readonly harness: string | null;
+            /** Is Spend */
+            readonly is_spend: boolean;
+            /** Models */
+            readonly models: readonly string[];
+            /** Supports Effort */
+            readonly supports_effort: boolean;
+        };
+        /** PlannerOptionsResponse */
+        readonly PlannerOptionsResponse: {
+            readonly default: components["schemas"]["PlannerDefaultResponse"];
+            /** Options */
+            readonly options: readonly components["schemas"]["PlannerOptionResponse"][];
         };
         /**
          * PlannerUsageResponse
@@ -1676,6 +1804,26 @@ export interface operations {
             };
         };
     };
+    readonly planner_options_api_graphs_planner_options_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["PlannerOptionsResponse"];
+                };
+            };
+        };
+    };
     readonly get_graph_api_graphs__session_id__get: {
         readonly parameters: {
             readonly query?: never;
@@ -1725,6 +1873,37 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["GraphResponse"];
+                };
+            };
+            /** @description Validation Error */
+            readonly 422: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readonly get_graph_diff_api_graphs__session_id__diff_get: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path: {
+                readonly session_id: string;
+            };
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Successful Response */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["DiffResponse"];
                 };
             };
             /** @description Validation Error */

@@ -147,7 +147,20 @@ class MergeStatus(StrEnum):
 
 class CommitStatus(StrEnum):
     COMMITTED = "committed"
+    CHECKPOINTED = "checkpointed"
+    """The agent committed its own work before the orchestrator checkpoint."""
+
     NOTHING_TO_COMMIT = "nothing_to_commit"
+
+
+@dataclass(frozen=True, slots=True)
+class FinalizeResult:
+    """A durable result ref left after temporary worktrees are removed."""
+
+    branch: str
+    commit: str
+    removed_worktrees: tuple[Path, ...] = ()
+    removed_branches: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +204,7 @@ class CommitResult:
 
     @property
     def committed(self) -> bool:
-        return self.status is CommitStatus.COMMITTED
+        return self.status in (CommitStatus.COMMITTED, CommitStatus.CHECKPOINTED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,6 +342,10 @@ class SessionWorkspace:
         return f"{BRANCH_NAMESPACE}/{self.session_id}/{INTEGRATION}"
 
     @property
+    def result_branch(self) -> str:
+        return f"{BRANCH_NAMESPACE}/{self.session_id}/result"
+
+    @property
     def integration_path(self) -> Path:
         return self.root / INTEGRATION
 
@@ -410,10 +427,11 @@ class SessionWorkspace:
     async def diff(self, node_id: NodeId, *, base_ref: str) -> str:
         """The node's patch from its immutable creation checkpoint."""
         path = self.node_path(node_id)
-        base = await self._rev_parse(path, f"{base_ref}^{{commit}}")
+        cwd = path if path.exists() else self.repo_path
+        base = await self._rev_parse(cwd, f"{base_ref}^{{commit}}")
         branch = self.node_branch(node_id)
         result = await self._git(
-            path,
+            cwd,
             "diff",
             "--no-ext-diff",
             "--binary",
@@ -425,8 +443,149 @@ class SessionWorkspace:
         )
         return result.stdout
 
-    async def commit(self, node_id: NodeId, message: str) -> CommitResult:
-        """Stage everything in the node worktree and commit it."""
+    async def integration_diff(self, *, base_refs: Sequence[str]) -> str:
+        """Return the session's aggregate patch on the integration branch.
+
+        Root nodes can be materialized from different integration checkpoints
+        when scheduling is staggered. Their merge base is therefore the stable
+        start of the generated result; diffing from a single final node would
+        hide work contributed by its siblings.
+        """
+        if not base_refs:
+            raise WorktreeError("an integration diff requires at least one base ref")
+        # The target checkout is never removed. Reading refs from it avoids a
+        # race with successful-session cleanup removing the integration
+        # worktree while the completed-session drawer loads this diff.
+        cwd = self.repo_path
+        result_ref = (
+            self.result_branch
+            if await self._ref_exists(cwd, self.result_branch)
+            else self.integration_branch
+        )
+        resolved = [
+            await self._rev_parse(cwd, f"{ref}^{{commit}}") for ref in base_refs
+        ]
+        common = await self._git(
+            cwd,
+            "merge-base",
+            "--octopus",
+            *resolved,
+            result_ref,
+        )
+        result = await self._git(
+            cwd,
+            "diff",
+            "--no-ext-diff",
+            "--binary",
+            "--find-renames",
+            "--end-of-options",
+            common.stdout.strip(),
+            result_ref,
+            "--",
+        )
+        return result.stdout
+
+    async def finalize(self, *, node_ids: Sequence[NodeId]) -> FinalizeResult:
+        """Keep one result branch and remove a completed session's worktrees.
+
+        Every managed worktree is checked for dirt before the first removal.
+        The result ref is created first, so every commit remains reachable even
+        if cleanup is interrupted halfway through. Repeating the operation is
+        safe and finishes any cleanup left by such an interruption.
+        """
+        node_ids = tuple(node_ids)
+        node_paths = tuple(self.node_path(node_id) for node_id in node_ids)
+        cwd = (
+            self.integration_path if self.integration_path.exists() else self.repo_path
+        )
+
+        if await self._ref_exists(cwd, self.integration_branch):
+            commit = await self._rev_parse(cwd, self.integration_branch)
+            await self._git(
+                cwd,
+                "branch",
+                "--force",
+                self.result_branch,
+                self.integration_branch,
+            )
+        elif await self._ref_exists(cwd, self.result_branch):
+            commit = await self._rev_parse(cwd, self.result_branch)
+        else:
+            raise WorktreeError(
+                f"session {self.session_id} has neither integration nor result branch"
+            )
+
+        lock = _REGISTRY_LOCKS.get(await _common_dir(cwd))
+        removed_worktrees: list[Path] = []
+        async with lock:
+            registered = set(await self._list_worktrees(cwd))
+            managed_list: list[Path] = []
+            for path in (*node_paths, self.integration_path):
+                if await _real_path(path) in registered:
+                    managed_list.append(path)
+            managed = tuple(managed_list)
+            for path in managed:
+                dirty = await self._git(path, "status", "--porcelain")
+                if dirty.stdout:
+                    raise WorktreeError(f"refusing to finalize dirty worktree {path}")
+            for path in managed:
+                await self._git(
+                    self.repo_path,
+                    "worktree",
+                    "remove",
+                    "--",
+                    str(path),
+                )
+                removed_worktrees.append(path)
+            await self._git(self.repo_path, "worktree", "prune")
+
+        removed_branches: list[str] = []
+        # Node branches are durable per-attempt review history. Worktrees are
+        # temporary; their refs are not. Only the superseded aggregate
+        # integration ref is removed after the result ref points at the same
+        # commit.
+        for branch in (self.integration_branch,):
+            if not await self._ref_exists(self.repo_path, branch):
+                continue
+            await self._git(self.repo_path, "branch", "-D", "--", branch)
+            removed_branches.append(branch)
+        try:
+            await asyncio.to_thread(self.root.rmdir)
+        except OSError:
+            pass
+        log.info(
+            "worktree.session_finalized",
+            session_id=self.session_id,
+            branch=self.result_branch,
+            commit=commit,
+            worktrees=len(removed_worktrees),
+            transient_branches=len(removed_branches),
+        )
+        return FinalizeResult(
+            branch=self.result_branch,
+            commit=commit,
+            removed_worktrees=tuple(removed_worktrees),
+            removed_branches=tuple(removed_branches),
+        )
+
+    async def commit(
+        self,
+        node_id: NodeId,
+        message: str,
+        *,
+        base_ref: str | None = None,
+    ) -> CommitResult:
+        """Checkpoint a node's work, including commits authored by the agent.
+
+        Harnesses are asked to edit the worktree, but coding agents sometimes
+        also run ``git commit`` themselves. In that case the index is clean even
+        though the node branch differs from its immutable base. ``base_ref``
+        lets the orchestrator recognize that existing commit as a valid
+        checkpoint instead of misclassifying a successful run as ``no_changes``.
+
+        Callers that do not own a node base may omit it and retain the narrower
+        "commit currently staged/unstaged files" behavior.
+        """
         path = self.node_path(node_id)
         branch = self.node_branch(node_id)
 
@@ -434,6 +593,33 @@ class SessionWorkspace:
         staged = await self._git(path, "diff", "--cached", "--name-only", "-z", "--")
         changed = _split_nul_paths(staged.stdout)
         if not changed:
+            if base_ref is not None:
+                existing = await self._git(
+                    path,
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    "--end-of-options",
+                    base_ref,
+                    branch,
+                    "--",
+                )
+                existing_paths = _split_nul_paths(existing.stdout)
+                if existing_paths:
+                    head = await self._rev_parse(path, "HEAD")
+                    log.info(
+                        "worktree.agent_commit_checkpointed",
+                        session_id=self.session_id,
+                        node_id=node_id,
+                        commit=head,
+                        files=len(existing_paths),
+                    )
+                    return CommitResult(
+                        CommitStatus.CHECKPOINTED,
+                        branch,
+                        commit=head,
+                        changed_paths=existing_paths,
+                    )
             log.info(
                 "worktree.nothing_to_commit",
                 session_id=self.session_id,
@@ -534,10 +720,25 @@ class SessionWorkspace:
         half-written entry here (measured), and taking it would deadlock
         :meth:`remove_node`, which calls this from inside that mutex.
         """
-        result = await self._git(
-            self.integration_path, "worktree", "list", "--porcelain"
+        cwd = (
+            self.integration_path if self.integration_path.exists() else self.repo_path
         )
+        return await self._list_worktrees(cwd)
+
+    async def _list_worktrees(self, cwd: Path) -> tuple[Path, ...]:
+        result = await self._git(cwd, "worktree", "list", "--porcelain")
         return _parse_worktree_list(result.stdout)
+
+    async def _ref_exists(self, cwd: Path, ref: str) -> bool:
+        result = await self._git(
+            cwd,
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"refs/heads/{ref}",
+            ok_codes=(0, 1),
+        )
+        return result.returncode == 0
 
     async def _merge(
         self,
@@ -615,22 +816,16 @@ class SessionWorkspace:
         )
 
 
-async def init_session_workspace(
-    *,
-    repo_path: Path,
-    session_id: SessionId,
-    workspaces_root: Path | None = None,
-    base_ref: str = "HEAD",
-    identity: GitIdentity = AGENT_IDENTITY,
-) -> SessionWorkspace:
-    """Create ``<workspaces_root>/<session_id>/integration`` and its branch.
+@dataclass(frozen=True, slots=True)
+class _RepositoryTarget:
+    repo: Path
+    common_dir: Path
+    base_commit: str
 
-    Idempotent: if the integration worktree is already registered (orchestrator
-    restart) the existing workspace is returned untouched.
-    """
-    _valid_name(session_id, kind="session id")
+
+async def _repository_target(repo_path: Path, base_ref: str) -> _RepositoryTarget:
+    """Resolve and validate a repository target without creating a worktree."""
     repo = await _real_path(repo_path)
-
     probe = await _git(
         repo,
         "rev-parse",
@@ -656,7 +851,40 @@ async def init_session_workspace(
         raise NotARepositoryError(
             f"{repo} has no commit for base ref {base_ref!r}: {resolved_base.stderr}"
         )
-    base_commit = resolved_base.stdout.strip()
+    return _RepositoryTarget(
+        repo=repo,
+        common_dir=common_dir,
+        base_commit=resolved_base.stdout.strip(),
+    )
+
+
+async def validate_repository(repo_path: Path, *, base_ref: str = "HEAD") -> Path:
+    """Validate what a future session would target, without materializing it.
+
+    Planning can take minutes and spend tokens. This preflight gives callers a
+    read-only way to reject a missing repository or base ref before asking a
+    model for a graph that can never run. Creation validates again because the
+    repository may change while the model is answering.
+    """
+    return (await _repository_target(repo_path, base_ref)).repo
+
+
+async def init_session_workspace(
+    *,
+    repo_path: Path,
+    session_id: SessionId,
+    workspaces_root: Path | None = None,
+    base_ref: str = "HEAD",
+    identity: GitIdentity = AGENT_IDENTITY,
+) -> SessionWorkspace:
+    """Create ``<workspaces_root>/<session_id>/integration`` and its branch.
+
+    Idempotent: if the integration worktree is already registered (orchestrator
+    restart) the existing workspace is returned untouched.
+    """
+    _valid_name(session_id, kind="session id")
+    target = await _repository_target(repo_path, base_ref)
+    repo = target.repo
 
     root = (workspaces_root or default_workspaces_root()) / session_id
     await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
@@ -670,7 +898,7 @@ async def init_session_workspace(
     integration = await _real_path(workspace.integration_path)
     # Check and add under the repository's registration mutex: two sessions
     # starting at once on one repository write to the same `.git/worktrees/`.
-    async with _REGISTRY_LOCKS.get(common_dir):
+    async with _REGISTRY_LOCKS.get(target.common_dir):
         existing = await _git(repo, "worktree", "list", "--porcelain")
         if integration in _parse_worktree_list(existing.stdout):
             return workspace
@@ -683,14 +911,14 @@ async def init_session_workspace(
             workspace.integration_branch,
             "--",
             str(workspace.integration_path),
-            base_commit,
+            target.base_commit,
         )
     log.info(
         "worktree.session_initialized",
         session_id=session_id,
         repo=str(repo),
         branch=workspace.integration_branch,
-        base=base_commit,
+        base=target.base_commit,
     )
     return workspace
 

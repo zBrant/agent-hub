@@ -807,6 +807,47 @@ async def test_a_failure_blocks_its_transitive_dependents_by_name(
     assert not (integration / "a.txt").exists()
 
 
+async def test_resolved_failure_releases_unmaterialized_dependents(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """A propagated block is temporary when its root cause is recovered."""
+    harness = FakeHarness(failing=frozenset({"a"}))
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo,
+        nodes=plan("a", "b:a", "c:b"),
+        auto_merge=True,
+    )
+    scheduler = scheduler_for(service, database, settings)
+
+    await scheduler.run_graph(graph.session.id)
+    assert await statuses(database, graph) == {
+        "a": NodeStatus.FAILED,
+        "b": NodeStatus.BLOCKED,
+        "c": NodeStatus.BLOCKED,
+    }
+    assert await run_counts(database, graph) == {"a": 1, "b": 0, "c": 0}
+
+    harness.failing = frozenset()
+    recovered = await service.retry_node(graph.ids_by_name["a"])
+    assert recovered.node_status is NodeStatus.DONE
+
+    resumed = await scheduler.run_graph(graph.session.id)
+
+    assert resumed.outcome is GraphOutcome.COMPLETE
+    assert await statuses(database, graph) == {
+        "a": NodeStatus.DONE,
+        "b": NodeStatus.DONE,
+        "c": NodeStatus.DONE,
+    }
+    assert await run_counts(database, graph) == {"a": 2, "b": 1, "c": 1}
+
+
 async def test_a_crashing_launch_fails_its_node_and_spares_the_rest(
     database: Database,
     settings: Settings,
@@ -952,11 +993,17 @@ async def test_a_node_owned_by_someone_else_is_stood_down_from_not_failed(
         async def block_node(self, node_id: str, *, causes: Sequence[str]) -> bool:
             return False
 
+        async def release_resolved_blocks(self, session_id: str) -> Sequence[str]:
+            return ()
+
         async def fail_node(self, node_id: str, *, reason: str) -> bool:
             raise AssertionError("a refused node must never be marked failed")
 
         async def recover_orphans(self, session_id: str) -> Sequence[OrphanResolution]:
             return ()
+
+        async def finalize_session(self, session_id: str) -> object:
+            raise AssertionError("an active graph must not be finalized")
 
     service = build_service(
         database=database,

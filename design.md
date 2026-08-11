@@ -119,6 +119,16 @@ Per-node lifecycle:
    block every other node behind one human. The conflicting paths travel in the
    result, and resolution is an explicit later operation.
 
+When every node is done, finalization creates the durable
+`agenthub/<sess>/result` branch at the integration commit, verifies every
+managed worktree is clean, removes the node and integration worktrees, and
+deletes the superseded integration branch. Node branches remain as review
+history. Cleanup is best-effort and retryable: a dirty worktree preserves all
+worktrees rather than discarding data. The target repository's checked-out
+branch is never moved implicitly. A completed session exposes the aggregate
+diff and result branch in the UI so the operator can inspect the complete
+result before explicitly merging or otherwise applying it.
+
 Two behaviors that exit codes do not express, and that any reimplementation will
 get wrong once: `git merge` exits 0 on "Already up to date", and `git commit`
 exits 1 when nothing is staged — indistinguishable from a real failure. Both
@@ -437,8 +447,36 @@ completed); the Dashboard shows only active ones.
 
    **The planner has two interchangeable backends: the Anthropic API, or a
    harness that can return schema-validated content.** Either produces the same
-   parsed object; which one runs is `planner_backend` in configuration, and
-   nothing above the backend seam knows the difference.
+   parsed object, and nothing above the backend seam knows the difference.
+
+   **The choice is per plan, not per server.** `planner_backend`,
+   `planner_harness` and `planner_harness_model` are the *default*; a plan
+   request may name its own. The graph's own nodes have always been the
+   operator's choice in the editable proposal, and the planner being the one
+   thing frozen until a restart was an inconsistency, not a decision — a
+   thirty-node migration and a one-flag change do not deserve the same model.
+   `GET /api/graphs/planner-options` is what makes the choice renderable, and
+   its harness list comes from the structured-output capability rather than a
+   list anyone maintains by hand.
+
+   Two asymmetries the UI has to show rather than hide. `planner_effort` and
+   `planner_max_tokens` apply to the API backend only — the CLI decides its own
+   depth, so offering an effort control next to a harness would be a lie. And
+   the two backends do not share a model list: Codex's models have no API
+   equivalent, and the same Anthropic model reached through a subscription and
+   through the API differs in billing, which is exactly what `is_spend`
+   records.
+
+   **A planner attempt is wall-clock bounded.** A provider or harness CLI that
+   never closes its turn is cancelled at `planner_timeout_s`; harness adapters
+   terminate the child process group, and the plan route answers 504. The
+   Sessions form must never remain pending forever because a local CLI stopped
+   making progress.
+
+   **The repository is preflighted before the planner runs.** A missing Git
+   repository or base ref is a 422 before any model call, not after it. The
+   normal creation path validates again after planning because the repository
+   may change while the model is answering.
 
    > **Superseded, 2026-08-08.** This decision used to read "the planner calls
    > the Anthropic API directly; it does not go through a harness", on the

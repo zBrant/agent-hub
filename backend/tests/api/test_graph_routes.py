@@ -5,18 +5,21 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.harnesses import ADAPTERS, create_adapter
+from app.harnesses.base import ParseStats, StructuredRequest, StructuredResult
 from app.main import create_app
 from app.models.pricing import TokenCounts
 from app.orchestrator.graph import DagError, DagErrorKind
 from app.orchestrator.planner import (
     PlanFailure,
     PlanFailureKind,
+    PlannerChoice,
     PlannerUsage,
     PlanProposal,
 )
@@ -44,6 +47,7 @@ class FakePlanner:
     failure: PlanFailure | None = None
     objective: str | None = None
     context: str | None = None
+    choice: PlannerChoice | None = None
 
     async def plan_graph(
         self,
@@ -52,11 +56,14 @@ class FakePlanner:
         repo_path: Path,
         creator: Any,
         context: str | None = None,
+        choice: PlannerChoice | None = None,
         auto_merge: bool = False,
         base_ref: str = "HEAD",
     ) -> PlanProposal | PlanFailure:
+        await creator.validate_repo(repo_path, base_ref=base_ref)
         self.objective = objective
         self.context = context
+        self.choice = choice
         if self.failure is not None:
             return self.failure
         nodes = (
@@ -90,6 +97,52 @@ class FakePlanner:
             attempts=1,
             graph=graph,
         )
+
+
+class StructuredFake:
+    """A planner-capable adapter with no CLI behind it.
+
+    Registered by the ``planner_harness`` fixture so that a test driving the
+    *real* planner over HTTP cannot reach a binary. Without it, a regression
+    that stopped refusing a bad choice would not fail the test below — it would
+    launch a live agent and hang the suite, which is the one failure mode a
+    test must never have.
+    """
+
+    name = "fake-structured"
+
+    def __init__(self) -> None:
+        self.supported_models = ["fake-mini"]
+        self.stats = ParseStats()
+
+    async def complete_structured(self, request: StructuredRequest) -> StructuredResult:
+        return StructuredResult(
+            data={
+                "title": "A plan",
+                "nodes": [
+                    {
+                        "id": "only",
+                        "title": "Do the thing",
+                        "description": "The brief.",
+                        "depends_on": [],
+                        "acceptance_criteria": ["it compiles"],
+                        "suggested_harness": "fake",
+                        "suggested_model": MODEL,
+                        "estimated_effort": "small",
+                        "touches": ["backend/**"],
+                    }
+                ],
+            },
+            usage=None,
+            model="fake-mini",
+        )
+
+
+@pytest.fixture
+def planner_harness(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """Settings whose planner runs :class:`StructuredFake` instead of a CLI."""
+    monkeypatch.setitem(ADAPTERS, StructuredFake.name, cast(Any, StructuredFake))
+    return settings.model_copy(update={"planner_harness": StructuredFake.name})
 
 
 def node_body(name: str, **overrides: object) -> dict[str, object]:
@@ -150,6 +203,26 @@ def test_plan_endpoint_persists_a_gated_proposal_from_an_objective(
         assert fake.context == "Keep the transport thin"
 
 
+def test_plan_endpoint_rejects_a_non_repository_before_calling_the_planner(
+    settings: Settings, tmp_path: Path
+) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        fake = FakePlanner()
+        client.app.state.planner = fake
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={"repo_path": str(plain), "objective": "Build it"},
+        )
+
+    assert response.status_code == 422
+    assert "is not a git repository" in response.json()["detail"]
+    assert fake.objective is None
+
+
 def test_plan_failure_is_typed_and_persists_nothing(
     settings: Settings, target_repo: Path
 ) -> None:
@@ -194,6 +267,7 @@ def test_plan_failure_is_typed_and_persists_nothing(
     [
         (PlanFailureKind.NOT_CONFIGURED, 503),
         (PlanFailureKind.API_ERROR, 502),
+        (PlanFailureKind.TIMED_OUT, 504),
         (PlanFailureKind.REFUSED, 422),
         (PlanFailureKind.TRUNCATED, 422),
         (PlanFailureKind.MALFORMED, 422),
@@ -224,6 +298,166 @@ def test_every_plan_failure_has_a_status_that_points_somewhere(
 
         assert response.status_code == expected
         assert response.json()["detail"]["kind"] == kind.value
+
+
+def test_planner_options_are_rendered_from_capabilities_not_a_list(
+    settings: Settings,
+) -> None:
+    """`design.md` §8: everything the UI needs to offer the choice honestly.
+
+    A 200 here also proves the route is declared before ``/{session_id}``;
+    registered the other way round, ``planner-options`` would be read as a
+    session id and answer 404.
+    """
+    with TestClient(create_app(settings)) as client:
+        response = client.get("/api/graphs/planner-options")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["default"] == {
+        "backend": "harness",
+        "harness": "claude-code",
+        # `null` is a real value: "whatever the CLI is configured for".
+        "model": None,
+        "selectable": True,
+    }
+
+    by_key = {
+        (option["backend"], option["harness"]): option for option in payload["options"]
+    }
+    # Both installed adapters take a schema, so both are offered — and the
+    # `api` option is listed unconditionally, because its credential cannot be
+    # probed without guessing.
+    assert set(by_key) == {
+        ("api", None),
+        ("harness", "claude-code"),
+        ("harness", "codex"),
+    }
+
+    api = by_key[("api", None)]
+    assert api["is_spend"] is True
+    assert api["supports_effort"] is True
+    assert api["models"] == settings.planner_api_models
+
+    for (backend, harness), option in by_key.items():
+        if backend != "harness":
+            continue
+        assert harness is not None
+        # Invariant 7: a harness plan rides the subscription. And no effort
+        # control, because the CLI decides its own depth.
+        assert option["is_spend"] is False
+        assert option["supports_effort"] is False
+        assert option["models"] == create_adapter(harness).supported_models
+
+
+def test_a_per_plan_choice_reaches_the_planner_intact(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        fake = FakePlanner()
+        client.app.state.planner = fake
+
+        response = client.post(
+            "/api/graphs/plan",
+            json={
+                "repo_path": str(target_repo),
+                "objective": "Build an endpoint and its client",
+                "planner": {"backend": "api", "model": "claude-haiku-4-5"},
+            },
+        )
+
+        assert response.status_code == 201, response.text
+        assert fake.choice == PlannerChoice(
+            backend="api", harness=None, model="claude-haiku-4-5"
+        )
+
+        # Nothing named is nothing chosen: the planner is told `None` and uses
+        # the backend the application owns.
+        client.post(
+            "/api/graphs/plan",
+            json={"repo_path": str(target_repo), "objective": "Again"},
+        )
+        assert fake.choice is None
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        ({"harness": "codx"}, "unknown harness 'codx'"),
+        ({"harness": "codex", "model": "claude-opus-5"}, "not one of harness 'codex'"),
+        ({"backend": "api", "model": "gpt-5.6-sol"}, "not selectable for the `api`"),
+        ({"backend": "api", "harness": "codex"}, "runs no harness"),
+    ],
+)
+def test_a_choice_the_request_got_wrong_is_422_and_says_what_is_valid(
+    planner_harness: Settings,
+    target_repo: Path,
+    choice: dict[str, str],
+    expected: str,
+) -> None:
+    """The person who typed it is the audience, so it is their input that is wrong.
+
+    503 would tell them the server is broken and send them to the logs of a
+    machine that is working exactly as configured. The **real** planner is used
+    here: a fake would prove the route forwards a choice, not that an unusable
+    one is refused before a backend exists.
+    """
+    settings = planner_harness
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        response = client.post(
+            "/api/graphs/plan",
+            json={
+                "repo_path": str(target_repo),
+                "objective": "Build it",
+                "planner": choice,
+            },
+        )
+
+        assert response.status_code == 422, response.text
+        assert expected in response.json()["detail"]
+        # Refused before anything was planned or written.
+        assert client.get("/api/sessions").json() == []
+
+
+def test_an_unknown_backend_name_never_reaches_the_orchestrator(
+    settings: Settings, target_repo: Path
+) -> None:
+    """A closed set on the wire, so the schema answers before the planner does."""
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        response = client.post(
+            "/api/graphs/plan",
+            json={
+                "repo_path": str(target_repo),
+                "objective": "Build it",
+                "planner": {"backend": "anthropic"},
+            },
+        )
+        assert response.status_code == 422, response.text
+
+
+def test_a_harness_the_settings_named_is_still_503_and_not_422(
+    settings: Settings, target_repo: Path
+) -> None:
+    """The other half of the split: a misconfigured server is the operator's.
+
+    Nothing about the request is wrong, so answering 422 would blame the person
+    who typed a perfectly good objective. It stays `not_configured` — the 503
+    that names the fix — exactly as it was before the choice existed.
+    """
+    broken = settings.model_copy(update={"planner_harness": "no-such-harness"})
+    with TestClient(create_app(broken)) as client:
+        install_fake_service(client, broken)
+        response = client.post(
+            "/api/graphs/plan",
+            json={"repo_path": str(target_repo), "objective": "Build it"},
+        )
+
+        assert response.status_code == 503, response.text
+        assert response.json()["detail"]["kind"] == "not_configured"
+        assert client.get("/api/sessions").json() == []
 
 
 def test_a_proposal_is_persisted_pending_and_addressable_by_node(
@@ -468,6 +702,17 @@ def test_edit_approve_run_and_node_reads_close_the_graph_contract(
                 break
             time.sleep(0.01)
         assert {node["status"] for node in final["nodes"]} == {"done"}  # type: ignore[index]
+
+        integration_path = Path(str(final["session"]["workspace_root"])) / "integration"  # type: ignore[index]
+        for _ in range(200):
+            if not integration_path.exists():
+                break
+            time.sleep(0.01)
+        assert not integration_path.exists()
+
+        aggregate = client.get(f"{graph_url}/diff")
+        assert aggregate.status_code == 200
+        assert "api.txt" in aggregate.json()["patch"]
 
         for node_id in (a, b):
             base = f"{nodes_url}/{node_id}"

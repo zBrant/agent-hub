@@ -670,6 +670,17 @@
       },
       "DiffResponse": {
         "properties": {
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
           "patch": {
             "title": "Patch",
             "type": "string"
@@ -1149,6 +1160,16 @@
             "title": "Objective",
             "type": "string"
           },
+          "planner": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlannerChoiceRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "repo_path": {
             "format": "path",
             "title": "Repo Path",
@@ -1277,6 +1298,158 @@
           "harness"
         ],
         "title": "PlannedNodeRequest",
+        "type": "object"
+      },
+      "PlannerBackendName": {
+        "enum": [
+          "harness",
+          "api"
+        ],
+        "type": "string"
+      },
+      "PlannerChoiceRequest": {
+        "additionalProperties": false,
+        "description": "Which backend, harness and model to plan *this* objective with.\n\nEvery field optional, and an absent one falls back to the server's\nconfigured default (`design.md` \u00a78): a client that only wants a cheaper\nmodel for one plan sends ``{\"model\": ...}`` and nothing else. Sending the\nwhole object is optional too \u2014 omit it and the plan runs on the default,\nwhich is what every caller did before this existed.\n\n``backend`` is a closed set here, so an unknown name is refused by this\nschema. An unknown *harness* or *model* cannot be: both come from the\nadapter registry and the configured model list, so they are checked in\n``orchestrator/`` and arrive as a 422 listing what is valid \u2014 see\n``GET /api/graphs/planner-options`` for the same lists up front.",
+        "properties": {
+          "backend": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlannerBackendName"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          }
+        },
+        "title": "PlannerChoiceRequest",
+        "type": "object"
+      },
+      "PlannerDefaultResponse": {
+        "description": "What a plan request that chooses nothing will use.\n\n``selectable`` is False when the configured default is not among the\noptions \u2014 a harness with no adapter, one that cannot return\nschema-validated content, or a model that is not in its list. It is\nstructural, and never a claim about credentials: the `api` backend is\nalways offered because its three credential sources cannot all be\ninspected, and a missing one surfaces as a 503 naming the fix.",
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/PlannerBackendName"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "selectable": {
+            "title": "Selectable",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "backend",
+          "harness",
+          "model",
+          "selectable"
+        ],
+        "title": "PlannerDefaultResponse",
+        "type": "object"
+      },
+      "PlannerOptionResponse": {
+        "description": "One selectable planner backend, and what choosing it means.\n\n``is_spend`` is invariant 7 in advance: True on `api`, where the plan bills\nper token against a credential of its own, False on every harness, where it\nrides an already-paid subscription and the cost is an estimated\nequivalent. ``supports_effort`` is True only on `api`, because\n``planner_effort`` and ``planner_max_tokens`` are ``output_config`` on an\nAPI request and a CLI decides its own depth \u2014 rendering an effort control\nbeside a harness would be showing a knob wired to nothing.",
+        "properties": {
+          "backend": {
+            "$ref": "#/components/schemas/PlannerBackendName"
+          },
+          "harness": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness"
+          },
+          "is_spend": {
+            "title": "Is Spend",
+            "type": "boolean"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "supports_effort": {
+            "title": "Supports Effort",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "backend",
+          "harness",
+          "models",
+          "is_spend",
+          "supports_effort"
+        ],
+        "title": "PlannerOptionResponse",
+        "type": "object"
+      },
+      "PlannerOptionsResponse": {
+        "properties": {
+          "default": {
+            "$ref": "#/components/schemas/PlannerDefaultResponse"
+          },
+          "options": {
+            "items": {
+              "$ref": "#/components/schemas/PlannerOptionResponse"
+            },
+            "title": "Options",
+            "type": "array"
+          }
+        },
+        "required": [
+          "default",
+          "options"
+        ],
+        "title": "PlannerOptionsResponse",
         "type": "object"
       },
       "PlannerUsageResponse": {
@@ -2224,7 +2397,7 @@
     },
     "/api/graphs/plan": {
       "post": {
-        "description": "Plan and persist an objective as a proposal; never approve or run it.",
+        "description": "Plan and persist an objective as a proposal; never approve or run it.\n\nThrough :func:`~app.api.deps.call` for one reason beyond consistency: a\n``body.planner`` naming a harness or model that cannot back the planner\nraises ``PlannerChoiceError``, a ``ValueError``, and ``call`` is what turns\nthat into the 422 the caller deserves. Without it the same typo would be a\n500, and a body the server rejected on purpose must never look like a\nserver that broke. Configuration problems keep arriving as a ``PlanFailure``\nbelow, where ``not_configured`` is still a 503.",
         "operationId": "plan_graph_api_graphs_plan_post",
         "requestBody": {
           "content": {
@@ -2259,6 +2432,28 @@
           }
         },
         "summary": "Plan Graph",
+        "tags": [
+          "graphs"
+        ]
+      }
+    },
+    "/api/graphs/planner-options": {
+      "get": {
+        "description": "What `POST /plan` may choose, and what it uses when it chooses nothing.\n\nThe harness list is the structured-output capability over the adapter\nregistry, so a harness that cannot back the planner is absent rather than\noffered-and-refused. The `api` option is always present and is never probed\nfor a credential \u2014 one of its three sources is not inspectable, so the flag\nwould be a guess; a missing credential answers 503 naming the fix.",
+        "operationId": "planner_options_api_graphs_planner_options_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlannerOptionsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Planner Options",
         "tags": [
           "graphs"
         ]
@@ -2343,6 +2538,48 @@
           }
         },
         "summary": "Approve Graph",
+        "tags": [
+          "graphs"
+        ]
+      }
+    },
+    "/api/graphs/{session_id}/diff": {
+      "get": {
+        "operationId": "get_graph_diff_api_graphs__session_id__diff_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiffResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Graph Diff",
         "tags": [
           "graphs"
         ]

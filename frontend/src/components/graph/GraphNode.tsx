@@ -1,6 +1,7 @@
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react";
 import { memo } from "react";
 import type { Node as AgentNode } from "@/api/client";
+import { harnessDotClass } from "@/lib/harness";
 import { nodeStateVisual } from "@/lib/node-state";
 import { cn } from "@/lib/utils";
 
@@ -10,19 +11,6 @@ export type GraphNodeData = {
 };
 
 export type ActivityFlowNode = Node<GraphNodeData, "activity">;
-
-function harnessDot(harness: string): string {
-  switch (harness) {
-    case "claude-code":
-      return "bg-harness-claude-code";
-    case "codex":
-      return "bg-harness-codex";
-    case "opencode":
-      return "bg-harness-opencode";
-    default:
-      return "bg-fg-subtle";
-  }
-}
 
 function GraphNodeComponent({ data, selected }: NodeProps<ActivityFlowNode>) {
   const visual = nodeStateVisual(data.node.status);
@@ -59,7 +47,7 @@ function GraphNodeComponent({ data, selected }: NodeProps<ActivityFlowNode>) {
             aria-hidden="true"
             className={cn(
               "size-1.5 rounded-full",
-              harnessDot(data.node.harness),
+              harnessDotClass(data.node.harness),
             )}
           />
           {data.node.harness}

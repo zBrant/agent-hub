@@ -29,7 +29,7 @@ type Props = {
   onClose: () => void;
   onRun: () => void;
   onKill: () => void;
-  onRetry: () => void;
+  onRetry: (feedback?: string) => void;
   onApprove: (outcomes: Readonly<Record<number, CriterionOutcome>>) => void;
   onReject: (
     feedback: string,

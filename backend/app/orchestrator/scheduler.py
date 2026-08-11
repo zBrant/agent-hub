@@ -132,11 +132,17 @@ class NodeLifecycle(Protocol):
         self, node_id: NodeId, *, causes: Sequence[NodeId]
     ) -> bool: ...
 
+    async def release_resolved_blocks(
+        self, session_id: SessionId
+    ) -> Sequence[NodeId]: ...
+
     async def fail_node(self, node_id: NodeId, *, reason: str) -> bool: ...
 
     async def recover_orphans(
         self, session_id: SessionId
     ) -> Sequence[OrphanResolution]: ...
+
+    async def finalize_session(self, session_id: SessionId) -> object: ...
 
 
 def _protocol_conformance(service: NodeRunService) -> NodeLifecycle:
@@ -266,7 +272,19 @@ class GraphScheduler:
             raise InvalidTransitionError(
                 f"graph {session_id} is still a proposal; approve it before running"
             )
-        return await self.run_graph(session_id)
+        result = await self.run_graph(session_id)
+        if result.succeeded:
+            try:
+                await self._lifecycle.finalize_session(session_id)
+            except Exception:
+                # Cleanup is best-effort and retryable. The result branch is
+                # created before any removal, and a cleanup failure must not
+                # turn successfully generated code into a failed session.
+                log.exception(
+                    "scheduler.session_finalization_failed",
+                    session_id=session_id,
+                )
+        return result
 
     async def run_graph(self, session_id: SessionId) -> GraphRunResult:
         """Run every node the graph permits, ``max_concurrency`` at a time.
@@ -295,6 +313,14 @@ class GraphScheduler:
                 "scheduler.recovered_orphan_runs",
                 session_id=session_id,
                 runs={orphan.run_id: orphan.node_status.value for orphan in recovered},
+            )
+
+        released = tuple(await self._lifecycle.release_resolved_blocks(session_id))
+        if released:
+            log.info(
+                "scheduler.released_resolved_blocks",
+                session_id=session_id,
+                nodes=list(released),
             )
 
         # `docs/conventions.md` §2 prefers `asyncio.TaskGroup`, and this is the

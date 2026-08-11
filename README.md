@@ -198,11 +198,17 @@ export ANTHROPIC_API_KEY=sk-ant-...
 > subscription to the `api` backend. That is precisely why `harness` is the
 > default. Choosing `api` means buying API credit separately from your plan.
 
-Select the harness with `AGENTHUB_PLANNER_HARNESS` (default `claude-code`) and
-optionally pin its model with `AGENTHUB_PLANNER_HARNESS_MODEL`. Naming a
-harness that cannot return structured content does not stop the server: it is
-logged at startup and the planner answers 503 with the reason, so the other
-four features keep working.
+The Sessions form offers every installed harness that can return structured
+content, plus the Anthropic API, and lets each plan choose its own model. The
+server settings remain the preselected default: select the harness with
+`AGENTHUB_PLANNER_HARNESS` (default `claude-code`), optionally pin its model
+with `AGENTHUB_PLANNER_HARNESS_MODEL`, and configure the API choices with
+`AGENTHUB_PLANNER_API_MODELS`. Each attempt has a 120-second wall-clock limit;
+set `AGENTHUB_PLANNER_TIMEOUT_S` to change it. A timed-out CLI process tree is
+terminated and the request answers 504 instead of leaving the form pending.
+Naming a default harness that cannot return structured content does not stop
+the server: it is logged at startup and the planner answers 503 with the
+reason, so the other four features keep working.
 
 > **Code Search's *chat* is the one thing a subscription cannot cover.** The
 > agentic loop needs real tool-use, which no CLI exposes as a library, so

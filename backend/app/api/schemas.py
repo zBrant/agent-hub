@@ -8,6 +8,7 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.config import PlannerBackendName
 from app.models.status import NodeStatus, RunState, SessionStatus
 from app.models.tables import (
     AcceptanceResult,
@@ -18,7 +19,12 @@ from app.models.tables import (
     Run,
     Session,
 )
-from app.orchestrator.planner import PlannerUsage, PlanProposal
+from app.orchestrator.planner import (
+    PlannerChoice,
+    PlannerOptions,
+    PlannerUsage,
+    PlanProposal,
+)
 from app.orchestrator.service import (
     CreatedGraph,
     CreatedSession,
@@ -228,6 +234,98 @@ class CreatedGraphResponse(BaseModel):
         )
 
 
+class PlannerChoiceRequest(BaseModel):
+    """Which backend, harness and model to plan *this* objective with.
+
+    Every field optional, and an absent one falls back to the server's
+    configured default (`design.md` §8): a client that only wants a cheaper
+    model for one plan sends ``{"model": ...}`` and nothing else. Sending the
+    whole object is optional too — omit it and the plan runs on the default,
+    which is what every caller did before this existed.
+
+    ``backend`` is a closed set here, so an unknown name is refused by this
+    schema. An unknown *harness* or *model* cannot be: both come from the
+    adapter registry and the configured model list, so they are checked in
+    ``orchestrator/`` and arrive as a 422 listing what is valid — see
+    ``GET /api/graphs/planner-options`` for the same lists up front.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    backend: PlannerBackendName | None = None
+    harness: str | None = None
+    model: str | None = None
+
+    def to_choice(self) -> PlannerChoice:
+        return PlannerChoice(
+            backend=self.backend, harness=self.harness, model=self.model
+        )
+
+
+class PlannerOptionResponse(BaseModel):
+    """One selectable planner backend, and what choosing it means.
+
+    ``is_spend`` is invariant 7 in advance: True on `api`, where the plan bills
+    per token against a credential of its own, False on every harness, where it
+    rides an already-paid subscription and the cost is an estimated
+    equivalent. ``supports_effort`` is True only on `api`, because
+    ``planner_effort`` and ``planner_max_tokens`` are ``output_config`` on an
+    API request and a CLI decides its own depth — rendering an effort control
+    beside a harness would be showing a knob wired to nothing.
+    """
+
+    backend: PlannerBackendName
+    #: ``null`` for `api`, which runs no harness.
+    harness: str | None
+    models: tuple[str, ...]
+    is_spend: bool
+    supports_effort: bool
+
+
+class PlannerDefaultResponse(BaseModel):
+    """What a plan request that chooses nothing will use.
+
+    ``selectable`` is False when the configured default is not among the
+    options — a harness with no adapter, one that cannot return
+    schema-validated content, or a model that is not in its list. It is
+    structural, and never a claim about credentials: the `api` backend is
+    always offered because its three credential sources cannot all be
+    inspected, and a missing one surfaces as a 503 naming the fix.
+    """
+
+    backend: PlannerBackendName
+    harness: str | None
+    #: ``null`` on a harness means "whatever the CLI is already configured for".
+    model: str | None
+    selectable: bool
+
+
+class PlannerOptionsResponse(BaseModel):
+    default: PlannerDefaultResponse
+    options: tuple[PlannerOptionResponse, ...]
+
+    @classmethod
+    def from_result(cls, result: PlannerOptions) -> PlannerOptionsResponse:
+        return cls(
+            default=PlannerDefaultResponse(
+                backend=result.default.backend,
+                harness=result.default.harness,
+                model=result.default.model,
+                selectable=result.default.selectable,
+            ),
+            options=tuple(
+                PlannerOptionResponse(
+                    backend=option.backend,
+                    harness=option.harness,
+                    models=option.models,
+                    is_spend=option.is_spend,
+                    supports_effort=option.supports_effort,
+                )
+                for option in result.options
+            ),
+        )
+
+
 class PlanGraphRequest(BaseModel):
     """An objective that the planner turns into a gated graph proposal."""
 
@@ -236,8 +334,13 @@ class PlanGraphRequest(BaseModel):
     repo_path: Path
     objective: str = Field(min_length=1)
     context: str | None = None
+    #: Per-plan backend selection. ``None`` means the server's default.
+    planner: PlannerChoiceRequest | None = None
     auto_merge: bool = False
     base_ref: str = "HEAD"
+
+    def to_choice(self) -> PlannerChoice | None:
+        return None if self.planner is None else self.planner.to_choice()
 
 
 class PlannerUsageResponse(BaseModel):
@@ -467,6 +570,7 @@ class MergeResponse(BaseModel):
 
 class DiffResponse(BaseModel):
     patch: str
+    branch: str | None = None
 
 
 def session_response(row: Session) -> SessionResponse:

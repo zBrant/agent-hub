@@ -59,6 +59,11 @@ export function SessionRoute() {
     queryFn: () => api.getGraph(id ?? ""),
     enabled: Boolean(id),
   });
+  const graphDiff = useQuery({
+    queryKey: ["graph", id, "diff"],
+    queryFn: () => api.getGraphDiff(id ?? ""),
+    enabled: Boolean(id && graph.data?.session.status === "done"),
+  });
   const legacySingleNode = Boolean(
     graph.data?.nodes.length === 1 && graph.data.nodes[0]?.status !== "pending",
   );
@@ -242,6 +247,10 @@ export function SessionRoute() {
                 update,
               });
             }}
+            resultError={graphDiff.error ? message(graphDiff.error) : null}
+            resultBranch={graphDiff.data?.branch ?? null}
+            resultLoading={graphDiff.isLoading}
+            resultPatch={graphDiff.data?.patch ?? null}
             renderNodeDrawer={(selectedNode, onClose) => {
               const dependencies = graph.data.edges
                 .filter((edge) => edge.node_id === selectedNode.id)

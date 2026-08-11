@@ -17,6 +17,10 @@ export type NodeReview = components["schemas"]["NodeReviewResponse"];
 export type RunOutcome = components["schemas"]["RunOutcomeResponse"];
 export type PlanGraph = components["schemas"]["PlannedGraphResponse"];
 export type PlanGraphRequest = components["schemas"]["PlanGraphRequest"];
+export type PlannerOptions = components["schemas"]["PlannerOptionsResponse"];
+export type PlannerOption = components["schemas"]["PlannerOptionResponse"];
+export type PlannerBackendName = components["schemas"]["PlannerBackendName"];
+export type PlannerChoice = components["schemas"]["PlannerChoiceRequest"];
 export type Dashboard = components["schemas"]["DashboardResponse"];
 export type DashboardPeriod = components["schemas"]["DashboardPeriod"];
 export type MetricUsage = components["schemas"]["MetricUsageResponse"];
@@ -196,6 +200,8 @@ export const api = {
   getDashboard: (period: DashboardPeriod) =>
     request<Dashboard>(`/api/dashboard?period=${encodeURIComponent(period)}`),
   listSessions: () => request<readonly Session[]>("/api/sessions"),
+  getPlannerOptions: () =>
+    request<PlannerOptions>("/api/graphs/planner-options"),
   planGraph: (body: PlanGraphRequest) =>
     request<PlanGraph>("/api/graphs/plan", {
       method: "POST",
@@ -203,6 +209,8 @@ export const api = {
     }),
   getSession: (sessionId: string) => request<Session>(sessionPath(sessionId)),
   getGraph: (sessionId: string) => request<Graph>(graphPath(sessionId)),
+  getGraphDiff: (sessionId: string) =>
+    request<Diff>(`${graphPath(sessionId)}/diff`),
   approveGraph: (sessionId: string) =>
     request<Graph>(`${graphPath(sessionId)}/approve`, { method: "POST" }),
   runGraph: (sessionId: string) =>

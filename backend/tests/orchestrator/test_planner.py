@@ -18,6 +18,7 @@ import asyncio
 import copy
 import json
 import os
+import re
 from collections.abc import AsyncIterator, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +31,13 @@ from anthropic import AsyncAnthropic
 from structlog.testing import capture_logs
 
 from app.config import Settings
+from app.harnesses import ADAPTERS, create_adapter
+from app.harnesses.base import (
+    HarnessError,
+    ParseStats,
+    StructuredRequest,
+    StructuredResult,
+)
 from app.models.pricing import PriceTable, TokenCounts, load_price_table
 from app.models.status import NodeStatus, SessionStatus
 from app.orchestrator.graph import Dag, DagErrorKind, InvalidDag
@@ -41,7 +49,11 @@ from app.orchestrator.planner import (
     PlanFailureKind,
     PlannedActivity,
     Planner,
+    PlannerChoice,
+    PlannerChoiceError,
+    PlanOutcome,
     PlanProposal,
+    PlanReply,
     PlanResponse,
     PlanTurn,
     UnavailablePlanBackend,
@@ -53,6 +65,8 @@ from app.orchestrator.planner import (
     create_planner,
     harness_catalog,
     objective_prompt,
+    planner_options,
+    selectable_harnesses,
     to_planned_nodes,
     validate_plan,
 )
@@ -652,6 +666,42 @@ async def test_api_error_is_data(settings: Settings, prices: PriceTable) -> None
     assert result.usage.requests == 0
 
 
+async def test_a_backend_that_never_finishes_becomes_a_bounded_failure(
+    settings: Settings, prices: PriceTable
+) -> None:
+    """A stuck CLI may never leave the Sessions form pending forever."""
+
+    class HangingBackend:
+        model = "hanging-model"
+        is_spend = False
+        cancelled = False
+
+        async def request(self, turns: Sequence[PlanTurn]) -> PlanReply:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled = True
+            raise AssertionError("the timeout should cancel the request")
+
+        async def close(self) -> None:
+            pass
+
+    backend = HangingBackend()
+    bounded = settings.model_copy(update={"planner_timeout_s": 0.01})
+    result = await Planner(
+        backend=cast(Any, backend),
+        settings=bounded,
+        prices=prices,
+        catalog=CATALOG,
+    ).propose(OBJECTIVE)
+
+    assert isinstance(result, PlanFailure)
+    assert result.kind is PlanFailureKind.TIMED_OUT
+    assert "AGENTHUB_PLANNER_TIMEOUT_S" in result.message
+    assert result.attempts == 1
+    assert backend.cancelled is True
+
+
 async def test_a_missing_credential_is_data_and_not_a_crash(
     monkeypatch: pytest.MonkeyPatch, settings: Settings, prices: PriceTable
 ) -> None:
@@ -777,6 +827,25 @@ async def test_an_inconsistent_cache_split_does_not_fail_the_plan(
 # ---------------------------------------------------------------------------
 # Persistence: a proposal, pending and unmaterialized (invariant 6)
 # ---------------------------------------------------------------------------
+
+
+async def test_plan_graph_rejects_a_non_repository_before_asking_the_model(
+    settings: Settings,
+    prices: PriceTable,
+    service: NodeRunService,
+    tmp_path: Path,
+) -> None:
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    api = FakeApi([Reply(body(recorded_plan()))])
+
+    with pytest.raises(ValueError, match="is not a git repository"):
+        await make_planner(api, settings, prices).plan_graph(
+            OBJECTIVE, repo_path=plain, creator=service
+        )
+
+    assert api.requests == []
+    assert not settings.workspaces_root.exists()
 
 
 async def test_plan_graph_persists_a_pending_unmaterialized_proposal(
@@ -1030,6 +1099,439 @@ def test_a_harness_without_structured_output_is_refused_at_construction(
 
     with pytest.raises(PlanBackendUnavailable, match="cannot return schema-validated"):
         HarnessPlanBackend(adapter=cast(Any, Mute()), settings=settings)
+
+
+async def test_a_structured_harness_failure_keeps_its_safe_actionable_detail(
+    settings: Settings, prices: PriceTable
+) -> None:
+    """The browser needs the adapter's diagnosis, not only `HarnessError`.
+
+    Structured adapters make these messages safe at their own boundary: no
+    prompt or answer, bounded provider detail, and stderr only in logs. Losing
+    the message here turned a quota failure, a bad schema and a dead CLI into
+    the same unactionable response.
+    """
+
+    class BrokenStructured:
+        name = "broken-structured"
+        supported_models: ClassVar[list[str]] = ["broken-default"]
+        stats = ParseStats()
+
+        async def complete_structured(
+            self, request: StructuredRequest
+        ) -> StructuredResult:
+            raise HarnessError(
+                "codex exec --output-schema exited 1: usage limit reached"
+            )
+
+    backend = HarnessPlanBackend(
+        adapter=cast(Any, BrokenStructured()),
+        settings=settings.model_copy(update={"planner_harness_model": None}),
+    )
+    result = await Planner(
+        backend=backend, settings=settings, prices=prices, catalog=CATALOG
+    ).propose(OBJECTIVE)
+
+    assert isinstance(result, PlanFailure)
+    assert result.kind is PlanFailureKind.API_ERROR
+    assert "codex exec --output-schema exited 1" in result.message
+    assert "usage limit reached" in result.message
+
+
+# ---------------------------------------------------------------------------
+# Choosing a backend per plan (`design.md` §8)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SpyBackend:
+    """Stands in for the long-lived backend the application owns.
+
+    It counts its own closes, which is the only way to tell "the plan used the
+    application's backend" apart from "the plan built one and disposed of it".
+    """
+
+    requests: int = 0
+    closes: int = 0
+    model: str = "spy-model"
+    is_spend: bool = True
+
+    async def request(self, turns: Sequence[PlanTurn]) -> PlanReply:
+        self.requests += 1
+        return PlanReply(
+            outcome=PlanOutcome.OK,
+            usage=TokenCounts(),
+            model=self.model,
+            plan=PlanResponse.model_validate(recorded_plan()),
+        )
+
+    async def close(self) -> None:
+        self.closes += 1
+
+
+class StructuredFake:
+    """An adapter that can back the planner, and no CLI behind it.
+
+    Registered into the real ``ADAPTERS`` by the tests that need it, so the
+    whole path — `create_backend`, `HarnessPlanBackend`, the schema, the
+    capability check — is the production one, and only the process at the end
+    is missing.
+    """
+
+    name = "fake-structured"
+    received: ClassVar[list[StructuredRequest]] = []
+
+    def __init__(self) -> None:
+        self.supported_models = ["fake-mini", "fake-max"]
+        self.stats = ParseStats()
+
+    async def complete_structured(self, request: StructuredRequest) -> StructuredResult:
+        StructuredFake.received.append(request)
+        return StructuredResult(
+            data=recorded_plan(),
+            usage=None,
+            model=request.model or "fake-default",
+        )
+
+
+class MuteFake:
+    """An adapter with no structured output. It may never back a plan."""
+
+    name = "fake-mute"
+
+    def __init__(self) -> None:
+        self.supported_models = ["mute-1"]
+        self.stats = ParseStats()
+
+
+@pytest.fixture
+def registry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Both fakes in the real registry, for the duration of one test."""
+    StructuredFake.received.clear()
+    monkeypatch.setitem(ADAPTERS, "fake-structured", cast(Any, StructuredFake))
+    monkeypatch.setitem(ADAPTERS, "fake-mute", cast(Any, MuteFake))
+
+
+async def test_a_plan_with_no_choice_uses_the_backend_the_app_owns(
+    settings: Settings, prices: PriceTable
+) -> None:
+    """And does not close it: it belongs to the composition root.
+
+    Closing it here would work exactly once and break every plan after the
+    first, which is the kind of bug that only shows up on the second objective
+    of a session.
+    """
+    spy = SpyBackend()
+    planner = Planner(
+        backend=cast(Any, spy), settings=settings, prices=prices, catalog=CATALOG
+    )
+
+    assert isinstance(await planner.propose(OBJECTIVE), PlanProposal)
+    assert (spy.requests, spy.closes) == (1, 0)
+
+    # A choice that names nothing is not a choice: it must not open and drop a
+    # second client per plan for no difference in behaviour.
+    assert isinstance(
+        await planner.propose(OBJECTIVE, choice=PlannerChoice()), PlanProposal
+    )
+    assert (spy.requests, spy.closes) == (2, 0)
+
+
+async def test_an_api_choice_builds_a_temporary_backend_and_closes_it(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, prices: PriceTable
+) -> None:
+    """The `api` backend owns an httpx client, so a leak here is a real leak.
+
+    Asserted on the transport rather than on a spy: `ApiPlanBackend.close`
+    delegates to the SDK, and only `is_closed` proves the socket pool was
+    actually released rather than a counter incremented.
+    """
+    api = FakeApi([Reply(body(recorded_plan()))])
+    http = httpx.AsyncClient(transport=httpx.MockTransport(api.handler))
+    client = AsyncAnthropic(
+        api_key=CANARY_KEY,
+        base_url="https://api.anthropic.invalid",
+        http_client=http,
+        max_retries=0,
+    )
+    monkeypatch.setattr("app.orchestrator.planner.AsyncAnthropic", lambda: client)
+    spy = SpyBackend(is_spend=False)
+    planner = Planner(
+        backend=cast(Any, spy), settings=settings, prices=prices, catalog=CATALOG
+    )
+
+    result = await planner.propose(OBJECTIVE, choice=PlannerChoice(backend="api"))
+
+    assert isinstance(result, PlanProposal)
+    # The application's own backend was neither used nor closed.
+    assert (spy.requests, spy.closes) == (0, 0)
+    assert http.is_closed
+    # Invariant 7 follows the choice, not the server's default: this plan bills.
+    assert result.usage.is_spend is True
+
+
+async def test_a_harness_choice_runs_that_adapter_and_is_not_spend(
+    registry: None, settings: Settings, prices: PriceTable
+) -> None:
+    """A per-request harness inherits invariant 7, like every node does."""
+    spy = SpyBackend(is_spend=True)
+    planner = Planner(
+        backend=cast(Any, spy), settings=settings, prices=prices, catalog=CATALOG
+    )
+
+    result = await planner.propose(
+        OBJECTIVE,
+        choice=PlannerChoice(
+            backend="harness", harness="fake-structured", model="fake-max"
+        ),
+    )
+
+    assert isinstance(result, PlanProposal)
+    assert spy.requests == 0
+    (request,) = StructuredFake.received
+    assert request.model == "fake-max"
+    assert result.usage.is_spend is False
+    # What actually answered, which is what `cost_usd` was priced against.
+    assert result.usage.model == "fake-max"
+
+
+async def test_a_model_only_choice_keeps_the_configured_harness(
+    registry: None, settings: Settings, prices: PriceTable
+) -> None:
+    """An absent field falls back; it does not reset the rest of the choice."""
+    configured = settings.model_copy(
+        update={"planner_harness": "fake-structured", "planner_harness_model": None}
+    )
+    planner = Planner(
+        backend=cast(Any, SpyBackend()),
+        settings=configured,
+        prices=prices,
+        catalog=CATALOG,
+    )
+
+    result = await planner.propose(OBJECTIVE, choice=PlannerChoice(model="fake-mini"))
+
+    assert isinstance(result, PlanProposal)
+    (request,) = StructuredFake.received
+    assert request.model == "fake-mini"
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        (PlannerChoice(harness="fake-missing"), "unknown harness 'fake-missing'"),
+        (
+            PlannerChoice(harness="fake-mute"),
+            "cannot return schema-validated content",
+        ),
+        (
+            PlannerChoice(harness="fake-structured", model="claude-opus-5"),
+            "not one of harness 'fake-structured'",
+        ),
+        (
+            PlannerChoice(backend="api", model="fake-mini"),
+            "not selectable for the `api` planner backend",
+        ),
+        (PlannerChoice(backend="api", harness="fake-structured"), "runs no harness"),
+        (PlannerChoice(backend=cast(Any, "anthropic")), "unknown planner backend"),
+    ],
+)
+def test_a_choice_the_request_got_wrong_is_refused_before_anything_is_built(
+    registry: None,
+    settings: Settings,
+    choice: PlannerChoice,
+    expected: str,
+) -> None:
+    """422's half of the split, at the seam that decides it.
+
+    A `PlannerChoiceError` and not a degraded backend: `UnavailablePlanBackend`
+    answers `NOT_CONFIGURED`, which the transport reads as 503 — the wrong
+    audience for a value that arrived in a body. The message lists what would
+    have been valid, because "invalid harness" is not something anyone can act
+    on.
+    """
+    with pytest.raises(PlannerChoiceError, match=re.escape(expected)):
+        create_backend(settings, choice)
+
+
+def test_the_refusal_lists_what_the_planner_can_actually_use(
+    registry: None, settings: Settings
+) -> None:
+    """The list is the capability, so the harness that lacks it is not in it."""
+    with pytest.raises(PlannerChoiceError) as raised:
+        create_backend(settings, PlannerChoice(harness="fake-missing"))
+
+    message = str(raised.value)
+    assert "'fake-structured'" in message
+    assert "fake-mute" not in message
+
+
+def test_a_misconfigured_settings_still_degrades_rather_than_blaming_the_request(
+    settings: Settings,
+) -> None:
+    """503's half of the split. The operator configured it; the caller did not.
+
+    The request here is valid — it names a model and nothing else — so
+    refusing it 422 would send the wrong person looking for the wrong mistake.
+    """
+    broken = settings.model_copy(update={"planner_harness": "no-such-harness"})
+
+    assert isinstance(create_backend(broken), UnavailablePlanBackend)
+    assert isinstance(
+        create_backend(broken, PlannerChoice(model="claude-opus-5")),
+        UnavailablePlanBackend,
+    )
+
+
+def test_a_pinned_model_does_not_follow_a_request_onto_another_harness(
+    registry: None, settings: Settings
+) -> None:
+    """`planner_harness_model` belongs to the harness it was pinned for.
+
+    Carrying it across would turn a valid request into a 503 about a model
+    nobody named in it.
+    """
+    pinned = settings.model_copy(
+        update={
+            "planner_harness": "claude-code",
+            "planner_harness_model": "claude-opus-5",
+        }
+    )
+
+    backend = create_backend(pinned, PlannerChoice(harness="fake-structured"))
+
+    assert isinstance(backend, HarnessPlanBackend)
+    assert backend.model == "fake-structured:default"
+
+
+def test_an_api_choice_reaches_the_backend_as_the_model_it_asked_for(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings
+) -> None:
+    monkeypatch.setattr(
+        "app.orchestrator.planner.AsyncAnthropic",
+        lambda: AsyncAnthropic(api_key=CANARY_KEY),
+    )
+    backend = create_backend(
+        settings, PlannerChoice(backend="api", model="claude-haiku-4-5")
+    )
+
+    assert isinstance(backend, ApiPlanBackend)
+    assert backend.model == "claude-haiku-4-5"
+    assert backend.is_spend is True
+    # And the settings the process runs on are untouched: the fold is a copy.
+    assert settings.planner_model == "claude-opus-5"
+
+
+# ---------------------------------------------------------------------------
+# What the UI is allowed to offer
+# ---------------------------------------------------------------------------
+
+
+def test_planner_options_omit_a_harness_that_cannot_return_structured_output(
+    registry: None, settings: Settings
+) -> None:
+    """Derived from the capability, never from a list anyone maintains.
+
+    An adapter that grows `complete_structured` appears here on its own, and
+    one that never has it is absent rather than offered-and-refused.
+    """
+    options = planner_options(settings)
+    harnesses = {option.harness for option in options.options}
+
+    assert "fake-structured" in harnesses
+    assert "fake-mute" not in harnesses
+    assert set(selectable_harnesses()) == harnesses - {None}
+
+
+def test_only_the_api_option_supports_effort_and_is_spend(settings: Settings) -> None:
+    """The two asymmetries `design.md` §8 says the UI must show, not hide.
+
+    `planner_effort` and `planner_max_tokens` are `output_config` on an API
+    request; a CLI decides its own depth. And a harness plan rides a paid
+    subscription (invariant 7), so the same number means two things.
+    """
+    by_key = {
+        (option.backend, option.harness): option
+        for option in planner_options(settings).options
+    }
+
+    assert ("api", None) in by_key
+    for (backend, _harness), option in by_key.items():
+        expected = backend == "api"
+        assert option.supports_effort is expected
+        assert option.is_spend is expected
+
+
+def test_the_api_model_list_is_configuration_and_not_derived(
+    settings: Settings, prices: PriceTable
+) -> None:
+    """Neither `pricing.yaml` nor the claude-code adapter can stand in for it.
+
+    The price table prices everything the dashboards may see, including models
+    no Anthropic endpoint serves, and the adapter's list is what a *CLI*
+    accepts — the API backend is not that harness. So it is an explicit value,
+    and this is the test that fails if someone derives it.
+    """
+    assert settings.planner_api_models == [
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-4-5",
+    ]
+    assert prices.cost_usd("gpt-5.6-sol", TokenCounts(input_tokens=1)) is not None
+    assert "gpt-5.6-sol" not in settings.planner_api_models
+
+    narrowed = settings.model_copy(update={"planner_api_models": ["claude-haiku-4-5"]})
+    options = planner_options(narrowed)
+    api = next(option for option in options.options if option.backend == "api")
+    harnesses = [option for option in options.options if option.backend == "harness"]
+
+    assert api.models == ("claude-haiku-4-5",)
+    # The harness lists are unmoved: those *are* read from their adapters.
+    assert all(
+        option.models == tuple(create_adapter(option.harness or "").supported_models)
+        for option in harnesses
+    )
+
+
+def test_the_default_is_what_a_request_with_no_choice_would_use(
+    settings: Settings,
+) -> None:
+    default = planner_options(settings).default
+    assert (default.backend, default.harness, default.model) == (
+        "harness",
+        "claude-code",
+        None,
+    )
+    assert default.selectable is True
+
+    api = planner_options(
+        settings.model_copy(
+            update={"planner_backend": "api", "planner_model": "claude-sonnet-5"}
+        )
+    ).default
+    assert (api.backend, api.harness, api.model) == ("api", None, "claude-sonnet-5")
+    assert api.selectable is True
+
+
+def test_an_unusable_default_is_reported_rather_than_offered(
+    settings: Settings,
+) -> None:
+    """A misconfigured default is not in the options, and says so.
+
+    Without the flag a UI would preselect a value that matches nothing in the
+    list and silently show the first entry instead — which is the moment the
+    operator stops believing what the dashboard says about their configuration.
+    """
+    broken = planner_options(
+        settings.model_copy(update={"planner_harness": "no-such-harness"})
+    )
+    assert broken.default.selectable is False
+    assert "no-such-harness" not in {option.harness for option in broken.options}
+
+    stale = planner_options(
+        settings.model_copy(update={"planner_harness_model": "gpt-5.6-sol"})
+    )
+    assert stale.default.selectable is False
 
 
 # ---------------------------------------------------------------------------

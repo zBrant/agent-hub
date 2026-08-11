@@ -29,7 +29,9 @@ const harness = vi.hoisted(() => ({
   events: vi.fn(),
   diff: vi.fn(),
   acceptance: vi.fn(),
+  runGraph: vi.fn(),
   kill: vi.fn(),
+  retry: vi.fn(),
   approve: vi.fn(),
   reject: vi.fn(),
 }));
@@ -41,9 +43,9 @@ vi.mock("@/api/client", () => ({
     getNodeRunEvents: harness.events,
     getNodeDiff: harness.diff,
     listNodeAcceptance: harness.acceptance,
-    runGraph: vi.fn(),
+    runGraph: harness.runGraph,
     killNode: harness.kill,
-    retryNode: vi.fn(),
+    retryNode: harness.retry,
     approveNode: harness.approve,
     rejectNode: harness.reject,
   },
@@ -125,7 +127,9 @@ describe("node drawer route", () => {
     harness.events.mockResolvedValue([]);
     harness.diff.mockResolvedValue({ patch: "" });
     harness.acceptance.mockResolvedValue([]);
+    harness.runGraph.mockResolvedValue({});
     harness.kill.mockResolvedValue(run);
+    harness.retry.mockResolvedValue({});
     harness.approve.mockResolvedValue({
       status: "merged",
       commit: "abc",
@@ -227,5 +231,71 @@ describe("node drawer route", () => {
         { 0: "pass" },
       ),
     );
+  });
+
+  it("shows the checkpoint reason and sends optional retry feedback", async () => {
+    harness.listRuns.mockResolvedValue([{ ...run, status: "success" }]);
+    harness.diff.mockResolvedValue({
+      patch: "diff --git a/products.html b/products.html",
+    });
+    render(
+      <NodeDrawerRoute
+        dependencies={[]}
+        node={{ ...node, status: "blocked" }}
+        onClose={vi.fn()}
+        onDeleteNode={vi.fn()}
+        onUpdateNode={vi.fn()}
+        sessionId="sess_one"
+      />,
+      { wrapper },
+    );
+
+    expect(
+      await screen.findByText(
+        /branch contains changes, but the checkpoint was not recognized/,
+      ),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Retry feedback"), {
+      target: { value: "Keep the existing products page" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(harness.retry).toHaveBeenCalledWith(
+        "sess_one",
+        "node_one",
+        "Keep the existing products page",
+      ),
+    );
+  });
+
+  it("resumes an upstream-blocked node without requesting a missing diff", async () => {
+    harness.listRuns.mockResolvedValue([]);
+    render(
+      <NodeDrawerRoute
+        dependencies={["products_page"]}
+        node={{
+          ...node,
+          status: "blocked",
+          worktree_path: null,
+          branch: null,
+          base_ref: null,
+        }}
+        onClose={vi.fn()}
+        onDeleteNode={vi.fn()}
+        onUpdateNode={vi.fn()}
+        sessionId="sess_one"
+      />,
+      { wrapper },
+    );
+
+    expect(
+      await screen.findByText(/blocked dependency \(products_page\)/),
+    ).toBeTruthy();
+    expect(harness.diff).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Resume graph" }));
+    await waitFor(() =>
+      expect(harness.runGraph).toHaveBeenCalledWith("sess_one"),
+    );
+    expect(harness.retry).not.toHaveBeenCalled();
   });
 });

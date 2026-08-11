@@ -232,4 +232,32 @@ describe("editable graph workspace", () => {
 
     expect(screen.getByText("Live drawer for Second")).toBeTruthy();
   });
+
+  it("shows the aggregate generated result for a completed graph", () => {
+    const completed = {
+      ...graph(),
+      session: { ...session, status: "done" as const },
+      nodes: graph().nodes.map((item) => ({
+        ...item,
+        status: "done" as const,
+      })),
+    };
+    render(
+      <GraphWorkspace
+        graph={completed}
+        resultBranch="agenthub/sess_one/result"
+        resultPatch="diff --git a/frontend/src/App.tsx b/frontend/src/App.tsx"
+        {...actions()}
+      />,
+      { wrapper },
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "View generated code" }),
+    );
+
+    expect(screen.getByText("Generated result")).toBeTruthy();
+    expect(screen.getByText("agenthub/sess_one/result")).toBeTruthy();
+    expect(screen.getByText(/frontend\/src\/App.tsx/)).toBeTruthy();
+  });
 });

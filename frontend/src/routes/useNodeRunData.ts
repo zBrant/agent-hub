@@ -31,9 +31,9 @@ export function useNodeRunData(sessionId: string, node: Node) {
   const diff = useQuery({
     queryKey: ["node", sessionId, node.id, "diff"],
     queryFn: () => api.getNodeDiff(sessionId, node.id),
-    enabled: ["awaiting_review", "blocked", "done", "failed"].includes(
-      node.status,
-    ),
+    enabled:
+      node.base_ref !== null &&
+      ["awaiting_review", "blocked", "done", "failed"].includes(node.status),
   });
   const acceptance = useQuery({
     queryKey: ["node", sessionId, node.id, "acceptance", latest?.attempt],

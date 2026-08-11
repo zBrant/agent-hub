@@ -1,4 +1,11 @@
-import { AlertTriangle, ArrowLeft, Check, Loader } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  Check,
+  FileCode2,
+  Loader,
+  X,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
@@ -10,6 +17,7 @@ import {
   validateGraph,
 } from "@/components/graph/graph-validation";
 import { NodeEditor } from "@/components/graph/NodeEditor";
+import { DiffView } from "@/components/session/DiffView";
 import { Button } from "@/components/ui/button";
 
 type Props = {
@@ -19,6 +27,10 @@ type Props = {
   onAddDependency: (nodeId: string, dependsOnId: string) => Promise<void>;
   onRemoveDependency: (nodeId: string, dependsOnId: string) => Promise<void>;
   onApprove: () => Promise<void>;
+  resultPatch?: string | null;
+  resultBranch?: string | null;
+  resultLoading?: boolean;
+  resultError?: string | null;
   renderNodeDrawer?: (
     node: Graph["nodes"][number],
     onClose: () => void,
@@ -37,6 +49,10 @@ export function GraphWorkspace({
   onAddDependency,
   onRemoveDependency,
   onApprove,
+  resultPatch = null,
+  resultBranch = null,
+  resultLoading = false,
+  resultError = null,
   renderNodeDrawer,
   initialSelectedNodeId = null,
 }: Props) {
@@ -46,6 +62,7 @@ export function GraphWorkspace({
   const [draftEdges, setDraftEdges] = useState<readonly GraphEdge[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showResult, setShowResult] = useState(false);
   const edges = useMemo(
     () => [...graph.edges, ...draftEdges],
     [draftEdges, graph.edges],
@@ -60,6 +77,9 @@ export function GraphWorkspace({
   );
   const selectedNode = graph.nodes.find((node) => node.id === selectedNodeId);
   const editable = graph.nodes.every((node) => node.status === "pending");
+  const complete =
+    graph.nodes.length > 0 &&
+    graph.nodes.every((node) => ["done", "skipped"].includes(node.status));
 
   async function perform(action: () => Promise<void>) {
     setBusy(true);
@@ -156,6 +176,18 @@ export function GraphWorkspace({
           )}
           Approve graph
         </Button>
+        {complete ? (
+          <Button
+            onClick={() => {
+              setSelectedNodeId(null);
+              setShowResult(true);
+            }}
+            size="sm"
+            variant="secondary"
+          >
+            <FileCode2 /> View generated code
+          </Button>
+        ) : null}
       </header>
       {(error ?? validation.issues[0]) ? (
         <div
@@ -175,7 +207,10 @@ export function GraphWorkspace({
             onConnect={connect}
             onDeleteEdges={deleteEdges}
             onDeleteNodes={deleteNodes}
-            onSelectNode={setSelectedNodeId}
+            onSelectNode={(nodeId) => {
+              setShowResult(false);
+              setSelectedNodeId(nodeId);
+            }}
             selectedNodeId={selectedNodeId}
           />
         </main>
@@ -193,6 +228,60 @@ export function GraphWorkspace({
               />
             ) : null))
           : null}
+        {showResult && complete ? (
+          <aside className="flex w-[560px] max-w-[65vw] shrink-0 flex-col border-border border-l bg-elevated">
+            <header className="flex items-start gap-2 border-border border-b px-3 py-2">
+              <FileCode2 className="mt-0.5 size-4 text-done" />
+              <div className="min-w-0 flex-1">
+                <h2 className="font-semibold text-ui">Generated result</h2>
+                <p className="text-meta text-fg-muted">
+                  The original checkout is unchanged until you explicitly merge
+                  this branch.
+                </p>
+              </div>
+              <Button
+                aria-label="Close generated result"
+                onClick={() => setShowResult(false)}
+                size="icon-sm"
+                variant="ghost"
+              >
+                <X />
+              </Button>
+            </header>
+            <div className="space-y-2 border-border border-b p-3 text-meta">
+              <div>
+                <span className="text-fg-muted">Result branch</span>
+                <code className="mt-1 block break-all text-code">
+                  {resultBranch ?? graph.session.integration_branch}
+                </code>
+              </div>
+              <div>
+                <span className="text-fg-muted">Original checkout</span>
+                <code className="mt-1 block break-all text-code">
+                  {graph.session.repo_path}
+                </code>
+              </div>
+            </div>
+            {resultError ? (
+              <p className="border-failed border-b bg-failed/10 p-3 text-meta text-failed">
+                {resultError}
+              </p>
+            ) : null}
+            <div className="min-h-0 flex-1">
+              {resultLoading ? (
+                <div className="flex h-full items-center justify-center gap-2 text-meta text-fg-muted">
+                  <Loader
+                    className="size-4 animate-spin"
+                    data-motion="essential"
+                  />
+                  Loading generated diff…
+                </div>
+              ) : (
+                <DiffView patch={resultPatch ?? ""} />
+              )}
+            </div>
+          </aside>
+        ) : null}
       </div>
     </div>
   );
