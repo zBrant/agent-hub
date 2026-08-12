@@ -67,11 +67,22 @@ export function NodeDrawerRoute({
           );
       }
     },
-    onSettled: async () => {
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["graph", sessionId] }),
+    onSuccess: (_result, operation) => {
+      if (operation.kind === "approve") onClose();
+    },
+    onSettled: () => {
+      // Refetch only state that can change after an action. Keeping this work
+      // out of the mutation lifecycle makes the review controls settle as soon
+      // as the API does; a large event history or diff must not hold the whole
+      // drawer in a busy state.
+      void Promise.all([
         queryClient.invalidateQueries({
-          queryKey: ["node", sessionId, node.id],
+          queryKey: ["graph", sessionId],
+          exact: true,
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["node", sessionId, node.id, "runs"],
+          exact: true,
         }),
       ]);
     },

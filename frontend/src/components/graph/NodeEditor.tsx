@@ -45,7 +45,7 @@ export function NodeEditor({
   }
 
   return (
-    <aside className="flex w-[480px] max-w-[60vw] shrink-0 flex-col border-border border-l bg-surface shadow-2xl">
+    <aside className="flex h-full max-h-full min-h-0 w-[480px] max-w-[60vw] shrink-0 flex-col overflow-hidden border-border border-l bg-surface shadow-2xl">
       <div className="flex h-7 items-center border-border border-b bg-inset/55 px-3 font-mono text-badge uppercase tracking-[0.12em] text-fg-subtle">
         Proposal inspector
       </div>

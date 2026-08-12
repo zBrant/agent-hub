@@ -197,11 +197,12 @@ describe("node drawer route", () => {
         updated_ms: 1,
       },
     ]);
+    const close = vi.fn();
     render(
       <NodeDrawerRoute
         dependencies={[]}
         node={{ ...node, status: "awaiting_review" }}
-        onClose={vi.fn()}
+        onClose={close}
         onDeleteNode={vi.fn()}
         onUpdateNode={vi.fn()}
         sessionId="sess_one"
@@ -218,6 +219,10 @@ describe("node drawer route", () => {
         0: "pass",
       }),
     );
+    await waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await waitFor(() => expect(harness.listRuns).toHaveBeenCalledTimes(2));
+    expect(harness.events).toHaveBeenCalledOnce();
+    expect(harness.diff).toHaveBeenCalledOnce();
 
     fireEvent.change(screen.getByLabelText("Rejection feedback"), {
       target: { value: "Fix it" },

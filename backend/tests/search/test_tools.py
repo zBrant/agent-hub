@@ -226,7 +226,10 @@ async def test_timeout_kills_the_search_process(tmp_path: Path) -> None:
     service, database, project_id, branch, _ = await search_service(
         tmp_path / "runtime",
         rg_binary=str(script),
-        timeout_s=0.01,
+        # Leave enough room for the real Git discovery subprocesses; this test
+        # targets the deliberately one-second search process below. Ten
+        # milliseconds made ordinary Git startup lose the race on a busy host.
+        timeout_s=0.25,
     )
     try:
         with pytest.raises(SearchTimedOut):

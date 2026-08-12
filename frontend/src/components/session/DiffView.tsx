@@ -1,4 +1,5 @@
 import { FileDiff } from "lucide-react";
+import { memo, useMemo, useState } from "react";
 
 type Props = {
   patch: string;
@@ -17,18 +18,21 @@ function lineTone(line: string): string {
 }
 
 type DiffLine = {
-  key: string;
+  key: number;
   line: string;
   oldLine: number | null;
   newLine: number | null;
 };
 
-function parseLines(patch: string): DiffLine[] {
-  const occurrences = new Map<string, number>();
+const INITIAL_LINES = 250;
+const LINE_STEP = 250;
+const MAX_LINE_CHARS = 2_000;
+
+function parseLines(lines: readonly string[]): DiffLine[] {
   let oldLine = 0;
   let newLine = 0;
   let inHunk = false;
-  return patch.split("\n").map((line) => {
+  return lines.map((line, index) => {
     const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/u.exec(line);
     if (hunk) {
       oldLine = Number(hunk[1]);
@@ -50,10 +54,8 @@ function parseLines(patch: string): DiffLine[] {
       }
     }
 
-    const occurrence = (occurrences.get(line) ?? 0) + 1;
-    occurrences.set(line, occurrence);
     return {
-      key: `${line}:${occurrence}`,
+      key: index,
       line,
       oldLine: shownOld,
       newLine: shownNew,
@@ -61,7 +63,63 @@ function parseLines(patch: string): DiffLine[] {
   });
 }
 
-export function DiffView({ patch }: Props) {
+function visibleLine(line: string): string {
+  if (line.length <= MAX_LINE_CHARS) return line || " ";
+  return `${line.slice(0, MAX_LINE_CHARS)} … [${(
+    line.length - MAX_LINE_CHARS
+  ).toLocaleString("en")} characters omitted]`;
+}
+
+function lineCount(patch: string): number {
+  if (!patch) return 0;
+  let count = 1;
+  for (let index = 0; index < patch.length; index += 1) {
+    if (patch.charCodeAt(index) === 10) count += 1;
+  }
+  return count;
+}
+
+function firstLines(patch: string, limit: number): string[] {
+  const lines: string[] = [];
+  let start = 0;
+  while (lines.length < limit && start <= patch.length) {
+    const end = patch.indexOf("\n", start);
+    if (end === -1) {
+      lines.push(patch.slice(start));
+      break;
+    }
+    lines.push(patch.slice(start, end));
+    start = end + 1;
+  }
+  return lines;
+}
+
+export const DiffView = memo(function DiffView({ patch }: Props) {
+  const totalLines = useMemo(() => lineCount(patch), [patch]);
+  const [renderWindow, setRenderWindow] = useState({
+    patch,
+    count: INITIAL_LINES,
+  });
+  const visibleCount =
+    renderWindow.patch === patch
+      ? renderWindow.count
+      : Math.min(INITIAL_LINES, totalLines);
+  const lines = useMemo(
+    () => parseLines(firstLines(patch, visibleCount)),
+    [patch, visibleCount],
+  );
+  const remaining = totalLines - lines.length;
+
+  function showMore() {
+    setRenderWindow((current) => ({
+      patch,
+      count:
+        current.patch === patch
+          ? Math.min(totalLines, current.count + LINE_STEP)
+          : Math.min(totalLines, INITIAL_LINES + LINE_STEP),
+    }));
+  }
+
   return (
     <section
       aria-labelledby="diff-heading"
@@ -73,12 +131,13 @@ export function DiffView({ patch }: Props) {
           Final diff
         </h2>
         <span className="ml-auto font-mono text-badge text-fg-subtle">
-          unified patch
+          {lines.length.toLocaleString("en")} /{" "}
+          {totalLines.toLocaleString("en")} lines
         </span>
       </div>
       {patch ? (
         <div className="min-w-max py-2 font-mono text-code leading-relaxed">
-          {parseLines(patch).map(({ key, line, newLine, oldLine }) => (
+          {lines.map(({ key, line, newLine, oldLine }) => (
             <div
               className={`grid grid-cols-[42px_42px_minmax(0,1fr)] ${lineTone(line)}`}
               key={key}
@@ -95,9 +154,21 @@ export function DiffView({ patch }: Props) {
               >
                 {newLine ?? ""}
               </span>
-              <code className="whitespace-pre px-3">{line || " "}</code>
+              <code className="whitespace-pre px-3">{visibleLine(line)}</code>
             </div>
           ))}
+          {remaining > 0 ? (
+            <div className="sticky left-0 flex w-screen max-w-full justify-center border-border border-t bg-surface p-3">
+              <button
+                className="border border-border-strong bg-elevated px-3 py-1.5 font-sans text-meta text-fg hover:border-accent hover:text-accent"
+                onClick={showMore}
+                type="button"
+              >
+                Show next {Math.min(LINE_STEP, remaining).toLocaleString("en")}{" "}
+                lines
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : (
         <div className="flex min-h-32 items-center justify-center p-4 text-center">
@@ -109,4 +180,4 @@ export function DiffView({ patch }: Props) {
       )}
     </section>
   );
-}
+});

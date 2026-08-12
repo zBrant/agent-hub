@@ -395,6 +395,31 @@ async def test_diff_survives_integration_merge(workspace: SessionWorkspace) -> N
     assert "+hello" in after
 
 
+async def test_review_diffs_omit_root_and_nested_node_modules(
+    workspace: SessionWorkspace,
+) -> None:
+    node = await workspace.create_node("node_a")
+    (node.path / "src").mkdir()
+    (node.path / "src" / "app.ts").write_text("export const ready = true;\n")
+    (node.path / "node_modules" / "root-package").mkdir(parents=True)
+    (node.path / "node_modules" / "root-package" / "index.js").write_text(
+        "generated root dependency\n"
+    )
+    nested = node.path / "apps" / "web" / "node_modules" / "nested-package"
+    nested.mkdir(parents=True)
+    (nested / "index.js").write_text("generated nested dependency\n")
+    await workspace.commit("node_a", "feat: source with installed dependencies")
+
+    node_patch = await workspace.diff("node_a", base_ref=node.base_ref)
+    await workspace.merge_into_integration("node_a")
+    integration_patch = await workspace.integration_diff(base_refs=(node.base_ref,))
+
+    for patch in (node_patch, integration_patch):
+        assert "src/app.ts" in patch
+        assert "+export const ready = true;" in patch
+        assert "node_modules" not in patch
+
+
 async def test_integration_diff_contains_the_aggregate_result(
     workspace: SessionWorkspace,
 ) -> None:

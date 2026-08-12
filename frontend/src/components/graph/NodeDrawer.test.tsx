@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AcceptanceResult, Node, Run } from "@/api/client";
 import { NodeDrawer } from "@/components/graph/NodeDrawer";
@@ -97,6 +103,17 @@ describe("node drawer states", () => {
     expect(screen.getByText("Streaming result")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Kill" }));
     expect(callbacks.onKill).toHaveBeenCalledOnce();
+  });
+
+  it("keeps ready-node actions inside a scrollable details region", () => {
+    const callbacks = props("ready");
+    render(<NodeDrawer {...callbacks} />);
+
+    const details = screen.getByRole("region", { name: "Node details" });
+    expect(details.className).toContain("overflow-y-auto");
+    expect(
+      within(details).getByRole("button", { name: "Run ready nodes" }),
+    ).toBeTruthy();
   });
 
   it("offers criterion outcomes plus approve and reject during review", () => {

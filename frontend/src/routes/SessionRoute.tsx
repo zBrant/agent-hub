@@ -329,7 +329,7 @@ export function SessionRoute() {
   const unsafe = Boolean(terminal && summary.data && !summary.data.trusted);
 
   return (
-    <div className="flex min-h-full flex-col bg-bg">
+    <div className="flex min-h-full flex-col bg-bg lg:h-full lg:min-h-0 lg:overflow-hidden">
       <header className="border-border border-b bg-surface">
         <div className="flex h-7 items-center gap-1.5 border-border border-b bg-inset/45 px-4 font-mono text-badge uppercase tracking-[0.12em] text-fg-subtle">
           <Activity className="size-3 text-accent" /> Run inspector

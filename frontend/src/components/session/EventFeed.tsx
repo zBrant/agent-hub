@@ -184,36 +184,36 @@ function EventRow({ event }: { event: AgentEvent }) {
 
 export function EventFeed({ events }: Props) {
   const hidden = Math.max(0, events.length - MAX_VISIBLE);
-  const visible = events.slice(hidden);
+  const visible = keyedEvents(events.slice(hidden)).reverse();
   return (
     <section
       aria-labelledby="feed-heading"
-      className="min-h-0 flex-1 overflow-auto bg-surface"
+      className="min-h-0 max-h-full flex-1 overflow-y-auto overscroll-contain bg-surface"
       aria-live="polite"
     >
       <div className="sticky top-0 z-10 flex h-9 items-center justify-between border-border border-b bg-surface px-3">
         <h2 id="feed-heading" className="font-semibold text-ui">
           Event feed
         </h2>
-        <span className="font-mono text-badge text-fg-muted">
-          {events.length} events
-        </span>
+        <div className="flex items-center gap-2 font-mono text-badge text-fg-muted">
+          <span>Latest first</span>
+          <span aria-hidden="true">·</span>
+          <span>{events.length} events</span>
+        </div>
       </div>
-      {hidden > 0 ? (
-        <p className="border-border border-b px-3 py-2 text-meta text-fg-muted">
-          {hidden} older events retained in state but hidden for rendering
-          performance.
-        </p>
-      ) : null}
       {visible.length === 0 ? (
         <p className="p-3 text-meta text-fg-muted">
           No events persisted for this run yet.
         </p>
       ) : (
-        keyedEvents(visible).map(({ event, key }) => (
-          <EventRow key={key} event={event} />
-        ))
+        visible.map(({ event, key }) => <EventRow key={key} event={event} />)
       )}
+      {hidden > 0 ? (
+        <p className="border-border border-t px-3 py-2 text-meta text-fg-muted">
+          {hidden} older events retained in state but hidden for rendering
+          performance.
+        </p>
+      ) : null}
     </section>
   );
 }

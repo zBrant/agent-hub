@@ -1,5 +1,5 @@
-import { Check, RotateCcw } from "lucide-react";
-import { useState } from "react";
+import { Check, Loader, RotateCcw } from "lucide-react";
+import { useDeferredValue, useState } from "react";
 import type { AcceptanceResult, CriterionOutcome } from "@/api/client";
 import { AcceptanceChecklist } from "@/components/graph/AcceptanceChecklist";
 import { DiffView } from "@/components/session/DiffView";
@@ -27,6 +27,8 @@ export function NodeReviewPanel({
   const [outcomes, setOutcomes] = useState<
     Readonly<Record<number, CriterionOutcome>>
   >({});
+  const deferredPatch = useDeferredValue(patch, "");
+  const preparingDiff = Boolean(patch && !deferredPatch);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -39,7 +41,17 @@ export function NodeReviewPanel({
         results={acceptance}
       />
       <div className="min-h-0 flex-1">
-        <DiffView patch={patch} />
+        {preparingDiff ? (
+          <div
+            aria-live="polite"
+            className="flex h-full items-center justify-center gap-2 bg-inset text-meta text-fg-muted"
+          >
+            <Loader className="size-3.5 animate-spin" data-motion="essential" />
+            Preparing bounded diff preview…
+          </div>
+        ) : (
+          <DiffView patch={deferredPatch} />
+        )}
       </div>
       <div className="space-y-2 border-border border-t bg-surface p-3">
         <label className="block text-meta text-fg-muted">

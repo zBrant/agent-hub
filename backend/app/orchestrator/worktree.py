@@ -110,6 +110,12 @@ class GitIdentity:
 
 AGENT_IDENTITY = GitIdentity(AGENT_IDENTITY_NAME, AGENT_IDENTITY_EMAIL)
 
+# Dependency installations can contain tens of thousands of generated files.
+# They may remain in the checkpoint for fidelity, but they are not reviewable
+# source changes and must never be expanded into the HTTP diff. The glob form
+# covers both a root-level directory and nested frontend workspaces.
+_REVIEW_DIFF_PATHS = (".", ":(glob,exclude)**/node_modules/**")
+
 
 # TODO(phase-1): reparent onto the shared `AgentHubError` from
 # `docs/conventions.md` §2 once `app/errors.py` exists.
@@ -449,6 +455,7 @@ class SessionWorkspace:
             base,
             branch,
             "--",
+            *_REVIEW_DIFF_PATHS,
         )
         return result.stdout
 
@@ -491,6 +498,7 @@ class SessionWorkspace:
             common.stdout.strip(),
             result_ref,
             "--",
+            *_REVIEW_DIFF_PATHS,
         )
         return result.stdout
 

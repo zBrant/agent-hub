@@ -138,7 +138,7 @@ export function GraphWorkspace({
   }
 
   return (
-    <div className="flex min-h-full flex-col bg-bg">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-bg">
       <header className="border-border border-b bg-surface">
         <div className="flex min-h-14 items-center gap-3 px-4 py-2">
           <Link
@@ -273,7 +273,7 @@ export function GraphWorkspace({
             ) : null))
           : null}
         {showResult && complete ? (
-          <aside className="flex w-[560px] max-w-[65vw] shrink-0 flex-col border-border border-l bg-elevated shadow-2xl">
+          <aside className="flex h-full max-h-full min-h-0 w-[560px] max-w-[65vw] shrink-0 flex-col overflow-hidden border-border border-l bg-elevated shadow-2xl">
             <header className="flex items-start gap-2 border-border border-b px-3 py-2">
               <FileCode2 className="mt-0.5 size-4 text-done" />
               <div className="min-w-0 flex-1">

@@ -14,8 +14,8 @@ export function AcceptanceChecklist({
   onChange,
 }: Props) {
   return (
-    <section className="border-border border-b">
-      <div className="flex h-8 items-center justify-between px-3">
+    <section className="max-h-[38%] shrink-0 overflow-y-auto overscroll-contain border-border border-b">
+      <div className="sticky top-0 z-10 flex h-8 items-center justify-between bg-elevated px-3">
         <h3 className="font-semibold text-ui">Acceptance criteria</h3>
         <span className="text-meta text-fg-muted">
           {results.length} criteria

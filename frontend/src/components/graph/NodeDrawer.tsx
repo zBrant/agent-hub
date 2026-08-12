@@ -43,7 +43,7 @@ export function NodeDrawer(props: Props) {
   const StatusIcon = visual.icon;
   const latest = props.runs.at(-1);
   return (
-    <aside className="flex w-[480px] max-w-[60vw] shrink-0 flex-col border-border border-l bg-elevated shadow-2xl">
+    <aside className="flex h-full max-h-full min-h-0 w-[480px] max-w-[60vw] shrink-0 flex-col overflow-hidden border-border border-l bg-elevated shadow-2xl">
       <div className="flex h-7 items-center border-border border-b bg-inset/55 px-3 font-mono text-badge uppercase tracking-[0.12em] text-fg-subtle">
         Worktree inspector
       </div>
@@ -102,18 +102,28 @@ export function NodeDrawer(props: Props) {
         />
       ) : null}
       {node.status !== "awaiting_review" ? (
-        <NodeStatePanel
-          dependencies={props.dependencies}
-          events={props.events}
-          node={node}
-          onKill={props.onKill}
-          onRetry={props.onRetry}
-          onRun={props.onRun}
-          patch={props.patch}
-          pendingAction={props.pendingAction}
-          runs={props.runs}
-          summary={props.summary}
-        />
+        <section
+          aria-label="Node details"
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            node.status === "running"
+              ? "overflow-hidden"
+              : "overflow-y-auto overscroll-contain",
+          )}
+        >
+          <NodeStatePanel
+            dependencies={props.dependencies}
+            events={props.events}
+            node={node}
+            onKill={props.onKill}
+            onRetry={props.onRetry}
+            onRun={props.onRun}
+            patch={props.patch}
+            pendingAction={props.pendingAction}
+            runs={props.runs}
+            summary={props.summary}
+          />
+        </section>
       ) : null}
     </aside>
   );
