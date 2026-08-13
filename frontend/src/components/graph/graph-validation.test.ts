@@ -9,6 +9,7 @@ function node(id: string): Node {
     name: id,
     prompt: `Build ${id}`,
     acceptance_criteria: [],
+    requires_review: true,
     harness: "codex",
     model: "gpt-5.6-terra",
     touches: [],

@@ -251,8 +251,8 @@ def session_status_for_nodes(statuses: Iterable[NodeStatus]) -> SessionStatus:
     2. everything is terminal — ``done``, or ``failed`` if any node failed. A
        graph that finished with a failure is a failed graph, not a paused one;
     3. an ``awaiting_review`` or ``blocked`` node — ``paused``, a human is the
-       blocking resource (invariant 6: with ``auto_merge`` off this is the
-       system working, not a stall);
+       blocking resource (a review-gated node waiting here is the system
+       working, not a stall);
     4. otherwise only ``pending``/``ready`` remain, which is ``planning``.
 
     On a single-node session this agrees with
@@ -482,6 +482,7 @@ class PlannedNode:
     acceptance_criteria: tuple[str, ...] = ()
     touches: tuple[str, ...] = ()
     estimated_effort: str | None = None
+    requires_review: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -657,6 +658,7 @@ class NodeRunService:
         model: str | None = None,
         title: str | None = None,
         acceptance_criteria: Sequence[str] = (),
+        requires_review: bool = True,
         auto_merge: bool = False,
         base_ref: str = "HEAD",
     ) -> CreatedSession:
@@ -702,6 +704,7 @@ class NodeRunService:
                 acceptance_criteria=acceptance_criteria,
                 harness=harness,
                 model=model,
+                requires_review=requires_review,
                 status=NodeStatus.READY,
             )
             node = await repository.attach_worktree(
@@ -817,6 +820,7 @@ class NodeRunService:
                             acceptance_criteria=planned.acceptance_criteria,
                             touches=planned.touches,
                             estimated_effort=planned.estimated_effort,
+                            requires_review=planned.requires_review,
                             status=NodeStatus.PENDING,
                         )
                     )
@@ -848,6 +852,7 @@ class NodeRunService:
         acceptance_criteria: Sequence[str] = (),
         touches: Sequence[str] = (),
         estimated_effort: str | None = None,
+        requires_review: bool = True,
     ) -> Node:
         """Replace authored fields while the graph is still a proposal."""
         if not name.strip() or not prompt.strip():
@@ -873,6 +878,7 @@ class NodeRunService:
                 acceptance_criteria=acceptance_criteria,
                 touches=touches,
                 estimated_effort=estimated_effort,
+                requires_review=requires_review,
             )
 
     async def delete_node(self, node_id: NodeId) -> SessionGraph:
@@ -1317,8 +1323,8 @@ class NodeRunService:
     ) -> MergeResult:
         """Apply the human gate for a safe run left awaiting review.
 
-        Merges into integration — the one thing invariant 6 says may not happen
-        without a human while ``auto_merge`` is off.
+        Merges into integration after a node whose individual review gate was
+        enabled received the human verdict it was waiting for.
 
         ``outcomes`` is the reviewer's answer to the acceptance checklist. The
         approval is recorded whatever it says, including with a criterion marked
@@ -1686,7 +1692,9 @@ class NodeRunService:
                 )
                 merge: MergeResult | None = None
                 next_status = disposition.node_status
-                if disposition.mergeable and session.auto_merge:
+                if disposition.mergeable and (
+                    session.auto_merge or not node.requires_review
+                ):
                     merge = await workspace.merge_into_integration(node.id)
                     next_status = (
                         NodeStatus.BLOCKED if merge.blocked else NodeStatus.DONE

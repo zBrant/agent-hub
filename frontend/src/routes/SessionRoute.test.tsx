@@ -86,6 +86,7 @@ function node(status: "ready" | "running" | "done" | "failed" | "blocked") {
     name: "main",
     prompt: "Build it",
     acceptance_criteria: [],
+    requires_review: true,
     harness: "codex",
     model: "gpt-5.6-terra",
     worktree_path: "/workspace/node_one",

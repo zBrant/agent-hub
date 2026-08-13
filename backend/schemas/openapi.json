@@ -649,6 +649,11 @@
             "title": "Repo Path",
             "type": "string"
           },
+          "requires_review": {
+            "default": true,
+            "title": "Requires Review",
+            "type": "boolean"
+          },
           "title": {
             "anyOf": [
               {
@@ -1216,6 +1221,10 @@
             "title": "Prompt",
             "type": "string"
           },
+          "requires_review": {
+            "title": "Requires Review",
+            "type": "boolean"
+          },
           "session_id": {
             "title": "Session Id",
             "type": "string"
@@ -1257,6 +1266,7 @@
           "model",
           "touches",
           "estimated_effort",
+          "requires_review",
           "worktree_path",
           "branch",
           "base_ref",
@@ -1485,6 +1495,11 @@
             "minLength": 1,
             "title": "Prompt",
             "type": "string"
+          },
+          "requires_review": {
+            "default": true,
+            "title": "Requires Review",
+            "type": "boolean"
           },
           "touches": {
             "default": [],
@@ -2430,6 +2445,11 @@
             "minLength": 1,
             "title": "Prompt",
             "type": "string"
+          },
+          "requires_review": {
+            "default": true,
+            "title": "Requires Review",
+            "type": "boolean"
           },
           "touches": {
             "default": [],

@@ -198,7 +198,8 @@ class Session(SQLModel, table=True):
     # only when a successful session is finalized; integration_branch remains
     # private and temporary while nodes are running.
     final_branch: str
-    # authored — invariant 6: nothing merges without a human while this is off.
+    # authored — global bypass for per-node review gates. Graph approval is
+    # still required before any node runs while this is off (invariant 6).
     auto_merge: bool = Field(default=False)
     # derived — a projection of the node states below it.
     status: SessionStatus = Field(
@@ -324,6 +325,11 @@ class Node(SQLModel, table=True):
     # advisory badge is not worth failing a planner response over. Nothing may
     # schedule on it — an LLM's effort estimate is not a priority.
     estimated_effort: str | None = Field(default=None)
+    # authored — the session may globally bypass every gate with `auto_merge`,
+    # but while that switch is off this node decides whether its successful
+    # checkpoint waits for a human or integrates immediately. True preserves
+    # the historical human-gated behavior for existing and newly planned nodes.
+    requires_review: bool = Field(default=True)
     # derived from the worktree lifecycle, not from the event log: git is the
     # source of truth for these three and orchestrator/worktree.py owns them.
     # They are recorded here so a restart can find the node's diff again.

@@ -238,6 +238,9 @@ def test_a_populated_phase_1_database_migrates_forward(settings: Settings) -> No
     assert rows(
         settings.database_url, "SELECT touches, estimated_effort FROM node"
     ) == [("[]", None)]
+    # Existing nodes retain the historical human gate. A migration must never
+    # silently turn an already-authored graph into unattended execution.
+    assert rows(settings.database_url, "SELECT requires_review FROM node") == [(1,)]
     # And nothing above or below the node moved.
     assert rows(settings.database_url, "SELECT id, title, status FROM session") == [
         ("sess_1", "add a docstring", "running")

@@ -28,6 +28,7 @@ export function NodeEditor({
   const [harness, setHarness] = useState(node.harness);
   const [model, setModel] = useState(node.model ?? "");
   const [criteria, setCriteria] = useState(node.acceptance_criteria.join("\n"));
+  const [requiresReview, setRequiresReview] = useState(node.requires_review);
 
   function save() {
     onSave(node.id, {
@@ -39,6 +40,7 @@ export function NodeEditor({
         .filter(Boolean),
       harness: harness.trim(),
       model: model.trim() || null,
+      requires_review: requiresReview,
       touches: node.touches,
       estimated_effort: node.estimated_effort,
     });
@@ -129,6 +131,26 @@ export function NodeEditor({
             placeholder="Harness default"
             value={model}
           />
+        </label>
+        <label className="flex cursor-pointer items-start gap-3 border border-border-strong bg-inset p-3">
+          <input
+            aria-label="Require code review"
+            checked={requiresReview}
+            className="mt-0.5 size-4 shrink-0 accent-accent"
+            disabled={busy}
+            onChange={(event) => setRequiresReview(event.target.checked)}
+            type="checkbox"
+          />
+          <span>
+            <span className="block font-medium text-ui text-fg">
+              Require code review
+            </span>
+            <span className="mt-0.5 block text-meta text-fg-muted">
+              When enabled, pause after this node finishes for diff and
+              acceptance review. When disabled, integrate successful changes
+              automatically and release dependent nodes without approval.
+            </span>
+          </span>
         </label>
         <p className="text-meta text-fg-muted">
           Drag from a node's lower handle to another node's upper handle to add

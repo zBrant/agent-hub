@@ -227,9 +227,8 @@ class GraphOutcome(StrEnum):
 
     ``design.md`` §9 collapses everything that is not "keep going" into a
     single ``break   # deadlock, or everything blocked``. Those are different
-    facts to an operator, and one of them is not even a stall: with
-    ``auto_merge`` off, a graph whose only remaining node is
-    ``awaiting_review`` is working exactly as designed (invariant 6).
+    facts to an operator, and one of them is not even a stall: a graph whose
+    only remaining node is ``awaiting_review`` is working exactly as designed.
     """
 
     ACTIVE = "active"

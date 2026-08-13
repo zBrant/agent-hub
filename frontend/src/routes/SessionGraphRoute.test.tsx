@@ -95,6 +95,7 @@ describe("session graph route", () => {
       name: id,
       prompt: id,
       acceptance_criteria: [],
+      requires_review: true,
       harness: "codex",
       model: null,
       touches: [],

@@ -475,7 +475,9 @@ def build_service(
 
 
 def plan(
-    *specs: str, criteria: Mapping[str, Sequence[str]] | None = None
+    *specs: str,
+    criteria: Mapping[str, Sequence[str]] | None = None,
+    reviews: Mapping[str, bool] | None = None,
 ) -> tuple[PlannedNode, ...]:
     """``"d:b,c"`` is a node named ``d`` that depends on ``b`` and ``c``.
 
@@ -498,6 +500,7 @@ def plan(
                 model=MODEL,
                 depends_on=tuple(d for d in deps.split(",") if d),
                 acceptance_criteria=tuple((criteria or {}).get(name, ())),
+                requires_review=(reviews or {}).get(name, True),
             )
         )
     return tuple(planned)
@@ -1088,6 +1091,43 @@ async def test_auto_merge_off_stops_at_awaiting_review_and_holds_dependents(
     )
     assert resumed.outcome is GraphOutcome.WAITING_ON_HUMAN
     assert (await statuses(database, graph))["b"] is NodeStatus.AWAITING_REVIEW
+
+
+async def test_node_can_bypass_review_without_making_the_session_unattended(
+    database: Database,
+    settings: Settings,
+    prices: PriceTable,
+    target_repo: Path,
+) -> None:
+    """The session bypass is off, but each node still owns its gate."""
+    harness = FakeHarness()
+    service = build_service(
+        database=database, settings=settings, prices=prices, harness=harness
+    )
+    graph = await service.create_graph(
+        repo_path=target_repo,
+        nodes=plan("a", "b:a", reviews={"a": False}),
+        auto_merge=False,
+    )
+
+    result = await scheduler_for(service, database, settings).run_graph(
+        graph.session.id
+    )
+
+    assert result.outcome is GraphOutcome.WAITING_ON_HUMAN
+    assert await statuses(database, graph) == {
+        "a": NodeStatus.DONE,
+        "b": NodeStatus.AWAITING_REVIEW,
+    }
+    assert await run_counts(database, graph) == {"a": 1, "b": 1}
+    assert await merged_into_integration(database, graph, "a") is True
+    assert await merged_into_integration(database, graph, "b") is False
+
+    await service.approve_node(graph.ids_by_name["b"])
+    resumed = await scheduler_for(service, database, settings).run_graph(
+        graph.session.id
+    )
+    assert resumed.outcome is GraphOutcome.COMPLETE
 
 
 # ---------------------------------------------------------------------------

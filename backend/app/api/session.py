@@ -65,6 +65,7 @@ async def create_session(
             model=body.model,
             title=body.title,
             acceptance_criteria=body.acceptance_criteria,
+            requires_review=body.requires_review,
             auto_merge=body.auto_merge,
             base_ref=body.base_ref,
         )

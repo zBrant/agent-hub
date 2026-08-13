@@ -18,6 +18,7 @@ function node(status: Node["status"]): Node {
     name: "Implement API",
     prompt: "Build it",
     acceptance_criteria: ["Tests pass"],
+    requires_review: true,
     harness: "codex",
     model: "gpt-5.6-terra",
     touches: [],
@@ -114,6 +115,19 @@ describe("node drawer states", () => {
     expect(
       within(details).getByRole("button", { name: "Run ready nodes" }),
     ).toBeTruthy();
+    expect(within(details).getByText("Review required")).toBeTruthy();
+  });
+
+  it("shows automatic integration when review is disabled", () => {
+    const callbacks = props("ready");
+    render(
+      <NodeDrawer
+        {...callbacks}
+        node={{ ...callbacks.node, requires_review: false }}
+      />,
+    );
+
+    expect(screen.getByText("Automatic integration")).toBeTruthy();
   });
 
   it("offers criterion outcomes plus approve and reject during review", () => {

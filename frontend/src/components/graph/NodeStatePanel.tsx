@@ -132,6 +132,12 @@ function Settings({
         </p>
       </div>
       <div>
+        <h3 className="text-meta text-fg-muted">Code review</h3>
+        <p className="mt-1 text-ui">
+          {node.requires_review ? "Review required" : "Automatic integration"}
+        </p>
+      </div>
+      <div>
         <h3 className="text-meta text-fg-muted">Acceptance criteria</h3>
         {node.acceptance_criteria.length > 0 ? (
           <ul className="mt-1 list-inside list-disc space-y-1 text-ui">

@@ -60,6 +60,7 @@ class CreateSessionRequest(BaseModel):
     model: str | None = None
     title: str | None = None
     acceptance_criteria: tuple[str, ...] = ()
+    requires_review: bool = True
     auto_merge: bool = False
     base_ref: str = "HEAD"
 
@@ -94,6 +95,7 @@ class NodeResponse(BaseModel):
     # C10 back to the database for a field the row already carries.
     touches: tuple[str, ...]
     estimated_effort: str | None
+    requires_review: bool
     worktree_path: Path | None
     branch: str | None
     base_ref: str | None
@@ -114,6 +116,7 @@ class UpdateNodeRequest(BaseModel):
     model: str | None = None
     touches: tuple[str, ...] = ()
     estimated_effort: str | None = None
+    requires_review: bool = True
 
 
 class NodeDependencyResponse(BaseModel):
@@ -187,6 +190,7 @@ class PlannedNodeRequest(BaseModel):
     acceptance_criteria: tuple[str, ...] = ()
     touches: tuple[str, ...] = ()
     estimated_effort: str | None = None
+    requires_review: bool = True
 
     def to_planned(self) -> PlannedNode:
         return PlannedNode(
@@ -198,6 +202,7 @@ class PlannedNodeRequest(BaseModel):
             acceptance_criteria=self.acceptance_criteria,
             touches=self.touches,
             estimated_effort=self.estimated_effort,
+            requires_review=self.requires_review,
         )
 
 

@@ -211,6 +211,43 @@ def test_plan_endpoint_persists_a_gated_proposal_from_an_objective(
         assert fake.context == "Keep the transport thin"
 
 
+def test_graph_node_review_policy_round_trips_and_can_be_edited(
+    settings: Settings, target_repo: Path
+) -> None:
+    with TestClient(create_app(settings)) as client:
+        install_fake_service(client, settings)
+        created = client.post(
+            "/api/graphs",
+            json={
+                "repo_path": str(target_repo),
+                "nodes": [
+                    node_body("a", requires_review=False),
+                    node_body("default-policy"),
+                ],
+            },
+        )
+
+        assert created.status_code == 201, created.text
+        payload = created.json()
+        policy_by_name = {
+            node["name"]: node["requires_review"] for node in payload["nodes"]
+        }
+        assert policy_by_name == {"a": False, "default-policy": True}
+
+        session_id = payload["session"]["id"]
+        node_id = payload["ids_by_name"]["a"]
+        replacement = node_body("a", requires_review=True)
+        updated = client.put(
+            f"/api/sessions/{session_id}/nodes/{node_id}", json=replacement
+        )
+
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["requires_review"] is True
+        fetched = client.get(f"/api/sessions/{session_id}/nodes/{node_id}")
+        assert fetched.status_code == 200
+        assert fetched.json()["requires_review"] is True
+
+
 def test_plan_endpoint_persists_and_forwards_the_requested_final_branch(
     settings: Settings, target_repo: Path
 ) -> None:

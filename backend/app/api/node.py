@@ -79,6 +79,7 @@ async def update_node(
             acceptance_criteria=body.acceptance_criteria,
             touches=body.touches,
             estimated_effort=body.estimated_effort,
+            requires_review=body.requires_review,
         )
     )
     return node_response(updated)

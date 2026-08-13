@@ -325,17 +325,21 @@ So C7 runs each criterion and records a per-criterion outcome, then gates on
 it. (The `acceptance_criteria` column was closed separately, by revision
 `dab2c49d6ccb`, before this activity started.)
 
-`auto_merge` off means a finished node stops at `awaiting_review` (invariant 6:
-the planner's graph is a proposal, and nothing runs — or merges — before
-approval).
+`auto_merge` off means a finished node whose `requires_review` flag is on stops
+at `awaiting_review` (invariant 6: the planner's graph is a proposal, and
+nothing runs before the graph is approved). The node flag defaults to on. With
+it explicitly off, that node merges after a trusted, mergeable run and releases
+its dependents without an attempt review. `auto_merge` remains the global
+bypass: when on, no node-level review gate stops the graph.
 
 Approve merges; reject retries **with feedback**, which means the rejection text
 reaches the next run's prompt. B7's immutable-attempt rule holds: a retry is a
 new `Run`, never a mutated one.
 
-**Done when:** each acceptance criterion produces its own pass/fail; with
-`auto_merge` off, a completed node blocks its dependents until approved; and a
-rejection's feedback reaches the retry's prompt.
+**Done when:** each acceptance criterion produces its own pass/fail; with both
+the session bypass off and the node gate on, a completed node blocks its
+dependents until approved; and a rejection's feedback reaches the retry's
+prompt.
 
 **Result:** completed on 2026-08-07, 25 tests. Two tables keyed
 `(node_id, attempt)`, hanging off `node` and off nothing else.

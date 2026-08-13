@@ -1,4 +1,5 @@
 import { Handle, type Node, type NodeProps, Position } from "@xyflow/react";
+import { Eye, FastForward } from "lucide-react";
 import { memo } from "react";
 import type { Node as AgentNode } from "@/api/client";
 import { harnessDotClass } from "@/lib/harness";
@@ -15,6 +16,10 @@ export type ActivityFlowNode = Node<GraphNodeData, "activity">;
 function GraphNodeComponent({ data, selected }: NodeProps<ActivityFlowNode>) {
   const visual = nodeStateVisual(data.node.status);
   const StatusIcon = visual.icon;
+  const ReviewModeIcon = data.node.requires_review ? Eye : FastForward;
+  const reviewModeLabel = data.node.requires_review
+    ? "Review required"
+    : "Automatic integration";
   return (
     <div
       className={cn(
@@ -54,7 +59,16 @@ function GraphNodeComponent({ data, selected }: NodeProps<ActivityFlowNode>) {
         </span>
       </div>
       <div className="flex items-center justify-between gap-2 px-3 pt-1 pb-2.5 text-meta text-fg-muted">
-        <span className="inline-flex items-center gap-1">{visual.label}</span>
+        <span className="inline-flex items-center gap-1.5">
+          {visual.label}
+          <span
+            className="inline-flex border-border border-l pl-1.5 text-fg-subtle"
+            title={reviewModeLabel}
+          >
+            <span className="sr-only">{reviewModeLabel}</span>
+            <ReviewModeIcon aria-hidden="true" className="size-3" />
+          </span>
+        </span>
         <code className="truncate text-code">
           {data.node.model ?? "default model"}
         </code>

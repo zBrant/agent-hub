@@ -66,6 +66,7 @@ const node: Node = {
   name: "Live node",
   prompt: "Build it",
   acceptance_criteria: [],
+  requires_review: true,
   harness: "codex",
   model: "gpt-5.6-terra",
   touches: [],

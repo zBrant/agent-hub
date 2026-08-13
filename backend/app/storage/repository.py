@@ -316,6 +316,7 @@ class Repository:
         acceptance_criteria: Sequence[str] = (),
         touches: Sequence[str] = (),
         estimated_effort: str | None = None,
+        requires_review: bool = True,
         status: NodeStatus = NodeStatus.PENDING,
         at_ms: int | None = None,
     ) -> Node:
@@ -337,6 +338,7 @@ class Repository:
             acceptance_criteria=tuple(acceptance_criteria),
             touches=tuple(touches),
             estimated_effort=estimated_effort,
+            requires_review=requires_review,
             status=status,
             created_ms=stamp,
             updated_ms=stamp,
@@ -358,6 +360,7 @@ class Repository:
         acceptance_criteria: Sequence[str],
         touches: Sequence[str],
         estimated_effort: str | None,
+        requires_review: bool,
         at_ms: int | None = None,
     ) -> Node:
         """Replace the authored fields of one proposed activity.
@@ -375,6 +378,7 @@ class Repository:
         row.acceptance_criteria = tuple(acceptance_criteria)
         row.touches = tuple(touches)
         row.estimated_effort = estimated_effort
+        row.requires_review = requires_review
         row.updated_ms = now_ms() if at_ms is None else at_ms
         await self._persist(row)
         return row

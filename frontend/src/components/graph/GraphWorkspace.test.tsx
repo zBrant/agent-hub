@@ -50,6 +50,7 @@ function node(id: string, name: string): Node {
     name,
     prompt: `Build ${name}`,
     acceptance_criteria: ["Tests pass"],
+    requires_review: true,
     harness: "codex",
     model: "gpt-5.6-terra",
     touches: ["frontend/**"],
@@ -153,6 +154,9 @@ describe("editable graph workspace", () => {
     fireEvent.change(screen.getByLabelText("Node acceptance criteria"), {
       target: { value: "Tests pass\nDocs updated" },
     });
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "Require code review" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() =>
@@ -160,6 +164,7 @@ describe("editable graph workspace", () => {
         name: "Renamed",
         prompt: "Build the renamed node",
         acceptance_criteria: ["Tests pass", "Docs updated"],
+        requires_review: false,
         harness: "claude-code",
         model: "claude-opus-5",
         touches: ["frontend/**"],
@@ -177,6 +182,7 @@ describe("editable graph workspace", () => {
               ...item,
               prompt: "Build the renamed node",
               acceptance_criteria: ["Tests pass", "Docs updated"],
+              requires_review: false,
             }
           : item,
       ),
@@ -195,6 +201,13 @@ describe("editable graph workspace", () => {
       (screen.getByLabelText("Node acceptance criteria") as HTMLTextAreaElement)
         .value,
     ).toBe("Tests pass\nDocs updated");
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "Require code review",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
   });
 
   it("refuses a non-atomic multi-node removal", () => {

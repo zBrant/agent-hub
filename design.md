@@ -330,7 +330,10 @@ queries them on every transition and a JSON column cannot be constrained.
 - **Session** — one planning conversation plus one graph. This is what appears in
   the Dashboard tab (active only) and the Sessions tab (all).
 - **Node** — one activity in the graph. Carries `harness`, `model`, `prompt`,
-  `acceptance_criteria`, `worktree_path`, `branch`, `depends_on: [node_id]`.
+  `acceptance_criteria`, `requires_review`, `worktree_path`, `branch`,
+  `depends_on: [node_id]`. `requires_review` is authored with the proposal and
+  defaults to `true`: it controls the human gate for this node when the session
+  is not globally unattended.
 - **Run** — one *execution* of a node. A retry creates a new Run; the Node
   persists. This gives you attempt history without polluting the graph.
 - **Event** — append-only. Written as NDJSON per run on disk
@@ -572,6 +575,12 @@ Four things about that schema that only became clear once the tables existed:
   the criteria get joined with newlines and the per-criterion results the
   `awaiting_review` panel promises become unrecoverable. See below.
 
+`requires_review` is deliberately not planner output. It is an operator choice
+on the editable proposal and defaults to `true`; allowing the planner to remove
+its own review gates would weaken the approval boundary. Turning it off merges
+only a trusted, mergeable attempt without stopping for a verdict. It does not
+make an untrusted, failed, or conflicted attempt safe.
+
 3. **Validate the DAG before rendering it**: no cycles, no orphan `depends_on`,
    topological sort possible. LLMs get this wrong regularly — on a cycle, hand the
    error back to the planner to fix instead of breaking the UI.
@@ -675,7 +684,7 @@ async def run_graph(graph, max_concurrency=3):
             await materialize_worktree(node)   # base = merge of parents
             await execute(node)                # harness adapter
             await check_acceptance(node)
-            # → awaiting_review (if the human gate is on) or automatic merge
+            # → awaiting_review (if this node's human gate is on) or merge
 
     while not graph.is_complete():
         ready = [n for n in graph.nodes
@@ -698,7 +707,7 @@ scheduler distinguishes four outcomes:
 | Outcome | Meaning |
 |---|---|
 | `active` | Something is running or startable. |
-| `waiting_on_human` | A gate holds it — `awaiting_review`, or a `blocked` node needing resolution. Under `auto_merge` off this is the system working correctly (invariant 6), not a stall. |
+| `waiting_on_human` | A gate holds it — `awaiting_review`, or a `blocked` node needing resolution. A review-gated node waiting here is the system working correctly, not a stall. |
 | `complete` | Every node reached a terminal state. |
 | `deadlocked` | Nothing running, nothing ready, no gate open, not complete. |
 
@@ -717,9 +726,16 @@ to understand, which is worse than not checking. So the run records each
 criterion against its outcome and the review panel presents them as a checklist
 the reviewer resolves.
 
-With `auto_merge` on there is no reviewer, and the criteria are recorded but not
+The gate is the conjunction of session and node policy. `Session.auto_merge` is
+the global bypass: when it is on, every mergeable node proceeds without review.
+When it is off, `Node.requires_review` decides individually: `true` stops at
+`awaiting_review`; `false` merges and releases its dependents without a human
+verdict. Both settings affect only the gate after a trusted, mergeable run;
+neither bypasses failures, permission denials, parser distrust, or conflicts.
+
+Whenever a node proceeds without review, its criteria are recorded but not
 enforced. That is a real limitation and it is stated rather than hidden: an
-unattended graph merges on the harness's own verdict.
+unattended node merges on the harness's own verdict.
 
 The upgrade path, when it is worth building, is to give a criterion an optional
 `command` in §8's schema — then the ones that *are* checkable run in the node's
@@ -736,7 +752,8 @@ What matters:
 - **Per-node timeout and budget** (tokens and wall-clock). An agent in a loop burns
   hundreds of thousands of tokens silently. Cut it off at the limit and mark it
   `failed`.
-- **Configurable human gate:** `auto_merge` vs `awaiting_review`, per session.
+- **Configurable human gate:** `auto_merge` is the session-wide bypass;
+  `requires_review` selects the gate per node and defaults to on.
 
 ---
 

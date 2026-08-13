@@ -76,6 +76,35 @@ async def test_session_node_run_round_trip(
     assert run_row.status is RunState.RUNNING
 
 
+async def test_node_review_policy_defaults_on_and_is_authored_editable(
+    repo: Repository, session_row: Session
+) -> None:
+    node = await repo.create_node(
+        node_id=new_node_id(),
+        session_id=session_row.id,
+        name="unattended",
+        prompt="make the mechanical change",
+        harness="codex",
+    )
+    assert node.requires_review is True
+
+    updated = await repo.update_node(
+        node.id,
+        name=node.name,
+        prompt=node.prompt,
+        harness=node.harness,
+        model=node.model,
+        acceptance_criteria=node.acceptance_criteria,
+        touches=node.touches,
+        estimated_effort=node.estimated_effort,
+        requires_review=False,
+    )
+
+    assert updated.requires_review is False
+    stored = await repo.get_node(node.id)
+    assert stored is not None and stored.requires_review is False
+
+
 async def test_paths_come_back_as_paths(
     repo: Repository, session_row: Session, node_row: Node
 ) -> None:

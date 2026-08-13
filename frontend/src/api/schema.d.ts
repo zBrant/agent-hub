@@ -1000,6 +1000,11 @@ export interface components {
              * Format: path
              */
             readonly repo_path: string;
+            /**
+             * Requires Review
+             * @default true
+             */
+            readonly requires_review: boolean;
             /** Title */
             readonly title?: string | null;
         };
@@ -1208,6 +1213,8 @@ export interface components {
             readonly name: string;
             /** Prompt */
             readonly prompt: string;
+            /** Requires Review */
+            readonly requires_review: boolean;
             /** Session Id */
             readonly session_id: string;
             readonly status: components["schemas"]["NodeStatus"];
@@ -1329,6 +1336,11 @@ export interface components {
             readonly name: string;
             /** Prompt */
             readonly prompt: string;
+            /**
+             * Requires Review
+             * @default true
+             */
+            readonly requires_review: boolean;
             /**
              * Touches
              * @default []
@@ -1714,6 +1726,11 @@ export interface components {
             readonly name: string;
             /** Prompt */
             readonly prompt: string;
+            /**
+             * Requires Review
+             * @default true
+             */
+            readonly requires_review: boolean;
             /**
              * Touches
              * @default []
