@@ -2,8 +2,18 @@
 
 **Goal:** answer repository questions through bounded, agent-driven navigation
 instead of naive top-k embedding retrieval. Every answer must cite a real
-`path:line`, and every filesystem operation remains scoped to a session's
-integration worktree.
+`path:line`.
+
+> **Current scope after the accepted phase:** E1–E6 below record what was built
+> and accepted on 2026-08-08. Search has since moved from a session integration
+> worktree to a project plus exact local branch, materialized as an immutable,
+> commit-pinned snapshot. The current agent uses text, structural, file, and
+> directory tools. The session-scoped Tree-sitter and semantic indexes remain
+> implemented but are deliberately not queried until they can share the same
+> snapshot contract. See [`design.md`](../design.md) §8 for the current product
+> decision.
+
+### Original accepted scope
 
 The integration worktree is the search target because it is the session's
 shared, reviewed code state. Searching an individual node worktree would expose
@@ -195,7 +205,7 @@ appeared after many heterogeneous files. Parsing each changed file in a recycled
 worker process now contains that native boundary without penalizing unchanged
 files. See [`acceptance-phase-4.md`](acceptance-phase-4.md).
 
-## Explicitly out of scope
+## Explicitly out of scope for the accepted phase
 
 Searching unmerged node worktrees, remote repositories, cross-repository global
 ranking, editing code from search results, and treating embedding similarity as

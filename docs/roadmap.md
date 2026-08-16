@@ -59,6 +59,29 @@ the committed AgentHub acceptance verifies ranking, hash reuse and exact cited
 lines; see [`acceptance-phase-4.md`](acceptance-phase-4.md) and
 [`phase-4.md`](phase-4.md).
 
+## Post-MVP deliveries
+
+The accepted phase records remain historical evidence. Subsequent product work
+has added the following without rewriting what those acceptance runs claimed:
+
+- A full UI redesign around an operational activity rail, denser graph/session
+  workspaces, a project/branch investigation flow, and a dedicated Settings
+  route.
+- Persisted, non-secret AI defaults for Planner and Code Search. Both features
+  can use either direct Anthropic API spend or a structured-output harness under
+  an existing subscription; environment configuration seeds the initial value.
+- Code Search now targets a known project's exact local branch through an
+  immutable, commit-pinned Git snapshot. Repository identity deduplicates
+  projects, ephemeral execution refs are hidden, and durable result branches
+  remain searchable.
+- Graph creation reserves an operator-selected durable final branch. Completion
+  publishes the integration commit there without moving the target checkout,
+  while collision checks prevent overwriting existing refs.
+- Human review is configurable per node through `requires_review` (default on),
+  with session `auto_merge` retained as the graph-wide bypass. Review and diff
+  rendering also exclude dependency trees such as `node_modules` from expanded
+  HTTP diffs.
+
 ## Phases
 
 - [x] **Phase 0 — Vertical spike.** No UI. A script that creates a worktree,
@@ -78,7 +101,7 @@ lines; see [`acceptance-phase-4.md`](acceptance-phase-4.md) and
 
 Install and run instructions are in the repository `README.md`.
 
-## Post-MVP
+## Remaining post-MVP
 
 Visual testing with Playwright and a vision model, multi-repo, remote execution,
 permission approval through the UI.

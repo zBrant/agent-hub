@@ -36,13 +36,14 @@ is in milliseconds and harness auth keeps working.
 
 Nothing executes before you approve the graph.
 
-## Three surfaces
+## Four surfaces
 
 | Tab | What it does |
 |---|---|
 | **Dashboard** | Token and cost KPIs, system health (CPU, RAM, disk, per-agent process tree), **active** sessions |
 | **Sessions** | Planning chat, graph orchestration, per-node drawer: edit before running, message the agent while running, review the diff after. **All** sessions |
-| **Code Search** | Agentic search over your codebase — ripgrep, ast-grep, and tree-sitter symbols as *tools* an agent drives, not top-k RAG |
+| **Code Search** | Agentic investigation of a known project's local branches through bounded, commit-pinned snapshots |
+| **Settings** | Persistent Planner and Code Search runtime defaults, with API/spend and subscription/equivalent-cost choices kept explicit |
 
 The structured harness channel remains the source of truth for state and tokens.
 A real terminal (`xterm.js` over a PTY) is planned only for adapters that can
@@ -151,7 +152,8 @@ curl --request POST http://127.0.0.1:8000/api/sessions \
     "prompt": "Implement the requested change and run its tests.",
     "harness": "codex",
     "model": "gpt-5.6-terra",
-    "auto_merge": false
+    "auto_merge": false,
+    "requires_review": true
 }
 JSON
 ```
@@ -169,13 +171,22 @@ curl --request POST http://127.0.0.1:8000/api/sessions/<session_id>/runs
 ```
 
 The page exposes start, kill, retry, approval, event history, all four token
-fields, estimated equivalent cost, and the final diff. With `auto_merge=false`,
-a successful run stops at `awaiting_review` until **Approve** is selected.
+fields, estimated equivalent cost, and the final diff. `auto_merge=false` keeps
+the human gate available, while `requires_review` decides whether this node
+actually stops at `awaiting_review`; it defaults to `true`. Graph proposals can
+set that flag independently on every node. A graph can also reserve a durable
+final branch before planning starts. When all nodes finish, AgentHub points that
+branch at the integration result without switching the target repository's
+checkout; omitted names retain the `agenthub/<session>/result` fallback.
 
 ### The planner's backend
 
-The planner is the only part of AgentHub that asks a model something on its own
-behalf, and it has two interchangeable backends (`design.md` §8).
+Planner and Code Search each have two interchangeable AI backends
+(`design.md` §8). Their global defaults live in **Settings**, are persisted in
+SQLite, and apply immediately to new requests. Environment variables seed a
+fresh database; after the first save, the UI-owned values remain authoritative.
+The Sessions form can still override the planner for one unusually complex
+graph. Credentials are never stored by this settings API.
 
 **`harness` (default)** drives an already-authenticated CLI with
 `--json-schema` (Claude Code) or `--output-schema` (Codex) and gets back
@@ -198,9 +209,9 @@ export ANTHROPIC_API_KEY=sk-ant-...
 > subscription to the `api` backend. That is precisely why `harness` is the
 > default. Choosing `api` means buying API credit separately from your plan.
 
-The Sessions form offers every installed harness that can return structured
-content, plus the Anthropic API, and lets each plan choose its own model. The
-server settings remain the preselected default: select the harness with
+The Settings page and Sessions override offer every installed harness that can
+return structured content, plus the Anthropic API. Deployment defaults select
+the planner harness with
 `AGENTHUB_PLANNER_HARNESS` (default `claude-code`), optionally pin its model
 with `AGENTHUB_PLANNER_HARNESS_MODEL`, and configure the API choices with
 `AGENTHUB_PLANNER_API_MODELS`. Each attempt has a 120-second wall-clock limit;
@@ -208,14 +219,24 @@ set `AGENTHUB_PLANNER_TIMEOUT_S` to change it. A timed-out CLI process tree is
 terminated and the request answers 504 instead of leaving the form pending.
 Naming a default harness that cannot return structured content does not stop
 the server: it is logged at startup and the planner answers 503 with the
-reason, so the other four features keep working.
+reason, so the rest of the application keeps working.
 
-> **Code Search's *chat* is the one thing a subscription cannot cover.** The
-> agentic loop needs real tool-use, which no CLI exposes as a library, so
-> `/api/search/answer` requires `ANTHROPIC_API_KEY` regardless of the planner's
-> backend. Without one it returns a partial result explaining that, rather than
-> failing. Every other part of Code Search — ripgrep, ast-grep, symbols,
-> semantic ranking — is local and needs no credential at all.
+Code Search now uses the same backend seam. Its default is the authenticated
+Codex harness (`AGENTHUB_SEARCH_BACKEND=harness` and
+`AGENTHUB_SEARCH_HARNESS=codex`), which returns one schema-constrained action per
+short-lived CLI call while AgentHub alone executes the bounded search tools.
+Set `AGENTHUB_SEARCH_HARNESS_MODEL` to pin a CLI model. The `api` choice uses
+`AGENTHUB_SEARCH_MODEL` and requires `ANTHROPIC_API_KEY`; its usage is real
+spend, whereas harness usage is estimated equivalent under the subscription.
+
+Search first selects a project discovered from persisted sessions, then an
+exact local Git branch. AgentHub materializes a read-only snapshot pinned to
+that branch's commit, so a moving branch cannot mix revisions within an
+answer. Projects are deduplicated by repository identity, internal node and
+integration branches are hidden, and finalized result branches remain visible.
+Current agent navigation uses bounded ripgrep, ast-grep, file reads, and
+directory listings. The earlier session-worktree symbol and semantic indexes
+are not consulted until they can obey this same project/branch snapshot scope.
 
 ### Runtime data and replay
 

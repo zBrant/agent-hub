@@ -316,10 +316,12 @@ in the middle of a stream.
 | `orchestrator/scheduler.py` | concurrency, retry, budget, transition persistence | talk to a CLI directly |
 | `orchestrator/planner.py` | LLM → DAG via structured output + correction loop | execute nodes |
 | `orchestrator/worktree.py` | git lifecycle: create, merge, conflict, GC | decide *when* to create |
+| `ai_runtime.py` | compose persisted runtime choices with planner/search backends | persist preferences or branch inside `search/` on a harness |
 | `harnesses/` | translate CLI ↔ `AgentEvent`, PTY, message injection | know about graphs or sessions |
 | `sandbox/aijail.py` | build ai-jail argv from a policy | run processes |
-| `storage/` | NDJSON, SQLite, replay | domain logic |
-| `search/` | ripgrep, ast-grep, tags, vectors, agentic loop | anything orchestration-related |
+| `preferences/` | validate and persist non-secret AI runtime defaults | create providers or execute model turns |
+| `storage/` | NDJSON, SQLite, replay, bounded read-only Git discovery/snapshots | domain logic or mutate target refs |
+| `search/` | bounded tools and evidence-gated agent loop over a resolved snapshot | harness-specific behavior or orchestration state transitions |
 | `metrics/` | psutil, ring buffer, aggregation | persist 1 s samples |
 
 ---
