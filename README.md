@@ -7,6 +7,61 @@ back with live output, tool calls, and token accounting.
 
 ---
 
+## Project status
+
+**Development was discontinued in August 2026.** The MVP is complete and the
+repository remains available as a study and reference project, but no further
+features, maintenance, or support are planned.
+
+This is not a claim that multi-agent systems never work. They can be effective
+when a valuable problem splits into genuinely independent work, as Anthropic's
+research system demonstrates. It is a decision about the fit between AgentHub's
+complexity, its coding-orchestration use case, and the value it would provide to
+its author:
+
+- [*Don't Build Multi-Agents*](https://cognition.com/blog/dont-build-multi-agents)
+  describes how parallel agents fragment context and make implicit, conflicting
+  decisions. Those are especially difficult failure modes when agents modify the
+  same codebase.
+- [*Measuring Agents in Production*](https://arxiv.org/abs/2512.04123) finds
+  that deployed agents tend to use simple, controllable designs and identifies
+  reliability as practitioners' leading challenge.
+- [*How we built our multi-agent research system*](https://www.anthropic.com/engineering/multi-agent-research-system)
+  reports strong results for broad, parallel research, while also reporting much
+  higher token use and warning that tasks with shared context or many
+  dependencies—including most coding tasks—are a poor fit today.
+
+AgentHub addressed some of these problems deliberately with dependency graphs,
+isolated worktrees, review gates, replayable events, and explicit accounting.
+That also made it a substantial system to operate and maintain. Without a
+recurring personal use case, continuing to invest in that complexity would not
+be justified.
+
+The project was nevertheless successful as a learning journey. Building it
+provided practical experience with agent harnesses, context and event design,
+async orchestration, process isolation, git worktrees, deterministic replay,
+token accounting, graph scheduling, code search, and a real-time React/FastAPI
+application. Finishing the MVP and deciding not to turn it into a maintained
+product are compatible outcomes.
+
+## Screenshots
+
+**Dashboard.** Usage and estimated-equivalent cost, active graph progress, and
+live host telemetry in one operational view.
+
+![AgentHub dashboard showing usage, active graphs, and system health](docs/images/dashboard.png)
+
+**Session graph and run inspector.** An approved DAG with parallel branches,
+per-node harness and model assignments, four-field token usage, and the event
+feed for the selected worktree.
+
+![AgentHub session graph with a selected run and its event feed](docs/images/session-graph-and-run.png)
+
+**Code Search.** A branch-scoped investigation whose findings link back to the
+exact source files and line ranges used as evidence.
+
+![AgentHub Code Search showing cited findings and source code](docs/images/code-search.png)
+
 ## The idea
 
 Running one coding agent is easy. Running five at once against the same repository

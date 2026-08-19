@@ -4,6 +4,12 @@ Progress tracking. The rationale for this ordering and the full description of
 each phase live in [`design.md`](../design.md) §10 — this file only records
 **where the project is**.
 
+> **Final status (August 2026):** the MVP is complete and development has been
+> discontinued. The repository remains available as a study and reference
+> project, with no further features or maintenance planned. See the
+> [project-status note](../README.md#project-status) for the rationale and
+> references.
+
 The unknowns are in the harness, PTY, and worktree layers. If something kills
 this project, it's there — so that comes first, and code search, the easiest and
 lowest-risk piece, comes last.
@@ -101,7 +107,8 @@ has added the following without rewriting what those acceptance runs claimed:
 
 Install and run instructions are in the repository `README.md`.
 
-## Remaining post-MVP
+## Deferred scope
 
 Visual testing with Playwright and a vision model, multi-repo, remote execution,
-permission approval through the UI.
+and permission approval through the UI were considered after the MVP. They will
+not be pursued as part of this project.
